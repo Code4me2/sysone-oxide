@@ -1,3 +1,17 @@
+//! `sysone`: the server binary. Parses the CLI, loads the model config and the [frontend], builds the engine
+//! factory (`--engine mock` or `--engine bf16`), starts the scheduler and CPU pool (`AppState::start_with`) and
+//! serves HTTP until Ctrl-C.
+//!
+//! The engine is built inside the scheduler's GPU worker thread (the factory closure runs there), because a CUDA
+//! context belongs to the thread that creates it. `--max-step-tokens` must cover both `--token-budget` and
+//! `--max-request-tokens`: requests are never split across steps. `--engine mock` wraps `MockEngine` in
+//! `SimulatedEngine`, which can sleep like a real step (`--mock-step-us`, `--mock-ns-per-token`) for scheduler
+//! and load-generator work without a GPU.
+//!
+//! See docs/ARCHITECTURE.md §2 for the path of a request, and `sysone --help` for every flag.
+//!
+//! [frontend]: sysone::frontend
+
 use anyhow::{Context, Result, ensure};
 use clap::{Parser, ValueEnum};
 use std::path::PathBuf;

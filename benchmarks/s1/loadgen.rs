@@ -4,8 +4,10 @@
 //! JSON line on stdout: also the p50 of the responses' `qev.timing` parts (`queue_s` waiting for a batch,
 //! `forward_s` the engine step) and the server's 503s by reason. W6 extends it into the sweep (state length × questions × concurrency) and the baselines.
 //!
-//!     cargo run --release --bin loadgen -- --addr 127.0.0.1:8000 --concurrency 64 --state-tokens 1000 \
-//!         --questions 8 --duration-s 60
+//! ```text
+//! cargo run --release --bin loadgen -- --addr 127.0.0.1:8000 --concurrency 64 --state-tokens 1000 \
+//!     --questions 8 --duration-s 60
+//! ```
 
 use anyhow::{Context, Result, ensure};
 use clap::Parser;

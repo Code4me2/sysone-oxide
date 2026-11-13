@@ -1,8 +1,10 @@
 //! `cpu_ref_check`: run the CPU reference over the requests recorded by `reference/hf_check/run_qev.py`, packed
 //! into one DecisionBatch and each alone, and compare slot logits / probabilities with qev's fp32 results.
 //!
-//!     cargo run --release --bin cpu_ref_check -- \
-//!         --model /home/velvet/Desktop/hf_models/elephant-1 --recorded reference/hf_check/out/qev_fp32.json
+//! ```text
+//! cargo run --release --bin cpu_ref_check -- \
+//!     --model /home/velvet/Desktop/hf_models/elephant-1 --recorded reference/hf_check/out/qev_fp32.json
+//! ```
 
 use anyhow::Result;
 use clap::Parser;

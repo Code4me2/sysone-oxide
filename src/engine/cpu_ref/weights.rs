@@ -2,7 +2,7 @@
 //!
 //! The reference holds no converted copy of the big matrices: a [`Mat`] points into the mapping and each GEMM
 //! converts the rows it is about to use. Small vectors (norm weights, gates, conv taps) are converted once at
-//! load. Test models build [`Mat::F32`] directly.
+//! load. Test models build f32 matrices directly ([`Mat::from_f32`]).
 
 use anyhow::{Context, Result, bail, ensure};
 use memmap2::Mmap;
