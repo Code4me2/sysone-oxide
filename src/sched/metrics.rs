@@ -77,6 +77,8 @@ struct Inner {
 pub struct Metrics {
     started: Instant,
     inner: Mutex<Inner>,
+    /// `DecisionEngine::info` of the running engine, rendered as `sysone_engine_info` labels.
+    engine_info: Mutex<Vec<(&'static str, String)>>,
 }
 
 impl Default for Metrics {
@@ -97,6 +99,7 @@ pub fn quantile(sorted: &[f64], q: f64) -> f64 {
 impl Metrics {
     pub fn new() -> Self {
         Metrics {
+            engine_info: Mutex::new(Vec::new()),
             started: Instant::now(),
             inner: Mutex::new(Inner {
                 requests: BTreeMap::new(),
@@ -193,6 +196,11 @@ impl Metrics {
         m.decisions.iter().map(|(_, n)| *n).sum::<u64>() as f64 / window
     }
 
+    /// Record the engine's static facts (`DecisionEngine::info`) for `/metrics`.
+    pub fn set_engine_info(&self, info: Vec<(&'static str, String)>) {
+        *self.engine_info.lock().unwrap() = info;
+    }
+
     pub fn batches_total(&self) -> u64 {
         self.inner.lock().unwrap().batches_total
     }
@@ -211,6 +219,14 @@ impl Metrics {
         gauge(&mut out, "sysone_token_budget", "Packed tokens per engine step.", token_budget as f64);
         gauge(&mut out, "sysone_decisions_per_second", "Questions answered per second over the last 10 s.", rate);
         gauge(&mut out, "sysone_uptime_seconds", "Seconds since the server started.", self.started.elapsed().as_secs_f64());
+        let info = self.engine_info.lock().unwrap();
+        if !info.is_empty() {
+            let labels: Vec<String> =
+                info.iter().map(|(k, v)| format!("{k}=\"{}\"", v.replace('\\', "\\\\").replace('"', "\\\""))).collect();
+            let _ = writeln!(out, "# HELP sysone_engine_info Engine configuration (constant 1; the labels carry it).");
+            let _ = writeln!(out, "# TYPE sysone_engine_info gauge\nsysone_engine_info{{{}}} 1", labels.join(","));
+        }
+        drop(info);
         let counter = |out: &mut String, name: &str, help: &str, v: f64| {
             let _ = writeln!(out, "# HELP {name} {help}\n# TYPE {name} counter\n{name} {v}");
         };

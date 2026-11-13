@@ -9,22 +9,26 @@
 //!
 //! [`TileKernels::update`] rewrites both for each batch before the forward runs (eagerly or as a replay).
 //!
-//! GDN scratch (q, k, gates, WY intermediates, prefix states) is one [`GdnScratch`] sized for the largest bucket
-//! and the engine's prefix capacity, shared by all buckets and layers (one step runs at a time). The conv output
-//! and the delta-rule output are arena values instead of scratch fields, so the scratch holds only what the W3
-//! scan reads implicitly.
+//! GDN scratch (gates, chunk inverses, prefix states; f32 q, k and the intra-chunk scores for the cuTile path) is
+//! one [`GdnScratch`] ([`GdnScratch::for_engine`]) sized for the largest bucket and the engine's prefix capacity,
+//! shared by all buckets and layers (one step runs at a time). The conv output and the delta-rule output are arena
+//! values instead of scratch fields, so the scratch holds only what the scan kernels read implicitly.
+//!
+//! The chunked delta rule runs on one of two backends ([`GdnBackend`], fixed per engine): the cuTile kernels
+//! (`gdn_prep` + `gdn_chunk_scan`) or the cuda-oxide SIMT kernels (`gdn::simt::{gates, chunk_scan}`, docs/G1.md).
+//! The conv and the gated norm are cuTile in both. Profile marks name the SIMT launches (`gdn.simt_*`).
 
 use crate::contract::DecisionBatch;
 use crate::engine::graph::tensor::{DevTensor, GraphDType};
 use crate::engine::graph::{Bucket, Kernels, LayerWeight, Launch, WeightRef};
 use crate::kernels::attention::{self as attn, AttnPlan, AttnTiles, SegAttnArgs, WORK_FIELDS};
-use crate::kernels::gdn::{self, CHUNK, DView, GdnPlan, GdnScratch, GdnTables, GdnWeights};
+use crate::engine::graph::GraphOp;
+use crate::kernels::gdn::{self, DView, GdnBackend, GdnPlan, GdnScratch, GdnTables, GdnWeights};
 use crate::kernels::{norm, pointwise};
 use anyhow::{Context as _, Result, anyhow, ensure};
 use cuda_async::device_buffer::DevicePointer;
 use cuda_async::device_operation::DeviceOp;
 use cuda_core::{PinnedHostBuffer, Stream};
-use cutile::api;
 use cutile::half::bf16;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -45,6 +49,7 @@ pub struct TileKernels {
     /// `inv_freq` of the partial RoPE, `[32]` f32.
     inv_freq: DevTensor,
     scratch: GdnScratch,
+    gdn_backend: GdnBackend,
     buckets: HashMap<Bucket, BucketState>,
 }
 
@@ -72,33 +77,26 @@ fn dptr<T>(t: &DevTensor) -> DevicePointer<T> {
 
 impl TileKernels {
     /// Kernels for an engine whose largest bucket has `max_tokens` tokens and whose batches hold at most
-    /// `max_prefixes` prefix segments (GDN state slots: 2 MiB each).
-    pub fn new(stream: &Arc<Stream>, eps: f32, max_tokens: usize, max_prefixes: usize) -> Result<Self> {
+    /// `max_prefixes` prefix segments (GDN state slots: 2 MiB each), running the delta rule on `gdn_backend`.
+    /// For [`GdnBackend::Simt`] the SIMT module for the current device is loaded here, so a missing or stale
+    /// kernel artifact for the device's architecture is a load error (never a fallback to cuTile).
+    pub fn new(stream: &Arc<Stream>, eps: f32, max_tokens: usize, max_prefixes: usize, gdn_backend: GdnBackend)
+        -> Result<Self> {
         ensure!(max_prefixes > 0, "max_prefixes must be > 0");
+        if gdn_backend == GdnBackend::Simt {
+            let device = cuda_async::device_context::get_default_device();
+            crate::kernels::simt::SimtModule::get(device).context("GDN backend simt")?;
+        }
         let inv: Vec<u8> = attn::rope_inv_freq().iter().flat_map(|x| x.to_le_bytes()).collect();
         let inv_freq = DevTensor::alloc(stream.context(), GraphDType::F32, &[attn::ROTARY_DIM / 2])?;
         inv_freq.copy_from_host(stream, &inv)?;
-        let z32 = |cols: usize| api::zeros::<f32>(&[max_tokens, cols]).sync_on(stream);
-        let scratch = GdnScratch {
-            tokens: max_tokens,
-            slots: max_prefixes,
-            // The conv and delta-rule outputs are arena values; these two fields are never read by the launchers
-            // the engine calls with explicit views.
-            conv: api::zeros::<bf16>(&[1, gdn::CONV_DIM]).sync_on(stream)?,
-            q: z32(gdn::KEY_DIM)?,
-            k: z32(gdn::KEY_DIM)?,
-            g: z32(gdn::NUM_V_HEADS)?,
-            beta: z32(gdn::NUM_V_HEADS)?,
-            w: z32(gdn::VALUE_DIM)?,
-            u: z32(gdn::VALUE_DIM)?,
-            qd: z32(gdn::VALUE_DIM)?,
-            kd: z32(gdn::VALUE_DIM)?,
-            p: z32(gdn::NUM_V_HEADS * CHUNK)?,
-            tinv: z32(gdn::NUM_V_HEADS * CHUNK)?,
-            core: api::zeros::<bf16>(&[1, gdn::VALUE_DIM]).sync_on(stream)?,
-            state: api::zeros::<f32>(&[max_prefixes, gdn::NUM_V_HEADS, gdn::HEAD_DIM, gdn::HEAD_DIM]).sync_on(stream)?,
-        };
-        Ok(Self { eps, attn_tiles: AttnTiles::default(), inv_freq, scratch, buckets: HashMap::new() })
+        let scratch = GdnScratch::for_engine(gdn_backend, max_tokens, max_prefixes, stream)?;
+        Ok(Self { eps, attn_tiles: AttnTiles::default(), inv_freq, scratch, gdn_backend, buckets: HashMap::new() })
+    }
+
+    /// The delta-rule backend.
+    pub fn gdn_backend(&self) -> GdnBackend {
+        self.gdn_backend
     }
 
     /// Prefix segments a batch may hold (GDN state slots).
@@ -108,11 +106,7 @@ impl TileKernels {
 
     /// Device bytes of the GDN scratch.
     pub fn scratch_bytes(&self) -> usize {
-        let s = &self.scratch;
-        [&s.q, &s.k, &s.g, &s.beta, &s.w, &s.u, &s.qd, &s.kd, &s.p, &s.tinv, &s.state]
-            .iter()
-            .map(|t| t.shape().iter().map(|&d| d as usize).product::<usize>() * 4)
-            .sum()
+        self.scratch.bytes()
     }
 
     /// Allocate `b`'s plan buffers (idempotent; never during capture).
@@ -205,27 +199,55 @@ impl Kernels for TileKernels {
         unsafe {
             let (cw, al, dt, nw) = (cw.tile::<bf16>()?, al.tile::<bf16>()?, dt.tile::<bf16>()?, nw.tile::<bf16>()?);
             let w = GdnWeights { conv_w: &cw, a_log: &al, dt_bias: &dt, norm_w: &nw };
-            let conv = dview(conv, GraphDType::BF16)?;
-            let op = gdn::gdn_prep(&st.gdn, conv, dview(a, GraphDType::BF16)?, dview(b, GraphDType::BF16)?, &w,
-                                   &self.scratch)?;
-            op.execute(cx.exec).map_err(launch_err("gdn_prep"))
+            let (a, b) = (dview(a, GraphDType::BF16)?, dview(b, GraphDType::BF16)?);
+            match self.gdn_backend {
+                GdnBackend::Tile => {
+                    let conv = dview(conv, GraphDType::BF16)?;
+                    let op = gdn::gdn_prep(&st.gdn, conv, a, b, &w, &self.scratch)?;
+                    op.execute(cx.exec).map_err(launch_err("gdn_prep"))
+                }
+                // The SIMT scan normalises q and k from the conv output itself: only the gates are needed here.
+                GdnBackend::Simt => {
+                    let op = gdn::simt::gates(&st.gdn, a, b, &w, &self.scratch)?;
+                    op.execute(cx.exec).map_err(launch_err("gdn_simt_gates"))
+                }
+            }
         }
     }
 
-    fn gdn_chunk_scan(&self, cx: &Launch, _layer: usize, v: &DevTensor, out: &DevTensor) -> Result<()> {
+    fn gdn_chunk_scan(&self, cx: &Launch, _layer: usize, conv: &DevTensor, out: &DevTensor) -> Result<()> {
         let st = self.bucket(cx.bucket)?;
         ensure!(st.gdn.num_prefixes <= self.scratch.slots, "GDN plan has {} prefixes for {} state slots",
                 st.gdn.num_prefixes, self.scratch.slots);
-        let mut ops = unsafe {
-            gdn::gdn_chunk_scan(&st.gdn, dview(v, GraphDType::BF16)?, &self.scratch, dview(out, GraphDType::BF16)?)?
+        let conv = dview(conv, GraphDType::BF16)?;
+        let out = dview(out, GraphDType::BF16)?;
+        let (mut ops, labels) = match self.gdn_backend {
+            // Reads v (the conv output's v columns) and the f32 q, k that gdn_prep stored in the scratch.
+            GdnBackend::Tile => (
+                unsafe { gdn::gdn_chunk_scan(&st.gdn, conv.columns(2 * gdn::KEY_DIM, gdn::VALUE_DIM)?, &self.scratch, out)? },
+                ["gdn.chunk_tinv", "gdn.chunk_wy", "gdn.scan_prefix", "gdn.scan_suffix"],
+            ),
+            // Reads q, k and v from the whole conv output.
+            GdnBackend::Simt => (
+                unsafe { gdn::simt::chunk_scan(&st.gdn, conv, &self.scratch, out)? },
+                ["gdn.simt_tinv", "gdn.simt_slot_guard", "gdn.simt_scan_prefix", "gdn.simt_scan_suffix"],
+            ),
         };
-        // tinv, WY, prefix scan, suffix scan (the order gdn_chunk_scan builds them in).
-        for label in ["gdn.chunk_tinv", "gdn.chunk_wy", "gdn.scan_prefix", "gdn.scan_suffix"] {
+        // Both build four operations in this order: inverse, WY slot (cuTile: empty; SIMT: slot guard), prefix scan,
+        // suffix scan.
+        for label in labels {
             cx.mark(label)?;
             let op = ops.remove(0);
             unsafe { op.execute(cx.exec) }.map_err(launch_err(label))?;
         }
         Ok(())
+    }
+
+    fn profile_label(&self, op: &GraphOp) -> String {
+        match (op, self.gdn_backend) {
+            (GraphOp::GdnPrep { .. }, GdnBackend::Simt) => "gdn.simt_gates".into(),
+            _ => op.profile_label(),
+        }
     }
 
     fn gated_rmsnorm(&self, cx: &Launch, _layer: usize, o: &DevTensor, z: &DevTensor, w: &DevTensor, out: &DevTensor)

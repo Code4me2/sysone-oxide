@@ -6,6 +6,7 @@
 #   bash reference/eval/run_sysone.sh                 # name sysone_bf16
 #   NAME=sysone_bf16_x CHUNK_SECONDS=300 bash reference/eval/run_sysone.sh
 #   NAME=sysone_smoke RUN_ARGS='--limit 3' bash reference/eval/run_sysone.sh   # harness smoke (subset)
+#   NAME=sysone_bf16_simt GDN_BACKEND=simt bash reference/eval/run_sysone.sh     # GDN backend (tile|simt|auto)
 # Then: python3 -I reference/eval/score.py --run-file tests/golden/dev/eval/candidates/sysone_bf16.json --tier bf16
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd -P)
@@ -18,10 +19,11 @@ REF=${SYSONE_REF:-/home/velvet/Desktop/sysone-ref}
 PARTS=$REF/golden/dev/eval/candidates/$NAME
 LOG=$REF/golden/dev/eval/logs
 CHUNK_SECONDS=${CHUNK_SECONDS:-420}
+GDN_BACKEND=${GDN_BACKEND:-auto}
 # Server flags: the defaults of src/main.rs, spelled out so they are recorded. Buckets are
 # EngineOptions::buckets_up_to(max(token_budget, max_request_tokens)) = 256, 512, ..., 65536, CUDA graphs on.
 SERVER_ARGS=(--engine bf16 --model "$MODEL" --listen "127.0.0.1:$PORT" --token-budget 16384 --max-wait-us 2000
-             --max-request-tokens 65536 --max-branch-tokens 32768 --max-prefixes 256)
+             --max-request-tokens 65536 --max-branch-tokens 32768 --max-prefixes 256 --gdn-backend "$GDN_BACKEND")
 
 if [ "${1:-}" = "__chunk" ]; then  # runs under the GPU lock
   t0=$(date +%s.%N)
@@ -34,10 +36,16 @@ if [ "${1:-}" = "__chunk" ]; then  # runs under the GPU lock
     sleep 1
   done
   curl -sf "http://127.0.0.1:$PORT/health" >/dev/null || { echo "server not healthy after 900 s"; exit 3; }
+  # The backend the engine resolved (also in the server log): recorded per part, so parts that ran different
+  # backends are visible.
+  info=$(curl -sf "http://127.0.0.1:$PORT/metrics" | grep '^sysone_engine_info' || true)
+  echo "$info" >>"$LOG/$NAME.server.log"
   load=$(python3 -c "import time; print(round(time.time() - $t0, 1))")
-  python3 -I - "$PARTS/build.json" "$load" <<'EOF'
-import json, sys
+  python3 -I - "$PARTS/build.json" "$load" "$info" <<'EOF'
+import json, re, sys
 p = sys.argv[1]; b = json.load(open(p)); b["provenance"]["load_seconds"] = float(sys.argv[2])
+m = re.search(r'gdn_backend="([a-z]+)"', sys.argv[3])
+b["config"]["gdn_backend_resolved"] = m.group(1) if m else None
 json.dump(b, open(p + ".chunk", "w"))
 EOF
   python3 -I "$HERE/run_sysone.py" --name "$NAME" --server "http://127.0.0.1:$PORT" \
@@ -61,6 +69,7 @@ b = {"config": {"engine": "sysone GpuEngine bf16 (bf16 weights/activations, f32 
                 "model": model.rstrip("/").split("/")[-1],
                 "buckets": [256 << i for i in range(9)], "cuda_graphs": True,
                 "token_budget": 16384, "max_wait_us": 2000, "max_prefixes": 256,
+                "gdn_backend": server_args.split("--gdn-backend ")[1].split()[0],
                 "server_args": server_args.replace(model, "<model>")},
      "provenance": {"tier": "dev (GB10)", "git_sha": sha, "src_dirty_files": int(dirty), "binary_sha256": bin_sha,
                     "gpu": gpu, "model_files_sha256": {"model.safetensors": model_sha}}}

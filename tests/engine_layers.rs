@@ -14,7 +14,7 @@ use std::path::PathBuf;
 
 use sysone::engine::forward::Taps;
 use sysone::engine::goldens::{self, SafeTensors};
-use sysone::engine::gpu::{EngineOptions, GpuEngine};
+use sysone::engine::gpu::{EngineOptions, GpuEngine, gdn_backend_from_env};
 use sysone::frontend::{Frontend, Limits};
 use sysone::tolerances::{HiddenGate, Stats, Tolerances};
 
@@ -91,8 +91,9 @@ fn hidden_states_vs_fp32_truth() {
     assert_eq!(plans.len(), ids.len(), "every dumped request plans");
     let taps = Taps { layers: LAYERS.to_vec(), norm: true };
     let opts = EngineOptions { buckets: EngineOptions::buckets_up_to(32768), warmup: false, cuda_graphs: false, taps,
-                               ..Default::default() };
+                               gdn_backend: gdn_backend_from_env().unwrap(), ..Default::default() };
     let mut e = GpuEngine::load(&model_dir(), &fe.slot_ids, opts).unwrap();
+    eprintln!("engine_layers: GDN backend {}", e.gdn_backend().name());
     let names = tap_names();
     // Per tap: (sysone vs fp32, bf16 reference vs fp32, sysone vs bf16 reference), in the gate's row order
     // (requests sorted by id; per request prefix rows then answer rows).
@@ -280,8 +281,9 @@ fn hidden_state_row_profile() {
     let plans = goldens::plan_corpus(&fe, &cases, |x| x == id).unwrap();
     let taps = Taps { layers: LAYERS.to_vec(), norm: true };
     let opts = EngineOptions { buckets: EngineOptions::buckets_up_to(32768), warmup: false, cuda_graphs: false, taps,
-                               ..Default::default() };
+                               gdn_backend: gdn_backend_from_env().unwrap(), ..Default::default() };
     let mut e = GpuEngine::load(&model_dir(), &fe.slot_ids, opts).unwrap();
+    eprintln!("engine_layers: GDN backend {}", e.gdn_backend().name());
     let (b, _) = goldens::batch_of(&[&plans[0].plan]).unwrap();
     use sysone::contract::DecisionEngine;
     e.run(&b).unwrap();

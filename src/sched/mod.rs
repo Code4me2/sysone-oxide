@@ -164,6 +164,7 @@ impl Scheduler {
                     return;
                 }
             };
+            m.set_engine_info(engine.info());
             let _ = ready_tx.send(Ok(engine.max_tokens_per_step()));
             worker::run(engine, rx, m, busy);
         })?;

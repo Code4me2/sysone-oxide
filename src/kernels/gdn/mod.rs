@@ -84,6 +84,15 @@ impl GdnBackend {
             GdnBackend::Simt => "simt",
         }
     }
+
+    /// The backend the engine runs on compute capability `major.minor` when none is requested. SIMT only where it
+    /// has passed the end-to-end gates (docs/E2.md); cuTile on every other architecture until it is validated
+    /// there. Never a fallback: an engine that resolves to SIMT without a kernel artifact for its architecture
+    /// fails to load.
+    pub fn default_for_arch(major: i32, minor: i32) -> GdnBackend {
+        let _ = (major, minor);
+        GdnBackend::Tile
+    }
 }
 
 impl std::str::FromStr for GdnBackend {
@@ -306,12 +315,12 @@ pub struct GdnScratch {
 impl GdnScratch {
     /// Scratch for the cuTile backend (every buffer at full size).
     pub fn new(tokens: usize, slots: usize, stream: &Arc<Stream>) -> Result<Self> {
-        Self::alloc(tokens, slots, tokens, 1, stream)
+        Self::alloc(tokens, slots, tokens, tokens, 1, stream)
     }
 
     /// Like [`new`](Self::new), with full-size `w, u, qd, kd` for [`gdn_chunk_scan_w3a`].
     pub fn with_w3a_buffers(tokens: usize, slots: usize, stream: &Arc<Stream>) -> Result<Self> {
-        Self::alloc(tokens, slots, tokens, tokens, stream)
+        Self::alloc(tokens, slots, tokens, tokens, tokens, stream)
     }
 
     /// Scratch for `backend`'s mixer. `Tile` is [`new`](Self::new). The SIMT backend does not use q, k or p either
@@ -319,17 +328,37 @@ impl GdnScratch {
     pub fn for_backend(backend: GdnBackend, tokens: usize, slots: usize, stream: &Arc<Stream>) -> Result<Self> {
         match backend {
             GdnBackend::Tile => Self::new(tokens, slots, stream),
-            GdnBackend::Simt => Self::alloc(tokens, slots, 1, 1, stream),
+            GdnBackend::Simt => Self::alloc(tokens, slots, tokens, 1, 1, stream),
         }
     }
 
-    /// `qkp_rows`: rows of q, k and p (`tokens`, or 1 when unused); `wy_rows`: rows of w, u, qd, kd.
-    fn alloc(tokens: usize, slots: usize, qkp_rows: usize, wy_rows: usize, stream: &Arc<Stream>) -> Result<Self> {
+    /// Scratch for a caller that keeps the conv output and the delta-rule output in its own buffers (the engine's
+    /// arena) and calls the launchers with explicit views: like [`for_backend`](Self::for_backend), but `conv`
+    /// and `core` are one-row placeholders too. `slots` prefix states; a captured graph must not see more
+    /// prefixes than that (the engine refuses such a batch before staging it, see [`GdnPlan::update`]).
+    pub fn for_engine(backend: GdnBackend, tokens: usize, slots: usize, stream: &Arc<Stream>) -> Result<Self> {
+        let qkp_rows = match backend {
+            GdnBackend::Tile => tokens,
+            GdnBackend::Simt => 1,
+        };
+        Self::alloc(tokens, slots, 1, qkp_rows, 1, stream)
+    }
+
+    /// Device bytes of every buffer.
+    pub fn bytes(&self) -> usize {
+        let f32s = [&self.q, &self.k, &self.g, &self.beta, &self.w, &self.u, &self.qd, &self.kd, &self.p, &self.tinv, &self.state];
+        let n = |s: &[i32]| s.iter().map(|&d| d as usize).product::<usize>();
+        f32s.iter().map(|t| n(t.shape()) * 4).sum::<usize>() + (n(self.conv.shape()) + n(self.core.shape())) * 2
+    }
+
+    /// `io_rows`: rows of conv and core (`tokens`, or 1 when the caller owns them); `qkp_rows`: rows of q, k and p
+    /// (`tokens`, or 1 when unused); `wy_rows`: rows of w, u, qd, kd.
+    fn alloc(tokens: usize, slots: usize, io_rows: usize, qkp_rows: usize, wy_rows: usize, stream: &Arc<Stream>) -> Result<Self> {
         let slots = slots.max(1);
         Ok(Self {
             tokens,
             slots,
-            conv: api::zeros::<bf16>(&[tokens, CONV_DIM]).sync_on(stream)?,
+            conv: api::zeros::<bf16>(&[io_rows, CONV_DIM]).sync_on(stream)?,
             q: api::zeros::<f32>(&[qkp_rows, KEY_DIM]).sync_on(stream)?,
             k: api::zeros::<f32>(&[qkp_rows, KEY_DIM]).sync_on(stream)?,
             g: api::zeros::<f32>(&[tokens, NUM_V_HEADS]).sync_on(stream)?,
@@ -340,7 +369,7 @@ impl GdnScratch {
             kd: api::zeros::<f32>(&[wy_rows, VALUE_DIM]).sync_on(stream)?,
             p: api::zeros::<f32>(&[qkp_rows, NUM_V_HEADS * CHUNK]).sync_on(stream)?,
             tinv: api::zeros::<f32>(&[tokens, NUM_V_HEADS * CHUNK]).sync_on(stream)?,
-            core: api::zeros::<bf16>(&[tokens, VALUE_DIM]).sync_on(stream)?,
+            core: api::zeros::<bf16>(&[io_rows, VALUE_DIM]).sync_on(stream)?,
             state: api::zeros::<f32>(&[slots, NUM_V_HEADS, HEAD_DIM, HEAD_DIM]).sync_on(stream)?,
         })
     }
