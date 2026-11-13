@@ -1,0 +1,8 @@
+{
+ "sysone_bf16": {
+  "golden/dev/eval/candidates/sysone_bf16/part-000.json": {
+   "bytes": 1313907,
+   "sha256": "ef8299558da7901263c8d0107dc59f77aa7ea6ecad0bca6ea37258e2296f9487"
+  }
+ }
+}

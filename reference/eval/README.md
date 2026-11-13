@@ -228,3 +228,49 @@ LongBench-v2; `smoke/qev_nvfp4_batched_http_28.json`) against a qev NVFP4 server
 
 A first version computed disagreement as `1 − agree/n`, which made a candidate exactly at the 2-question floor
 fail by one ulp; it is now `count/n`.
+
+## sysone bf16 on the gate (A2)
+
+`run_sysone.sh` drives the real sysone server (`target/release/sysone --engine bf16`, the default production
+configuration: T buckets 256…65,536 with CUDA graphs, token budget 16,384, max wait 2 ms) over HTTP. Each chunk
+is one `scripts/gpu.sh` job: start the server, wait for `/health` (it listens only after the engine has loaded and
+warmed up), POST records with `run_sysone.py` for up to `CHUNK_SECONDS` (420), stop the server. Every record is
+sent with its unchanged request body as `/v1/systemone?debug=1&debias=1` (the reference runs' query), one request
+at a time. A non-200 answer is kept as an error record, never dropped (`score.py` then exits 2). The merge checks
+that every part has the same engine build (git sha, binary sha256, model sha256) and that each answer vector
+equals the softmax of the debug slot logits (< 2e-6), and writes `tests/golden/dev/eval/candidates/<name>.json`
+in the reference runs' format (outside `runs/`, which `stats.py` reads as reference paths); the part files (full
+responses) stay in `sysone-ref/golden/dev/eval/candidates/<name>/`, sha256 in `candidates/manifest.json`.
+
+```sh
+cargo build --release --bin sysone
+bash reference/eval/run_sysone.sh                     # NAME=sysone_bf16
+python3 -I reference/eval/score.py --run-file tests/golden/dev/eval/candidates/sysone_bf16.json --tier bf16
+```
+
+Protocol, fixed before the run: the full 278-record set, the committed `[eval.bf16]` limits unchanged, against all
+four bf16-tier paths (`bf16_batched`, `bf16_sequential`, `bf16_perq`, `fp32_batched`).
+
+**Result (2026-11-13, `candidates/sysone_bf16.json`; engine at 7198c65 = main bb5e6aa's `src/`, binary sha256
+`919e1c1f…`, model.safetensors `682f0234…`, GB10 driver 580.178.04): GATE PASS**, 278/278 records HTTP 200, no
+missing records, answers = softmax(debug slot logits) to 5e-7. `score.py` output: `candidates/sysone_bf16.score.txt`;
+`diagnose.py` output: `candidates/sysone_bf16.diagnose.json`.
+
+| vs | disagree (≤ 0.002398) | dp_mean (≤ 2.203e-4) | dp_p99 (≤ 0.00582) | acc CI lo (≥ −0.01079) | Brier CI hi (≤ 0.002364) | max \|dp\| |
+|---|---|---|---|---|---|---|
+| `bf16_batched` | 0.001199 (1/834) | 1.536e-4 | 0.004127 | 0 | −2.2e-5 | 0.034 |
+| `bf16_sequential` | 0.001199 | 1.528e-4 | 0.004033 | 0 | 6.0e-4 | 0.032 |
+| `bf16_perq` | 0.001199 | 1.431e-4 | 0.003702 | 0 | 4.2e-4 | 0.030 |
+| `fp32_batched` | 0.001199 | 1.360e-4 | 0.003483 | 0 | 3.5e-4 | 0.029 |
+
+Accuracy 228/278 = 82.0% [77.7, 86.3] (BANKING77 116/128, LEDGAR 103/128, LongBench-v2 9/22) vs 227/278 for every
+bf16-tier reference path; dAcc +0.36pp, paired CI [0, +1.08]pp; Brier 0.2471, ECE 0.058. One top-1 change counts
+against the gate: `ledgar-04056` (labeled task; reference margin 0.025–0.046 depending on the path, sysone margin
+0.013), where sysone picks the gold heading the references miss. Against `fp32_batched` there is a second change,
+`ledgar-04431` (support question, fp32 margin 0.0012: a near tie the gate exempts). It uses half of the
+`disagree` limit (the 2-question floor); the dp metrics use 61–71% of theirs.
+
+Throughput (information; one request at a time, server batching idle): 278 records in 181.4 s of request time
+(sum of per-request seconds; chunk wall 181.5 s after an 18.1 s server start incl. 13.4 s JIT warm-up), 550,538
+rendered tokens, 3,034 tok/s; BANKING77 37.2 s, LEDGAR 53.0 s, LongBench-v2 91.2 s (22 records, 3,279 tok/s).
+The `bf16_batched` reference (HF eager) took 492 s for the same records.
