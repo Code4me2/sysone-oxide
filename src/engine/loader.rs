@@ -127,7 +127,7 @@ impl Checkpoint {
         ensure!(t.bytes() <= 1 << 20, "read_small of {} bytes ({name})", t.bytes());
         let f = File::open(self.file_path(t))?;
         let mut buf = vec![0u8; t.bytes()];
-        f.read_exact_at(&mut buf, t.start)?;
+        read_uncached(&f, &mut buf, t.start)?;
         Ok(buf)
     }
 
@@ -143,11 +143,11 @@ impl Checkpoint {
 fn read_header(path: &Path, file: usize) -> Result<Vec<TensorInfo>> {
     let f = File::open(path).with_context(|| format!("opening {}", path.display()))?;
     let mut len = [0u8; 8];
-    f.read_exact_at(&mut len, 0)?;
+    read_uncached(&f, &mut len, 0)?;
     let n = u64::from_le_bytes(len);
     ensure!(n < 1 << 28, "{}: header of {n} bytes", path.display());
     let mut hdr = vec![0u8; n as usize];
-    f.read_exact_at(&mut hdr, 8)?;
+    read_uncached(&f, &mut hdr, 8)?;
     let raw: BTreeMap<String, serde_json::Value> = serde_json::from_slice(&hdr)?;
     let base = 8 + n;
     let file_len = f.metadata()?.len();
@@ -184,6 +184,7 @@ mod sys {
         pub fn mincore(addr: *mut c_void, len: usize, vec: *mut u8) -> c_int;
         pub fn sysconf(name: c_int) -> c_long;
     }
+    pub const POSIX_FADV_RANDOM: c_int = 1;
     pub const POSIX_FADV_SEQUENTIAL: c_int = 2;
     pub const POSIX_FADV_DONTNEED: c_int = 4;
     pub const PROT_READ: c_int = 1;
@@ -193,6 +194,18 @@ mod sys {
     pub const O_DIRECT: c_int = 0o200000;
     #[cfg(not(target_arch = "aarch64"))]
     pub const O_DIRECT: c_int = 0o40000;
+}
+
+/// A small buffered read that leaves nothing in the page cache: readahead is disabled on the descriptor
+/// (`POSIX_FADV_RANDOM`) and the touched pages are dropped afterwards.
+fn read_uncached(f: &File, buf: &mut [u8], off: u64) -> Result<()> {
+    let fd = f.as_raw_fd();
+    unsafe { sys::posix_fadvise(fd, 0, 0, sys::POSIX_FADV_RANDOM) };
+    let r = f.read_exact_at(buf, off);
+    let ps = page_size() as u64;
+    let (a, b) = (off / ps * ps, (off + buf.len() as u64).div_ceil(ps) * ps);
+    unsafe { sys::posix_fadvise(fd, a as i64, (b - a) as i64, sys::POSIX_FADV_DONTNEED) };
+    Ok(r?)
 }
 
 fn page_size() -> usize {
@@ -265,7 +278,7 @@ pub struct StreamOptions {
 
 impl Default for StreamOptions {
     fn default() -> Self {
-        Self { mode: CacheMode::Direct, chunk_bytes: 32 << 20, staging_buffers: 3, merge_gap: 8 << 20 }
+        Self { mode: CacheMode::Direct, chunk_bytes: 32 << 20, staging_buffers: 3, merge_gap: 1 << 20 }
     }
 }
 
@@ -421,6 +434,10 @@ impl<'a> Streamer<'a> {
                         break;
                     }
                 }
+            }
+            if opts.mode != CacheMode::Keep && !direct {
+                // Readahead may have pulled pages past the last chunk of each run; drop them too.
+                unsafe { sys::posix_fadvise(fd, 0, 0, sys::POSIX_FADV_DONTNEED) };
             }
         }
         stream.synchronize()?;
