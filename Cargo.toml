@@ -66,3 +66,7 @@ path = "benchmarks/s1/tile_gemm_probe.rs"
 [[bin]]
 name = "bench_gdn"
 path = "benchmarks/s1/bench_gdn.rs"
+
+[[bin]]
+name = "bench_attn"
+path = "benchmarks/s1/bench_attn.rs"
