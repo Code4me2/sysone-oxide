@@ -23,7 +23,8 @@ Phase 2a is done ([docs/PHASE2A.md](docs/PHASE2A.md) has the numbers):
 
 ## Prerequisites
 
-- `../cuda-rust` checked out next to this repository (the crates are path dependencies).
+- `../cuda-rust` checked out next to this repository (the crates are path dependencies), at the revision in
+  `CUDA_RUST_REV` (upstream https://github.com/NVIDIA/cuda-rust).
 - An NVIDIA GPU with an R580+ driver, CUDA toolkit ≥ 13.3 with `tileiras`, clang/libclang headers, rustup (the
   toolchain is pinned in `rust-toolchain.toml`). [docs/PLATFORM.md](docs/PLATFORM.md) lists them per platform.
 - For the model-dependent tests and for serving: the elephant-1 checkpoint directory (`config.json`,
@@ -55,7 +56,8 @@ scripts/gpu.sh cargo test --release --all-targets
 # Load test a running server.
 ./target/release/loadgen --addr 127.0.0.1:8000 --concurrency 64 --state-tokens 1000 --questions 8 --duration-s 60
 
-# Benchmarks refuse to start while another process uses the GPU.
+# Benchmarks refuse to start while another process uses their GPU. On a multi-GPU host pick the GPU with
+# scripts/gpu.sh --gpu N (one lock per GPU); the x86 runners in scripts/x86/ do this per card (docs/x86/AGENT.md).
 scripts/gpu.sh ./target/release/bench_forward --model /path/to/elephant-1 --tokens 1024,4096,16384
 scripts/gpu.sh ./target/release/hwprobe
 ```
@@ -90,7 +92,9 @@ See [docs/ARCHITECTURE.md §6](docs/ARCHITECTURE.md#6-correctness-and-testing) f
 | `tests/` | Integration tests and goldens (`tests/golden/dev/`) |
 | `benchmarks/s1/` | Benchmark and probe binaries, load generator |
 | `reference/` | Python harness that runs the reference (qev + serve.patch) to produce goldens and the eval set |
-| `scripts/` | `gpu.sh` (GPU lock), `doctor.sh` (prerequisites) |
+| `scripts/` | `gpu.sh` (per-GPU lock; `--gpu N` on multi-GPU hosts), `doctor.sh` (prerequisites), `x86/` (runners and the pre-push leak check for the x86 host) |
+| `CUDA_RUST_REV` | The cuda-rust commit sysone is built against (checked by `doctor.sh`) |
+| `benchmarks/results/x86/` | Sanitised results from the x86 host (the rest of `benchmarks/results/` is git-ignored) |
 | `profiles/` | Platform profiles written by `hwprobe --profile-out` |
 | `legacy/grout/` | grout's original engine, read-only reference |
 
@@ -101,6 +105,7 @@ See [docs/ARCHITECTURE.md §6](docs/ARCHITECTURE.md#6-correctness-and-testing) f
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How the code works: request lifecycle, packed tree, buckets and graphs, module map, GPU op table, tests, glossary |
 | [docs/DESIGN.md](docs/DESIGN.md) | Why: model facts, reference semantics, execution model, correctness strategy, phases |
 | [docs/PLATFORM.md](docs/PLATFORM.md) | GB10 vs discrete x86 GPUs, prerequisites |
+| [docs/x86/AGENT.md](docs/x86/AGENT.md), [docs/x86/TASKS.md](docs/x86/TASKS.md) | The x86 host (2x RTX PRO 6000 + RTX 5090, sm_120): operating manual for the agent there (setup, GPU discipline, data hygiene, GitHub protocol) and its task list |
 | [docs/PHASE0.md](docs/PHASE0.md), [docs/PHASE1.md](docs/PHASE1.md), [docs/PHASE2A.md](docs/PHASE2A.md) | Phase reports and measurements |
 | [docs/G1.md](docs/G1.md) | The GDN delta rule in cuda-oxide: results, design, accuracy, the SIMT kernel build and artifact policy |
 | [reference/README.md](reference/README.md) | The reference harness and golden formats |

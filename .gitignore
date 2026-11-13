@@ -1,7 +1,9 @@
 /target
 
-# Benchmark/profiling outputs are generated locally and can be large.
-benchmarks/results/
+# Benchmark/profiling outputs are generated locally and can be large. Exception: the small, sanitised x86 results
+# (docs/x86/AGENT.md), committed by the x86 agent after scripts/x86/check_outgoing.sh passes.
+benchmarks/results/*
+!benchmarks/results/x86/
 *.nsys-rep
 *.sqlite
 *.qdstrm
