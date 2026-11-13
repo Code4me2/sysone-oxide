@@ -351,11 +351,11 @@ pub fn run_main(argv: &[String]) -> Result<i32> {
 pub struct GenArgs {
     #[arg(long, default_value_t = 2000)]
     pub docs: usize,
-    /// State length range in words, log-uniform. The vocabulary tokenizes to about 2 tokens per word, so the
-    /// default 150..4000 words gives states of about 300..8,000 tokens.
-    #[arg(long, default_value_t = 150)]
+    /// State length range in words, log-uniform. The vocabulary tokenizes to about one token per word (plus ~130
+    /// tokens of template, and ~25-45 per question), so the default gives states of about 300..8,000 tokens.
+    #[arg(long, default_value_t = 300)]
     pub min_words: usize,
-    #[arg(long, default_value_t = 4000)]
+    #[arg(long, default_value_t = 8000)]
     pub max_words: usize,
     #[arg(long, default_value_t = 4)]
     pub min_questions: usize,

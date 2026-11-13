@@ -40,7 +40,7 @@ struct Args {
     /// Concurrent clients (one connection each).
     #[arg(long, default_value_t = 16)]
     concurrency: usize,
-    /// Approximate state length in words (about two tokens each).
+    /// State length in words (about one token each).
     #[arg(long, default_value_t = 1000)]
     state_tokens: usize,
     /// Questions per request (cycling noul, choice with 5 options, score with 4 levels).

@@ -29,17 +29,27 @@ pub struct Size {
     pub branches: usize,
 }
 
-/// Relative throughput of a step by bucket size: `(bucket tokens, packed tok/s)` points, ascending, interpolated
-/// linearly and held flat beyond the last point. Only ratios matter.
+/// Speed of a step by bucket size: `(bucket tokens, bucket tokens per second)` points, ascending, interpolated
+/// linearly and held flat outside them (a step of bucket `b` takes `b / at(b)` seconds, padding included). Only
+/// ratios matter.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Throughput(pub Vec<(usize, f64)>);
 
 impl Throughput {
-    /// The bf16 forward on GB10 (docs/E2.md, SIMT GDN backend: 2,893 / 4,290 / 5,324 tok/s at 1k / 4k / 16k),
-    /// the default when a worker has no platform profile. The shape (rising to ~4k-16k, flat after) is what
-    /// matters; it also holds for the discrete cards' GEMM-only estimates.
+    /// The bf16 forward on GB10 (SIMT GDN backend, graph replay, bench_forward 2026-11-13, docs/BULK.md): 4,536 /
+    /// 4,849 / 4,424 / 4,855 / 5,298 / 5,384 / 5,406 / 5,348 bucket tok/s at 512 ... 65,536. The default when a
+    /// worker has no platform profile: nearly flat, so at the end of a run the packer mostly minimises padding.
     pub fn gb10_default() -> Self {
-        Throughput(vec![(256, 1300.0), (1024, 2893.0), (4096, 4290.0), (16384, 5324.0)])
+        Throughput(vec![
+            (512, 4536.0),
+            (1024, 4849.0),
+            (2048, 4424.0),
+            (4096, 4855.0),
+            (8192, 5298.0),
+            (16384, 5384.0),
+            (32768, 5406.0),
+            (65536, 5348.0),
+        ])
     }
 
     pub fn at(&self, tokens: usize) -> f64 {
@@ -298,7 +308,13 @@ mod tests {
         assert_eq!(choose(&w, &l, &flat, &PackPolicy::default(), true).unwrap().bucket, 1024);
         // With a curve that makes small steps slow, filling 512 alone (one request) loses to 1024 with both.
         let w = vec![Size { tokens: 500, branches: 1 }, Size { tokens: 300, branches: 1 }];
+        let slow_small = Throughput(vec![(256, 1000.0), (512, 1500.0), (1024, 4000.0)]);
+        let c = choose(&w, &l, &slow_small, &PackPolicy::default(), true).unwrap();
+        assert_eq!((c.bucket, c.tokens), (1024, 800));
+        // With GB10's nearly flat curve, the full 512 step wins (the 300-token request goes in the next one).
         let c = choose(&w, &l, &Throughput::gb10_default(), &PackPolicy::default(), true).unwrap();
+        assert_eq!((c.bucket, c.tokens), (512, 500));
+        let c = choose(&w, &l, &slow_small, &PackPolicy::default(), true).unwrap();
         assert_eq!((c.bucket, c.tokens), (1024, 800));
     }
 

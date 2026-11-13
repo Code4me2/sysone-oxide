@@ -1,7 +1,7 @@
 //! Synthetic `/v1/systemone` requests: the load generator's bodies (`loadgen`), and corpora of them with a length
 //! mix for bulk runs (`sysone bulk gen`).
 //!
-//! A state is `words` pseudo-random support-ticket words (about two tokens each with elephant-1's tokenizer);
+//! A state is `words` pseudo-random support-ticket words (about one token each with elephant-1's tokenizer);
 //! questions cycle noul / choice with 5 options / score with 4 levels.
 
 const VOCAB: [&str; 16] = [
