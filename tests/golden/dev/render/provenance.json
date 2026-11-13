@@ -1,0 +1,1155 @@
+{
+  "format": "sysone-render-golden-v1",
+  "generator": {
+    "script": "reference/render_golden.py",
+    "shim": "reference/qev_shim.py",
+    "corpus": "reference/corpus/requests.jsonl",
+    "corpus_sha256": "32dc95092ab1af4e9cd7373b872fa6cf8928a404d7fcaae8ef6a7d5fa5c5f6e8",
+    "sha256": {
+      "render_golden.py": "1cb0ecf74dd5adc3254977fe693779c07a36b5a675718d7237781ae255a83319",
+      "qev_shim.py": "38c4cbee009a4d46038d124190bdc087d55b2fb364b96718ac78dd1addb7d4e4",
+      "corpus/generate.py": "6bc907dcf4e5689faac49856893863a23c62f8c0158b71c1f96cfc1061dc00d0"
+    }
+  },
+  "reference": {
+    "onejev_commit": "81ce62f1597c91e46767d4d02d6ac2e18534fe94",
+    "serve_patch": "elephant-1/serve.patch",
+    "qev_path": "/home/velvet/Desktop/sysone-ref/OneJev-patched",
+    "prompt_version": "qev-labels-v2",
+    "system_prompt": "Apply the question to the state. Choose exactly one of the listed options. Respond with only its uppercase letter, with no explanation or reasoning.",
+    "served_model_name": "elephant-1",
+    "server_entry": "qev.server.create_app via starlette TestClient",
+    "fork_mode": "sequential",
+    "attention": "noncausal",
+    "readout": "slot_lm"
+  },
+  "checkpoint": {
+    "path": "/home/velvet/Desktop/hf_models/elephant-1",
+    "sha256": {
+      "tokenizer.json": "a5cd9732badce41de57e6efce8302930ded1c1188c5f81feb2bd6c24c4a1941f",
+      "tokenizer_config.json": "2984c03425a28d242744e234a5003786fd289b3713db79fe0958c65eb59d85b2",
+      "chat_template.jinja": "a4aee8afcf2e0711942cf848899be66016f8d14a889ff9ede07bca099c28f715",
+      "config.json": "f26324589d15932e2742dbb13dbc7c561865ce4f80990af3b7dff05efe4dadab",
+      "readout.json": "96ea8a5c6ecfc30c20cdd369762db5997c5f4fb9821ce0a0318941343eb5e8ba",
+      "serve.patch": "f234c125f1d38d82104b9e1f24e75bde51e4401928acfba2fbf5c59ef2fb46b8"
+    }
+  },
+  "versions": {
+    "python": "3.12.3",
+    "machine": "aarch64",
+    "transformers": "5.19.0",
+    "tokenizers": "0.23.3",
+    "torch": "2.13.0+cu132",
+    "pydantic": "2.14.1",
+    "pydantic_core": "2.50.1",
+    "fastapi": "0.162.5",
+    "starlette": "1.10.0",
+    "httpx": "0.28.1",
+    "jinja2": "3.1.6",
+    "qev": "0.1.0"
+  },
+  "limits": {
+    "max_branch_tokens": 32768,
+    "max_request_tokens": 65536
+  },
+  "tokenizer": {
+    "pad_id": 248044,
+    "eos_id": 248046,
+    "max_slots": 256,
+    "template_kwargs": {
+      "enable_thinking": false
+    }
+  },
+  "slots": [
+    {
+      "label": "A",
+      "id": 32
+    },
+    {
+      "label": "B",
+      "id": 33
+    },
+    {
+      "label": "C",
+      "id": 34
+    },
+    {
+      "label": "D",
+      "id": 35
+    },
+    {
+      "label": "E",
+      "id": 36
+    },
+    {
+      "label": "F",
+      "id": 37
+    },
+    {
+      "label": "G",
+      "id": 38
+    },
+    {
+      "label": "H",
+      "id": 39
+    },
+    {
+      "label": "I",
+      "id": 40
+    },
+    {
+      "label": "J",
+      "id": 41
+    },
+    {
+      "label": "K",
+      "id": 42
+    },
+    {
+      "label": "L",
+      "id": 43
+    },
+    {
+      "label": "M",
+      "id": 44
+    },
+    {
+      "label": "N",
+      "id": 45
+    },
+    {
+      "label": "O",
+      "id": 46
+    },
+    {
+      "label": "P",
+      "id": 47
+    },
+    {
+      "label": "Q",
+      "id": 48
+    },
+    {
+      "label": "R",
+      "id": 49
+    },
+    {
+      "label": "S",
+      "id": 50
+    },
+    {
+      "label": "T",
+      "id": 51
+    },
+    {
+      "label": "U",
+      "id": 52
+    },
+    {
+      "label": "V",
+      "id": 53
+    },
+    {
+      "label": "W",
+      "id": 54
+    },
+    {
+      "label": "X",
+      "id": 55
+    },
+    {
+      "label": "Y",
+      "id": 56
+    },
+    {
+      "label": "Z",
+      "id": 57
+    },
+    {
+      "label": "AA",
+      "id": 5840
+    },
+    {
+      "label": "AB",
+      "id": 1803
+    },
+    {
+      "label": "AC",
+      "id": 1646
+    },
+    {
+      "label": "AD",
+      "id": 1745
+    },
+    {
+      "label": "AE",
+      "id": 13276
+    },
+    {
+      "label": "AF",
+      "id": 8018
+    },
+    {
+      "label": "AG",
+      "id": 1825
+    },
+    {
+      "label": "AH",
+      "id": 28946
+    },
+    {
+      "label": "AI",
+      "id": 15015
+    },
+    {
+      "label": "AJ",
+      "id": 29595
+    },
+    {
+      "label": "AK",
+      "id": 11568
+    },
+    {
+      "label": "AL",
+      "id": 939
+    },
+    {
+      "label": "AM",
+      "id": 1354
+    },
+    {
+      "label": "AN",
+      "id": 1058
+    },
+    {
+      "label": "AO",
+      "id": 18183
+    },
+    {
+      "label": "AP",
+      "id": 2456
+    },
+    {
+      "label": "AQ",
+      "id": 88898
+    },
+    {
+      "label": "AR",
+      "id": 905
+    },
+    {
+      "label": "AS",
+      "id": 1846
+    },
+    {
+      "label": "AT",
+      "id": 802
+    },
+    {
+      "label": "AU",
+      "id": 33869
+    },
+    {
+      "label": "AV",
+      "id": 7839
+    },
+    {
+      "label": "AW",
+      "id": 14006
+    },
+    {
+      "label": "AX",
+      "id": 2860
+    },
+    {
+      "label": "AY",
+      "id": 2926
+    },
+    {
+      "label": "AZ",
+      "id": 22828
+    },
+    {
+      "label": "BA",
+      "id": 6844
+    },
+    {
+      "label": "BB",
+      "id": 9798
+    },
+    {
+      "label": "BC",
+      "id": 4738
+    },
+    {
+      "label": "BD",
+      "id": 9265
+    },
+    {
+      "label": "BE",
+      "id": 11261
+    },
+    {
+      "label": "BF",
+      "id": 19278
+    },
+    {
+      "label": "BG",
+      "id": 36513
+    },
+    {
+      "label": "BH",
+      "id": 93801
+    },
+    {
+      "label": "BI",
+      "id": 8335
+    },
+    {
+      "label": "BJ",
+      "id": 14544
+    },
+    {
+      "label": "BK",
+      "id": 85266
+    },
+    {
+      "label": "BL",
+      "id": 9110
+    },
+    {
+      "label": "BM",
+      "id": 28000
+    },
+    {
+      "label": "BN",
+      "id": 15137
+    },
+    {
+      "label": "BO",
+      "id": 4525
+    },
+    {
+      "label": "BP",
+      "id": 25261
+    },
+    {
+      "label": "BR",
+      "id": 12717
+    },
+    {
+      "label": "BS",
+      "id": 7116
+    },
+    {
+      "label": "BT",
+      "id": 17078
+    },
+    {
+      "label": "BU",
+      "id": 14497
+    },
+    {
+      "label": "BV",
+      "id": 57339
+    },
+    {
+      "label": "BW",
+      "id": 74909
+    },
+    {
+      "label": "BX",
+      "id": 52072
+    },
+    {
+      "label": "BY",
+      "id": 19305
+    },
+    {
+      "label": "CA",
+      "id": 4887
+    },
+    {
+      "label": "CB",
+      "id": 12607
+    },
+    {
+      "label": "CC",
+      "id": 3580
+    },
+    {
+      "label": "CD",
+      "id": 6281
+    },
+    {
+      "label": "CE",
+      "id": 2036
+    },
+    {
+      "label": "CF",
+      "id": 9362
+    },
+    {
+      "label": "CG",
+      "id": 8533
+    },
+    {
+      "label": "CH",
+      "id": 2080
+    },
+    {
+      "label": "CI",
+      "id": 10911
+    },
+    {
+      "label": "CK",
+      "id": 2925
+    },
+    {
+      "label": "CL",
+      "id": 3040
+    },
+    {
+      "label": "CM",
+      "id": 9690
+    },
+    {
+      "label": "CN",
+      "id": 27731
+    },
+    {
+      "label": "CO",
+      "id": 8023
+    },
+    {
+      "label": "CP",
+      "id": 6901
+    },
+    {
+      "label": "CR",
+      "id": 8702
+    },
+    {
+      "label": "CS",
+      "id": 6211
+    },
+    {
+      "label": "CT",
+      "id": 1123
+    },
+    {
+      "label": "CU",
+      "id": 16307
+    },
+    {
+      "label": "CV",
+      "id": 18990
+    },
+    {
+      "label": "CW",
+      "id": 64045
+    },
+    {
+      "label": "CX",
+      "id": 63037
+    },
+    {
+      "label": "CY",
+      "id": 33380
+    },
+    {
+      "label": "DA",
+      "id": 6151
+    },
+    {
+      "label": "DB",
+      "id": 3392
+    },
+    {
+      "label": "DC",
+      "id": 5449
+    },
+    {
+      "label": "DD",
+      "id": 3967
+    },
+    {
+      "label": "DE",
+      "id": 1113
+    },
+    {
+      "label": "DF",
+      "id": 5095
+    },
+    {
+      "label": "DG",
+      "id": 51923
+    },
+    {
+      "label": "DH",
+      "id": 49600
+    },
+    {
+      "label": "DI",
+      "id": 17099
+    },
+    {
+      "label": "DJ",
+      "id": 51483
+    },
+    {
+      "label": "DK",
+      "id": 17756
+    },
+    {
+      "label": "DL",
+      "id": 16037
+    },
+    {
+      "label": "DM",
+      "id": 8135
+    },
+    {
+      "label": "DN",
+      "id": 30237
+    },
+    {
+      "label": "DO",
+      "id": 5683
+    },
+    {
+      "label": "DP",
+      "id": 9992
+    },
+    {
+      "label": "DR",
+      "id": 7444
+    },
+    {
+      "label": "DS",
+      "id": 5751
+    },
+    {
+      "label": "DT",
+      "id": 10284
+    },
+    {
+      "label": "DU",
+      "id": 20887
+    },
+    {
+      "label": "DV",
+      "id": 59884
+    },
+    {
+      "label": "DW",
+      "id": 52396
+    },
+    {
+      "label": "DX",
+      "id": 16103
+    },
+    {
+      "label": "DY",
+      "id": 67547
+    },
+    {
+      "label": "EA",
+      "id": 18535
+    },
+    {
+      "label": "EB",
+      "id": 8006
+    },
+    {
+      "label": "EC",
+      "id": 7263
+    },
+    {
+      "label": "ED",
+      "id": 1425
+    },
+    {
+      "label": "EE",
+      "id": 6878
+    },
+    {
+      "label": "EF",
+      "id": 14453
+    },
+    {
+      "label": "EG",
+      "id": 9097
+    },
+    {
+      "label": "EH",
+      "id": 44072
+    },
+    {
+      "label": "EI",
+      "id": 76089
+    },
+    {
+      "label": "EK",
+      "id": 68720
+    },
+    {
+      "label": "EL",
+      "id": 2662
+    },
+    {
+      "label": "EM",
+      "id": 2629
+    },
+    {
+      "label": "EN",
+      "id": 923
+    },
+    {
+      "label": "EO",
+      "id": 6548
+    },
+    {
+      "label": "EP",
+      "id": 8924
+    },
+    {
+      "label": "EQ",
+      "id": 52194
+    },
+    {
+      "label": "ER",
+      "id": 622
+    },
+    {
+      "label": "ES",
+      "id": 1515
+    },
+    {
+      "label": "ET",
+      "id": 1300
+    },
+    {
+      "label": "EU",
+      "id": 37523
+    },
+    {
+      "label": "EV",
+      "id": 44473
+    },
+    {
+      "label": "EW",
+      "id": 36530
+    },
+    {
+      "label": "EX",
+      "id": 3152
+    },
+    {
+      "label": "EZ",
+      "id": 93924
+    },
+    {
+      "label": "FA",
+      "id": 3505
+    },
+    {
+      "label": "FB",
+      "id": 15731
+    },
+    {
+      "label": "FC",
+      "id": 6542
+    },
+    {
+      "label": "FD",
+      "id": 14176
+    },
+    {
+      "label": "FE",
+      "id": 11091
+    },
+    {
+      "label": "FF",
+      "id": 1686
+    },
+    {
+      "label": "FG",
+      "id": 11660
+    },
+    {
+      "label": "FH",
+      "id": 80440
+    },
+    {
+      "label": "FI",
+      "id": 18836
+    },
+    {
+      "label": "FK",
+      "id": 26132
+    },
+    {
+      "label": "FL",
+      "id": 5934
+    },
+    {
+      "label": "FM",
+      "id": 24794
+    },
+    {
+      "label": "FN",
+      "id": 40229
+    },
+    {
+      "label": "FO",
+      "id": 3660
+    },
+    {
+      "label": "FP",
+      "id": 11361
+    },
+    {
+      "label": "FR",
+      "id": 10191
+    },
+    {
+      "label": "FS",
+      "id": 8225
+    },
+    {
+      "label": "FT",
+      "id": 3860
+    },
+    {
+      "label": "FU",
+      "id": 78413
+    },
+    {
+      "label": "FW",
+      "id": 17680
+    },
+    {
+      "label": "FX",
+      "id": 15900
+    },
+    {
+      "label": "FY",
+      "id": 78138
+    },
+    {
+      "label": "GA",
+      "id": 15653
+    },
+    {
+      "label": "GB",
+      "id": 5213
+    },
+    {
+      "label": "GC",
+      "id": 22150
+    },
+    {
+      "label": "GD",
+      "id": 39500
+    },
+    {
+      "label": "GE",
+      "id": 10460
+    },
+    {
+      "label": "GF",
+      "id": 35131
+    },
+    {
+      "label": "GG",
+      "id": 21563
+    },
+    {
+      "label": "GH",
+      "id": 43194
+    },
+    {
+      "label": "GI",
+      "id": 27127
+    },
+    {
+      "label": "GL",
+      "id": 3697
+    },
+    {
+      "label": "GM",
+      "id": 20011
+    },
+    {
+      "label": "GN",
+      "id": 24368
+    },
+    {
+      "label": "GO",
+      "id": 15058
+    },
+    {
+      "label": "GP",
+      "id": 23658
+    },
+    {
+      "label": "GR",
+      "id": 8362
+    },
+    {
+      "label": "GS",
+      "id": 16035
+    },
+    {
+      "label": "GT",
+      "id": 24583
+    },
+    {
+      "label": "GU",
+      "id": 52857
+    },
+    {
+      "label": "GV",
+      "id": 38403
+    },
+    {
+      "label": "GW",
+      "id": 60456
+    },
+    {
+      "label": "GX",
+      "id": 81519
+    },
+    {
+      "label": "GY",
+      "id": 40097
+    },
+    {
+      "label": "HA",
+      "id": 16522
+    },
+    {
+      "label": "HB",
+      "id": 29722
+    },
+    {
+      "label": "HC",
+      "id": 21756
+    },
+    {
+      "label": "HD",
+      "id": 18567
+    },
+    {
+      "label": "HE",
+      "id": 1736
+    },
+    {
+      "label": "HF",
+      "id": 48043
+    },
+    {
+      "label": "HG",
+      "id": 87013
+    },
+    {
+      "label": "HH",
+      "id": 22456
+    },
+    {
+      "label": "HI",
+      "id": 23165
+    },
+    {
+      "label": "HK",
+      "id": 55523
+    },
+    {
+      "label": "HL",
+      "id": 13097
+    },
+    {
+      "label": "HM",
+      "id": 50397
+    },
+    {
+      "label": "HN",
+      "id": 41741
+    },
+    {
+      "label": "HO",
+      "id": 23073
+    },
+    {
+      "label": "HP",
+      "id": 6401
+    },
+    {
+      "label": "HQ",
+      "id": 86538
+    },
+    {
+      "label": "HR",
+      "id": 16585
+    },
+    {
+      "label": "HS",
+      "id": 11622
+    },
+    {
+      "label": "HT",
+      "id": 2464
+    },
+    {
+      "label": "HU",
+      "id": 84982
+    },
+    {
+      "label": "HV",
+      "id": 75516
+    },
+    {
+      "label": "HW",
+      "id": 36984
+    },
+    {
+      "label": "HX",
+      "id": 58795
+    },
+    {
+      "label": "HY",
+      "id": 47217
+    },
+    {
+      "label": "HZ",
+      "id": 59675
+    },
+    {
+      "label": "IA",
+      "id": 5681
+    },
+    {
+      "label": "IB",
+      "id": 3151
+    },
+    {
+      "label": "IC",
+      "id": 1271
+    },
+    {
+      "label": "ID",
+      "id": 887
+    },
+    {
+      "label": "IE",
+      "id": 5203
+    },
+    {
+      "label": "IF",
+      "id": 2685
+    },
+    {
+      "label": "IG",
+      "id": 1849
+    },
+    {
+      "label": "IH",
+      "id": 72470
+    },
+    {
+      "label": "II",
+      "id": 5370
+    },
+    {
+      "label": "IJ",
+      "id": 74063
+    },
+    {
+      "label": "IK",
+      "id": 27629
+    },
+    {
+      "label": "IL",
+      "id": 1655
+    },
+    {
+      "label": "IM",
+      "id": 1728
+    },
+    {
+      "label": "IN",
+      "id": 669
+    },
+    {
+      "label": "IO",
+      "id": 3682
+    },
+    {
+      "label": "IP",
+      "id": 3191
+    },
+    {
+      "label": "IQ",
+      "id": 59865
+    },
+    {
+      "label": "IR",
+      "id": 2712
+    },
+    {
+      "label": "IS",
+      "id": 1580
+    },
+    {
+      "label": "IT",
+      "id": 922
+    },
+    {
+      "label": "IU",
+      "id": 77243
+    },
+    {
+      "label": "IV",
+      "id": 2990
+    },
+    {
+      "label": "IW",
+      "id": 78493
+    },
+    {
+      "label": "IX",
+      "id": 5228
+    },
+    {
+      "label": "IZ",
+      "id": 2750
+    },
+    {
+      "label": "JA",
+      "id": 42711
+    },
+    {
+      "label": "JB",
+      "id": 44568
+    },
+    {
+      "label": "JC",
+      "id": 56402
+    },
+    {
+      "label": "JD",
+      "id": 48236
+    },
+    {
+      "label": "JE",
+      "id": 38993
+    },
+    {
+      "label": "JI",
+      "id": 43559
+    },
+    {
+      "label": "JJ",
+      "id": 61250
+    },
+    {
+      "label": "JK",
+      "id": 32942
+    },
+    {
+      "label": "JM",
+      "id": 86302
+    },
+    {
+      "label": "JO",
+      "id": 25310
+    },
+    {
+      "label": "JP",
+      "id": 26313
+    },
+    {
+      "label": "JR",
+      "id": 81770
+    },
+    {
+      "label": "JS",
+      "id": 12185
+    },
+    {
+      "label": "JT",
+      "id": 78382
+    },
+    {
+      "label": "JU",
+      "id": 213977
+    }
+  ],
+  "counts": {
+    "cases": 298,
+    "status": {
+      "200": 278,
+      "422": 19,
+      "404": 1
+    }
+  },
+  "files": {
+    "noul.jsonl": {
+      "cases": 32,
+      "sha256": "ca71086501719fcb2f33da1589bb811e5caadf5c353508c4479980e05c7b7fa8"
+    },
+    "choice.jsonl": {
+      "cases": 39,
+      "sha256": "ec2ddd3c7361c9b9d7dbac9296de7b12742c6dec91d1a0f7ab583f936157a77c"
+    },
+    "choice_many.jsonl": {
+      "cases": 16,
+      "sha256": "e032ed69e34351ef9c27cad855ef5e5433abaf08e6106058c527147327d47ad8"
+    },
+    "score.jsonl": {
+      "cases": 17,
+      "sha256": "57d8e8093b2ddf928a2d057b8fe019622979180f01590e5dd5f56e87f5aaa2d1"
+    },
+    "mixed.jsonl": {
+      "cases": 53,
+      "sha256": "6893da5fb3c1a2233fa7164d1c4ba2ff6c8bd6f48d0c3bbf05f5f9a074b261e3"
+    },
+    "medium.jsonl": {
+      "cases": 30,
+      "sha256": "8e35e0b2be24ee51053464e90e8d45bfaaea7a9e3a2ca5acc48ca15102a7a525"
+    },
+    "states.jsonl": {
+      "cases": 20,
+      "sha256": "0b253b2a3b6f095df6ce232f6f2d7e40381e0bbdf0456ce1e1108694a273fdc2"
+    },
+    "unicode.jsonl": {
+      "cases": 19,
+      "sha256": "5718e9581eb0f0a06b25c2ead42d80a75b599b2843626d6d676eefef077b1d85"
+    },
+    "hostile.jsonl": {
+      "cases": 6,
+      "sha256": "c690a0a1de8e2b3eb3173a366393516593f2f99d648ad2d1aa374649562f659f"
+    },
+    "whitespace.jsonl": {
+      "cases": 17,
+      "sha256": "c48a3d13463510d76ea4463455ac883808b867862bfd15f1fdf4b4476b1c694d"
+    },
+    "entries.jsonl": {
+      "cases": 12,
+      "sha256": "249cc468e628b7820689b1ea45f9b55feb5988265579e9ed5c77d41e0abe530b"
+    },
+    "long.jsonl": {
+      "cases": 17,
+      "sha256": "05c0edef9690412097ee43a39c55cc3049222f728c6ef8f79cc0111bb4088286"
+    },
+    "limits.jsonl": {
+      "cases": 7,
+      "sha256": "09def4bf1a45eaabe3b5c5a00bd5ad084b5ce9dee499bfd66acbee05a156a896"
+    },
+    "invalid.jsonl": {
+      "cases": 13,
+      "sha256": "b11aeae8477e38876b938bbef61374149d35aae1bfdde9b53d8fff6cb4a3c8be"
+    }
+  }
+}
