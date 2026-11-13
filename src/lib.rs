@@ -6,3 +6,4 @@ pub mod engine;
 pub mod frontend;
 pub mod kernels;
 pub mod sched;
+pub mod tolerances;
