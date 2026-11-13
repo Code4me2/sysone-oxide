@@ -3,7 +3,7 @@
 //! Same operands and scratch layout as the cuTile path (`super`), so the two backends are interchangeable per
 //! launch and can be compared stage by stage. The argument lists below must match the `#[kernel]` signatures.
 
-use super::{CHUNK, DView, GdnPlan, GdnScratch, HEAD_DIM, NUM_V_HEADS, VALUE_DIM, CONV_DIM};
+use super::{CHUNK, CONV_DIM, DView, GdnPlan, GdnScratch, GdnWeights, HEAD_DIM, NUM_V_HEADS, VALUE_DIM, check_tensor};
 use crate::kernels::simt::{Arg, launch};
 use anyhow::{Result, ensure};
 use cuda_async::device_operation::{BoxedDeviceOp, DeviceOpVec};
@@ -21,6 +21,39 @@ fn vptr<T>(v: &DView<T>) -> Arg {
     Arg::Ptr(v.ptr.cu_deviceptr())
 }
 
+/// The gates g and beta (f32 `[T, 32]`) into `scratch` from the `a`, `b` columns of the fused projection
+/// (`[T, 32]` bf16 views): the part of `gdn_prep` the SIMT scan needs.
+///
+/// # Safety
+/// Every buffer must stay alive and unaliased by other writers until the returned operation completes.
+pub unsafe fn gates(plan: &GdnPlan, a: DView<bf16>, b: DView<bf16>, w: &GdnWeights<'_>, scratch: &GdnScratch) -> Result<BoxedDeviceOp<()>> {
+    let t = plan.tokens;
+    ensure!(t <= scratch.tokens, "plan has {t} tokens, scratch {}", scratch.tokens);
+    a.check("a", t, NUM_V_HEADS)?;
+    b.check("b", t, NUM_V_HEADS)?;
+    let a_log = check_tensor("A_log", w.a_log, &[NUM_V_HEADS])?;
+    let dt_bias = check_tensor("dt_bias", w.dt_bias, &[NUM_V_HEADS])?;
+    unsafe {
+        launch(
+            "gdn_simt_gates",
+            ((t * NUM_V_HEADS).div_ceil(256) as u32, 1, 1),
+            (256, 1, 1),
+            0,
+            &[
+                vptr(&a),
+                Arg::I32(a.row_stride as i32),
+                vptr(&b),
+                Arg::I32(b.row_stride as i32),
+                Arg::Ptr(a_log.cu_deviceptr()),
+                Arg::Ptr(dt_bias.cu_deviceptr()),
+                ptr(&scratch.g),
+                ptr(&scratch.beta),
+                Arg::I32(t as i32),
+            ],
+        )
+    }
+}
+
 /// `Tinv = (I + A)^-1` per (chunk, v-head) into `tinv` (`[T, 32 * 64]` f32, the layout of `GdnScratch::tinv`),
 /// from the conv output (k columns), `scratch.g` and `scratch.beta`.
 ///
@@ -34,7 +67,7 @@ pub unsafe fn chunk_tinv(plan: &GdnPlan, conv: DView<bf16>, scratch: &GdnScratch
     unsafe {
         launch(
             "gdn_simt_tinv",
-            (plan.max_chunks as u32, NUM_V_HEADS as u32, 1),
+            (NUM_V_HEADS as u32, plan.max_chunks as u32, 1),
             (128, 1, 1),
             0,
             &[
@@ -61,16 +94,20 @@ pub unsafe fn chunk_tinv(plan: &GdnPlan, conv: DView<bf16>, scratch: &GdnScratch
 /// Every buffer must stay alive and unaliased by other writers until the returned operations complete.
 pub unsafe fn chunk_scan(plan: &GdnPlan, conv: DView<bf16>, scratch: &GdnScratch, out: DView<bf16>) -> Result<DeviceOpVec<()>> {
     let t = plan.tokens;
+    ensure!(t <= scratch.tokens, "plan has {t} tokens, scratch {}", scratch.tokens);
     ensure!(plan.num_prefixes <= scratch.slots, "{} prefixes, scratch has {} state slots", plan.num_prefixes, scratch.slots);
+    conv.check("conv", t, CONV_DIM)?;
     out.check("scan output", t, VALUE_DIM)?;
-    ensure!(conv.row_stride % 2 == 0 && out.row_stride % 2 == 0, "SIMT scan needs even row strides");
+    let even = |v: &DView<bf16>| v.row_stride % 2 == 0 && v.ptr.cu_deviceptr() % 4 == 0;
+    ensure!(even(&conv) && even(&out), "SIMT scan needs even row strides and 4-byte aligned bases");
     let mut ops = DeviceOpVec::with_capacity(3);
     ops.push(unsafe { chunk_tinv(plan, conv, scratch, &scratch.tinv)? });
     for phase in [0i32, 1] {
         ops.push(unsafe {
             launch(
                 "gdn_simt_scan",
-                (plan.max_segs as u32, NUM_V_HEADS as u32, (HEAD_DIM / 64) as u32),
+                // x = 2 * head + value block: the four CTAs reading the same q/k rows are adjacent.
+                ((NUM_V_HEADS * HEAD_DIM / 64) as u32, plan.max_segs as u32, 1),
                 (128, 1, 1),
                 0,
                 &[

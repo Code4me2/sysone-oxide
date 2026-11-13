@@ -277,25 +277,39 @@ pub struct GdnScratch {
 }
 
 impl GdnScratch {
+    /// Scratch for the cuTile backend (every buffer at full size).
     pub fn new(tokens: usize, slots: usize, stream: &Arc<Stream>) -> Result<Self> {
+        Self::for_backend(GdnBackend::Tile, tokens, slots, stream)
+    }
+
+    /// Scratch for `backend`. The SIMT backend does not use q, k, w, u, qd, kd or p (it recomputes them inside
+    /// the scan), so those are allocated with one row only (~1.2 GB less at T = 16k).
+    pub fn for_backend(backend: GdnBackend, tokens: usize, slots: usize, stream: &Arc<Stream>) -> Result<Self> {
         let slots = slots.max(1);
+        let rows = if backend == GdnBackend::Simt { 1 } else { tokens };
         Ok(Self {
             tokens,
             slots,
             conv: api::zeros::<bf16>(&[tokens, CONV_DIM]).sync_on(stream)?,
-            q: api::zeros::<f32>(&[tokens, KEY_DIM]).sync_on(stream)?,
-            k: api::zeros::<f32>(&[tokens, KEY_DIM]).sync_on(stream)?,
+            q: api::zeros::<f32>(&[rows, KEY_DIM]).sync_on(stream)?,
+            k: api::zeros::<f32>(&[rows, KEY_DIM]).sync_on(stream)?,
             g: api::zeros::<f32>(&[tokens, NUM_V_HEADS]).sync_on(stream)?,
             beta: api::zeros::<f32>(&[tokens, NUM_V_HEADS]).sync_on(stream)?,
-            w: api::zeros::<f32>(&[tokens, VALUE_DIM]).sync_on(stream)?,
-            u: api::zeros::<f32>(&[tokens, VALUE_DIM]).sync_on(stream)?,
-            qd: api::zeros::<f32>(&[tokens, VALUE_DIM]).sync_on(stream)?,
-            kd: api::zeros::<f32>(&[tokens, VALUE_DIM]).sync_on(stream)?,
-            p: api::zeros::<f32>(&[tokens, NUM_V_HEADS * CHUNK]).sync_on(stream)?,
+            w: api::zeros::<f32>(&[rows, VALUE_DIM]).sync_on(stream)?,
+            u: api::zeros::<f32>(&[rows, VALUE_DIM]).sync_on(stream)?,
+            qd: api::zeros::<f32>(&[rows, VALUE_DIM]).sync_on(stream)?,
+            kd: api::zeros::<f32>(&[rows, VALUE_DIM]).sync_on(stream)?,
+            p: api::zeros::<f32>(&[rows, NUM_V_HEADS * CHUNK]).sync_on(stream)?,
             tinv: api::zeros::<f32>(&[tokens, NUM_V_HEADS * CHUNK]).sync_on(stream)?,
             core: api::zeros::<bf16>(&[tokens, VALUE_DIM]).sync_on(stream)?,
             state: api::zeros::<f32>(&[slots, NUM_V_HEADS, HEAD_DIM, HEAD_DIM]).sync_on(stream)?,
         })
+    }
+
+    /// Scratch for every batch `plan` can describe (graph replay): one state slot per segment the plan can hold,
+    /// since `GdnPlan::update` may raise the prefix count up to that.
+    pub fn for_plan(backend: GdnBackend, plan: &GdnPlan, stream: &Arc<Stream>) -> Result<Self> {
+        Self::for_backend(backend, plan.tokens, plan.max_segs, stream)
     }
 
     pub fn conv_view(&self) -> Result<DView<bf16>> {
@@ -547,7 +561,10 @@ pub unsafe fn gdn_mixer_with(
     let mut ops = DeviceOpVec::with_capacity(6);
     unsafe {
         ops.push(tree_conv1d_silu(plan, qkv, w.conv_w, conv)?);
-        ops.push(gdn_prep(plan, conv, a, b, w, scratch)?);
+        ops.push(match backend {
+            GdnBackend::Tile => gdn_prep(plan, conv, a, b, w, scratch)?,
+            GdnBackend::Simt => simt::gates(plan, a, b, w, scratch)?,
+        });
         ops.push(match backend {
             GdnBackend::Tile => gdn_chunk_scan(plan, conv.columns(2 * KEY_DIM, VALUE_DIM)?, scratch, core)?.map(|_| ()).boxed(),
             GdnBackend::Simt => simt::chunk_scan(plan, conv, scratch, core)?.map(|_| ()).boxed(),

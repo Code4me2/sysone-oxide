@@ -141,10 +141,50 @@ mod kernels {
         }
     }
 
+    /// The GDN gates (the part of `gdn_prep` the SIMT scan needs; q and k are normalised inside the scan):
+    /// `g = -exp(A_log) * softplus(a + dt_bias)` (torch softplus, threshold 20) and `beta = bf16(sigmoid(b))`, f32
+    /// `[T, 32]` each. Grid `(ceil(T * 32 / 256), 1, 1)`, block 256, one (row, head) per thread.
+    /// a, b: `[T, 32]` bf16 views (row strides `a_stride`, `b_stride`); a_log, dt_bias: `[32]` bf16.
+    #[kernel]
+    pub unsafe fn gdn_simt_gates(
+        a: *const u16,
+        a_stride: i32,
+        b: *const u16,
+        b_stride: i32,
+        a_log: *const u16,
+        dt_bias: *const u16,
+        g: *mut f32,
+        beta: *mut f32,
+        tokens: i32,
+    ) {
+        let e = (thread::blockIdx_x() * 256 + thread::threadIdx_x()) as usize;
+        if e >= tokens as usize * 32 {
+            return;
+        }
+        let row = e >> 5;
+        let h = e & 31;
+        unsafe {
+            let av = lo_bf16(*a.add(row * a_stride as usize + h) as u32);
+            let bv = lo_bf16(*b.add(row * b_stride as usize + h) as u32);
+            let neg_a = -(lo_bf16(*a_log.add(h) as u32)).exp();
+            let x = av + lo_bf16(*dt_bias.add(h) as u32);
+            // log1p(exp(x)) with the exact `log(1+u) * u / ((1+u) - 1)` correction (as the cuTile prep).
+            let u = x.exp();
+            let w = 1.0 + u;
+            let dw = w - 1.0;
+            let l1p = if dw == 0.0 { u } else { w.ln() * (u / dw) };
+            let sp = if x > 20.0 { x } else { l1p };
+            *g.add(e) = neg_a * sp;
+            let sig = 1.0 / (1.0 + (-bv).exp());
+            *beta.add(e) = f32::from_bits(bf16_rne(sig) << 16);
+        }
+    }
+
     /// Phase A of the chunked gated delta rule, parallel over (chunk, v-head): `Tinv = (I + A)^-1` with
     /// `A = strict_lower((k*beta) k^T ⊙ exp(cum_i - cum_j))`, `cum` the in-chunk inclusive cumulative sum of g.
     ///
-    /// Grid `(max_chunks, 32, 1)`, block 128. conv: `[T, 8192]` bf16 (row stride `conv_stride`); g, beta:
+    /// Grid `(32, max_chunks, 1)` (the two v-heads of a k-head are adjacent, so k is read from DRAM once), block
+    /// 128. conv: `[T, 8192]` bf16 (row stride `conv_stride`); g, beta:
     /// `[T, 32]` f32; tinv out: `[T, 32 * 64]` f32 (row i of the chunk at row start + i, columns h*64..; only the
     /// chunk's `len` rows are written, upper triangle as zeros). chunks: `[max_chunks, 4]` (start, len, ..).
     #[kernel]
@@ -161,8 +201,8 @@ mod kernels {
         static mut AM: SharedArray<f32, 4160> = SharedArray::UNINIT; // [64][AW]
         static mut MS: SharedArray<f32, 768> = SharedArray::UNINIT; // 3 x [16][16]
         static mut SC: SharedArray<f32, 192> = SharedArray::UNINIT; // gv[64] | bk[64] = beta*sk | sk[64]
-        let c = thread::blockIdx_x() as usize;
-        let h = thread::blockIdx_y() as usize;
+        let h = thread::blockIdx_x() as usize;
+        let c = thread::blockIdx_y() as usize;
         if c >= max_chunks as usize {
             return;
         }
@@ -331,7 +371,8 @@ mod kernels {
     /// product are the A operand of the next. Prefixes (phase 0) start from zero and write their final state to
     /// `state[slot]`; suffixes (phase 1) start from `state[slot]` (their parent's) and write nothing.
     ///
-    /// Grid `(max_segs, 32, 2)`, block 128 (4 warps). conv: `[T, 8192]` bf16 (row stride `conv_stride`); g, beta:
+    /// Grid `(64, max_segs, 1)` with `blockIdx.x = 2 h + value block` (the four CTAs reading the same q/k rows are
+    /// adjacent, so those rows come from DRAM once), block 128 (4 warps). conv: `[T, 8192]` bf16 (row stride `conv_stride`); g, beta:
     /// `[T, 32]` f32; tinv: `[T, 32 * 64]` f32; state: `[slots, 32, 128, 128]` f32 (k-major); out: `[T, 4096]` bf16
     /// (row stride `out_stride`); segs: `[max_segs, 4]` (start, len, phase, slot).
     #[kernel]
@@ -356,9 +397,9 @@ mod kernels {
         // Per-row scalars: 0 cum | 64 beta | 128 sk | 192 sq | 256 e^cum sk | 320 e^cum sq | 384 e^rc sk | 448 gv
         static mut SC: SharedArray<f32, 512> = SharedArray::UNINIT;
         static mut GT: SharedArray<f32, 4> = SharedArray::UNINIT; // e^(sum g)
-        let sidx = thread::blockIdx_x() as usize;
-        let h = thread::blockIdx_y() as usize;
-        let vb = thread::blockIdx_z() as usize;
+        let h = (thread::blockIdx_x() >> 1) as usize;
+        let vb = (thread::blockIdx_x() & 1) as usize;
+        let sidx = thread::blockIdx_y() as usize;
         if sidx >= max_segs as usize {
             return;
         }
@@ -538,9 +579,8 @@ mod kernels {
                 });
             }
 
-            // (D2) X^T = S^T k^T and Y^T = S^T q^T over the 64 rows (8 n-tiles of tokens).
+            // (D2) X^T = S^T k^T over the 64 rows (8 n-tiles of tokens).
             let mut xa = [[0f32; 4]; 8];
-            let mut ya = [[0f32; 4]; 8];
             unroll!(ks in 0..8 {
                 let (h0, l0) = split2(sacc[2 * ks][0], sacc[2 * ks][1]);
                 let (h1, l1) = split2(sacc[2 * ks][2], sacc[2 * ks][3]);
@@ -552,12 +592,6 @@ mod kernels {
                     let row = 8 * n + gq;
                     let bk = unsafe { [*kb.add(row * KW + ks * 8 + tq), *kb.add(row * KW + ks * 8 + 4 + tq)] };
                     xa[n] = mma(mma(xa[n], ah, bk), al, bk);
-                    let bq = if row < len {
-                        unsafe { [*qrow.add(row * wstride + ks * 8 + tq), *qrow.add(row * wstride + ks * 8 + 4 + tq)] }
-                    } else {
-                        [0, 0]
-                    };
-                    ya[n] = mma(mma(ya[n], ah, bq), al, bq);
                 });
             });
             thread::sync_threads();
@@ -603,7 +637,25 @@ mod kernels {
                 });
             });
 
-            // (G) O^T = e^cum sq ⊙ Y^T + v_new^T P^T, staged as bf16 in OS[i][v].
+            // (G) Y^T = S^T q^T (old S), then O^T = e^cum sq ⊙ Y^T + v_new^T P^T, staged as bf16 in OS[i][v].
+            let mut ya = [[0f32; 4]; 8];
+            unroll!(ks in 0..8 {
+                let (h0, l0) = split2(sacc[2 * ks][0], sacc[2 * ks][1]);
+                let (h1, l1) = split2(sacc[2 * ks][2], sacc[2 * ks][3]);
+                let (h2, l2) = split2(sacc[2 * ks + 1][0], sacc[2 * ks + 1][1]);
+                let (h3, l3) = split2(sacc[2 * ks + 1][2], sacc[2 * ks + 1][3]);
+                let ah = [h0, h1, h2, h3];
+                let al = [l0, l1, l2, l3];
+                unroll!(n in 0..8 {
+                    let row = 8 * n + gq;
+                    let bq = if row < len {
+                        unsafe { [*qrow.add(row * wstride + ks * 8 + tq), *qrow.add(row * wstride + ks * 8 + 4 + tq)] }
+                    } else {
+                        [0, 0]
+                    };
+                    ya[n] = mma(mma(ya[n], ah, bq), al, bq);
+                });
+            });
             unroll!(n in 0..8 {
                 unroll!(r in 0..4 {
                     let i = 8 * n + 2 * tq + (r & 1);

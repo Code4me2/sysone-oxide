@@ -15,6 +15,7 @@ use cutile::prelude::*;
 use std::time::Instant;
 use sysone::contract::DecisionBatch;
 use sysone::kernels::gdn::*;
+use sysone::kernels::gdn::simt;
 
 #[cutile::module]
 mod probes {
@@ -109,6 +110,10 @@ struct Args {
     shapes: Vec<String>,
     #[arg(long, default_value_t = 10)]
     iters: usize,
+    /// Delta-rule implementation: `tile` (cuTile) or `simt` (cuda-oxide). For `simt` the `wy` column is empty:
+    /// the WY operands are recomputed inside the scan.
+    #[arg(long, default_value = "tile")]
+    backend: GdnBackend,
 }
 
 const SUFFIXES: usize = 8;
@@ -161,6 +166,7 @@ fn time(iters: usize, s: &Arc<Stream>, make: &dyn Fn() -> DeviceOpVec<()>) -> Re
 fn main() -> Result<()> {
     let args = Args::parse();
     println!("# {}", sysone::engine::platform::require_idle_gpu(args.allow_shared_gpu)?);
+    println!("# backend {}", args.backend.name());
     let ctx = Context::new(0)?;
     let s = ctx.new_stream()?;
     if let Ok(dir) = std::env::var("GDN_JIT_STORE") {
@@ -197,7 +203,7 @@ fn main() -> Result<()> {
         let t = batch.num_tokens();
         let plan = GdnPlan::new(&batch.segments, t, &s)?;
         let proj = upload((0..t * PROJ_COLS).map(|_| bf16::from_f32(rng.next() * 2.0)).collect(), &[t, PROJ_COLS], &s)?;
-        let scratch = GdnScratch::new(t, plan.num_prefixes, &s)?;
+        let scratch = GdnScratch::for_backend(args.backend, t, plan.num_prefixes, &s)?;
         let out = api::zeros::<bf16>(&[t, VALUE_DIM]).sync_on(&s)?;
         let pv = DView::of(&proj)?;
         let conv = scratch.conv_view()?;
@@ -209,25 +215,44 @@ fn main() -> Result<()> {
             v
         };
         // SAFETY (all launches below): every buffer outlives the synchronous timing loops.
-        let mixer = time(args.iters, &s, &|| unsafe { gdn_mixer(&plan, pv, &w, 1e-6, &scratch, ov).unwrap() })?;
+        let backend = args.backend;
+        let mixer = time(args.iters, &s, &|| unsafe { gdn_mixer_with(backend, &plan, pv, &w, 1e-6, &scratch, ov).unwrap() })?;
         let t_conv = time(args.iters, &s, &|| one(unsafe { tree_conv1d_silu(&plan, pv.columns(0, CONV_DIM).unwrap(), &conv_w, conv).unwrap() }))?;
         let a = pv.columns(CONV_DIM + VALUE_DIM, 32)?;
         let b = pv.columns(CONV_DIM + VALUE_DIM + 32, 32)?;
-        let t_prep = time(args.iters, &s, &|| one(unsafe { gdn_prep(&plan, conv, a, b, &w, &scratch).unwrap() }))?;
+        // "prep" is gdn_prep for the cuTile backend and the gates-only kernel for SIMT (which normalises q, k in the scan).
+        let t_prep = time(args.iters, &s, &|| {
+            one(unsafe {
+                match backend {
+                    GdnBackend::Tile => gdn_prep(&plan, conv, a, b, &w, &scratch).unwrap(),
+                    GdnBackend::Simt => simt::gates(&plan, a, b, &w, &scratch).unwrap(),
+                }
+            })
+        })?;
         let v = conv.columns(2 * KEY_DIM, VALUE_DIM)?;
+        let z = pv.columns(CONV_DIM, VALUE_DIM)?;
         let mut parts = [0f64; 4];
-        for (k, part) in parts.iter_mut().enumerate() {
-            // The scan is four launches (inverse, WY, prefix scan, suffix scan); time each alone by replaying the full
-            // sequence and dropping the others (inputs stay valid from the mixer run above).
-            *part = time(args.iters, &s, &|| {
-                let mut ops = unsafe { gdn_chunk_scan(&plan, v, &scratch, core).unwrap() };
+        // Launches of the scan in `parts` order (inverse, WY, prefix scan, suffix scan); the SIMT scan has no WY step.
+        let slots: &[usize] = match backend {
+            GdnBackend::Tile => &[0, 1, 2, 3],
+            GdnBackend::Simt => &[0, 2, 3],
+        };
+        for (k, &slot) in slots.iter().enumerate() {
+            // Time each launch alone by replaying the full sequence and dropping the others (inputs stay valid from
+            // the mixer run above).
+            parts[slot] = time(args.iters, &s, &|| {
+                let mut ops = unsafe {
+                    match backend {
+                        GdnBackend::Tile => gdn_chunk_scan(&plan, v, &scratch, core).unwrap(),
+                        GdnBackend::Simt => simt::chunk_scan(&plan, conv, &scratch, core).unwrap(),
+                    }
+                };
                 let keep = ops.remove(k);
                 let mut v = DeviceOpVec::with_capacity(1);
                 v.push(keep);
                 v
             })?;
         }
-        let z = pv.columns(CONV_DIM, VALUE_DIM)?;
         let t_norm = time(args.iters, &s, &|| one(unsafe { gated_rmsnorm(&plan, core, z, &norm_w, 1e-6, ov).unwrap() }))?;
         let sum = t_conv + t_prep + parts.iter().sum::<f64>() + t_norm;
         let fwd = gemm_forward_ms(t).map(|g| format!("{:>5.1}%", 100.0 * 24.0 * mixer * 1e3 / (g + 24.0 * mixer * 1e3)));

@@ -172,6 +172,25 @@ fn softplus(x: f64) -> f64 {
     if x > 20.0 { x } else { x.exp().ln_1p() }
 }
 
+/// `l2norm` of the q and k heads of the conv output (q also scaled by 128^-0.5), as `gdn_prep` computes them.
+fn qk_ref(conv: &[f64], t: usize) -> (Vec<f64>, Vec<f64>) {
+    let mut q = vec![0f64; t * KEY_DIM];
+    let mut k = vec![0f64; t * KEY_DIM];
+    for r in 0..t {
+        for hk in 0..NUM_K_HEADS {
+            for (dst, off) in [(&mut q, 0usize), (&mut k, KEY_DIM)] {
+                let x = &conv[r * CONV_DIM + off + hk * 128..][..128];
+                let inv = 1.0 / (x.iter().map(|v| v * v).sum::<f64>() + 1e-6).sqrt();
+                let scale = if off == 0 { 1.0 / 128f64.sqrt() } else { 1.0 };
+                for d in 0..128 {
+                    dst[r * KEY_DIM + hk * 128 + d] = x[d] * inv * scale;
+                }
+            }
+        }
+    }
+    (q, k)
+}
+
 struct Prep {
     q: Vec<f64>,
     k: Vec<f64>,
@@ -384,16 +403,24 @@ fn run_gpu(backend: GdnBackend, proj: &[f64], segs: &[Segment], w: &GpuWeights, 
         Some((mc, ms)) => GdnPlan::with_capacity(segs, t, mc, ms, s).unwrap(),
     };
     let proj_t = upload(to_bf16(proj), &[t, PROJ_COLS], s);
-    let scratch = GdnScratch::new(t, plan.num_prefixes, s).unwrap();
+    let scratch = GdnScratch::for_backend(backend, t, plan.num_prefixes, s).unwrap();
     let out = api::zeros::<bf16>(&[t, VALUE_DIM]).sync_on(s).unwrap();
     let ops = unsafe {
         gdn_mixer_with(backend, &plan, DView::of(&proj_t).unwrap(), &w.view(), EPS, &scratch, DView::of(&out).unwrap()).unwrap()
     };
     ops.sync_on(s).unwrap();
+    let conv = bf16_to_f64(&download(&scratch.conv, s));
+    let (q, k) = match backend {
+        GdnBackend::Tile => (to_f64(&download(&scratch.q, s)), to_f64(&download(&scratch.k, s))),
+        // The SIMT scan normalises q and k from the conv output inside the kernel and never stores them: feed the
+        // checks the exact f64 normalisation of the GPU's conv output (so the prep q/k check is vacuous for it,
+        // and its normalisation is checked through the scan output).
+        GdnBackend::Simt => qk_ref(&conv, t),
+    };
     Run {
-        conv: bf16_to_f64(&download(&scratch.conv, s)),
-        q: to_f64(&download(&scratch.q, s)),
-        k: to_f64(&download(&scratch.k, s)),
+        conv,
+        q,
+        k,
         g: to_f64(&download(&scratch.g, s)),
         beta: to_f64(&download(&scratch.beta, s)),
         core: bf16_to_f64(&download(&scratch.core, s)),
@@ -619,7 +646,7 @@ fn plan_update_invariance(backend: GdnBackend) {
         let mut plan = GdnPlan::with_capacity(&small.segments, t, caps.0, caps.1, &s).unwrap();
         let mut padded = small_proj.clone();
         padded.resize(t * PROJ_COLS, 0.0);
-        let scratch = GdnScratch::new(t, 4, &s).unwrap();
+        let scratch = GdnScratch::for_backend(backend, t, 4, &s).unwrap();
         let out = api::zeros::<bf16>(&[t, VALUE_DIM]).sync_on(&s).unwrap();
         let wv = gw.view();
         for (step, (p, b)) in [(&padded, &small), (&proj, &big)].into_iter().enumerate() {
@@ -724,4 +751,53 @@ fn simt_tinv_matches_f64_reference() {
         assert_eq!(a + b, 0);
         assert!(ms <= 1.5 * mt, "SIMT tinv error {ms:.2e} exceeds 1.5x the cuTile error {mt:.2e}");
     });
+}
+
+/// The mixer captured once into a CUDA graph and replayed after `GdnPlan::update` for two different trees gives
+/// the eager result bit for bit (both backends). Scratch is sized for the plan's segment capacity.
+#[test]
+fn graph_replay_matches_eager() {
+    for backend in backends() {
+        on_test_thread(move || graph_replay(backend));
+    }
+}
+
+fn graph_replay(backend: GdnBackend) {
+    use cuda_async::cuda_graph::CudaGraph;
+    let ctx = Context::new(0).unwrap();
+    let s = ctx.new_stream().unwrap();
+    let mut rng = Rng(0x5eed5eed5eed5eed);
+    let w = weights(&mut rng);
+    let gw = GpuWeights::new(&w, &s);
+    let mut big = DecisionBatch::default();
+    big.push_request(&[1; 300], &[(&[2; 40], 2), (&[3; 129], 2)]).unwrap();
+    big.push_request(&[4; 70], &[(&[5; 5], 2), (&[6; 64], 2)]).unwrap();
+    let mut small = DecisionBatch::default();
+    small.push_request(&[7; 90], &[(&[8; 3], 2)]).unwrap();
+    let t = big.num_tokens();
+    let caps = (GdnTables::chunk_capacity(t, 8), 8);
+    let mut plan = GdnPlan::with_capacity(&small.segments, t, caps.0, caps.1, &s).unwrap();
+    let scratch = GdnScratch::for_plan(backend, &plan, &s).unwrap();
+    let mut input = api::zeros::<bf16>(&[t, PROJ_COLS]).sync_on(&s).unwrap();
+    let out = api::zeros::<bf16>(&[t, VALUE_DIM]).sync_on(&s).unwrap();
+    let wv = gw.view();
+    // SAFETY: input, out, the plan tables and the scratch outlive the graph and are only rewritten between replays.
+    let ops = unsafe {
+        gdn_mixer_with(backend, &plan, DView::of(&input).unwrap(), &wv, EPS, &scratch, DView::of(&out).unwrap()).unwrap()
+    };
+    let graph = CudaGraph::capture(s.clone(), ops).unwrap();
+    for (step, b) in [&small, &big, &small].into_iter().enumerate() {
+        let n = b.num_tokens();
+        let mut proj = projection(n, &mut rng);
+        proj.resize(t * PROJ_COLS, 0.0);
+        plan.update(&b.segments, &s).unwrap();
+        let src = upload(to_bf16(&proj), &[t, PROJ_COLS], &s);
+        api::memcpy(&mut input, &src).sync_on(&s).unwrap();
+        graph.launch().sync_on(graph.stream()).unwrap();
+        let got = bf16_to_f64(&download(&out, &s));
+        let eager = run_gpu(backend, &proj, &b.segments, &gw, Some(caps), &s);
+        let same = got[..n * VALUE_DIM] == eager.out[..n * VALUE_DIM];
+        println!("[{}] graph replay {step} ({n} tokens): bit-identical to eager: {same}", backend.name());
+        assert!(same, "[{}] graph replay {step} differs from the eager run", backend.name());
+    }
 }
