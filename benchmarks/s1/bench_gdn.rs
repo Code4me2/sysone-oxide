@@ -126,6 +126,9 @@ struct Args {
     tp_warps: Vec<i32>,
     #[arg(long, value_delimiter = ',')]
     tp_fsb: Vec<i32>,
+    /// Split-TF32 as two MMAs (1) or three (0); comma-separated.
+    #[arg(long, value_delimiter = ',')]
+    split_cat: Vec<i32>,
     /// Time the Phase 1 (W3a) four-launch scan instead (inverse, WY, prefix scan, suffix scan).
     #[arg(long)]
     w3a: bool,
@@ -222,7 +225,10 @@ fn main() -> Result<()> {
             {
                 for tp_warps in ori(&args.tp_warps, base.tp_warps) {
                     for tp_fsb in ori(&args.tp_fsb, base.tp_fsb) {
-                        configs.push(GdnOptions { prefix_bv, suffix_bv, prefix_warps, suffix_warps, tp_warps, tp_fsb, ..base });
+                        for sc in ori(&args.split_cat, base.split_cat as i32) {
+                            let split_cat = sc != 0;
+                            configs.push(GdnOptions { prefix_bv, suffix_bv, prefix_warps, suffix_warps, tp_warps, tp_fsb, split_cat, ..base });
+                        }
                     }
                 }
             }
