@@ -20,6 +20,9 @@ use sysone::kernels::{norm, pointwise, readout};
 
 #[derive(Parser)]
 struct Args {
+    /// Measure even if other processes use the GPU (the output is then marked not authoritative).
+    #[arg(long)]
+    allow_shared_gpu: bool,
     #[arg(long, value_delimiter = ',', default_value = "1024,4096,16384")]
     tokens: Vec<usize>,
     #[arg(long, default_value_t = 10)]
@@ -137,6 +140,7 @@ fn dev_err(e: anyhow::Error) -> cuda_async::error::DeviceError {
 
 fn main() -> Result<()> {
     let args = Args::parse();
+    println!("# {}", sysone::engine::platform::require_idle_gpu(args.allow_shared_gpu)?);
     if let Some(dir) = &args.jit_cache {
         let store = cutile::jit_cache::FileSystemJitStore::builder(dir).capacity_bytes(256 << 20).open()?;
         cutile::jit_cache::enable(Arc::new(store));

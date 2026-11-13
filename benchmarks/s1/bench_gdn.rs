@@ -98,6 +98,9 @@ fn probe(s: &Arc<Stream>) -> Result<()> {
 
 #[derive(Parser)]
 struct Args {
+    /// Measure even if other processes use the GPU (the output is then marked not authoritative).
+    #[arg(long)]
+    allow_shared_gpu: bool,
     /// Run the primitive probes (mma rates, forward substitution) instead of the mixer benchmark.
     #[arg(long)]
     probe: bool,
@@ -157,6 +160,7 @@ fn time(iters: usize, s: &Arc<Stream>, make: &dyn Fn() -> DeviceOpVec<()>) -> Re
 
 fn main() -> Result<()> {
     let args = Args::parse();
+    println!("# {}", sysone::engine::platform::require_idle_gpu(args.allow_shared_gpu)?);
     let ctx = Context::new(0)?;
     let s = ctx.new_stream()?;
     if let Ok(dir) = std::env::var("GDN_JIT_STORE") {

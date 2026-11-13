@@ -17,6 +17,9 @@ Status: **accepted (v1 baseline), 2026-11-13**. Section 13 records the resolved 
 | Dev vs validation | All development and CI-style testing happen on this GB10 (aarch64). An x86 box runs the pinned reference image for the authoritative goldens and a final cross-arch validation. |
 | Length limits | Match the reference defaults (32,768 per branch, 65,536 per request), configurable by CLI flag. |
 | API | Drop-in `/v1/systemone` with the same request and response schema, `debias`/`debug` query params, and error codes as qev at OneJev@81ce62f + `serve.patch`. Extensions are additive. |
+| Reference engine (2026-11-13) | Match qev's text `DecisionEngine` with `serve.patch`'s block-bidirectional mask. `qev serve` routes configs that have a `vision_config` (elephant-1 does) to `MMDecisionEngine`, which `serve.patch` does not patch and which has no block-bidirectional mask; we treat that as a reference defect, not behaviour to copy. The config's `block_bidirectional` override and the model card's `DecisionEngine` usage support this. |
+| GPU discipline (2026-11-13) | Every GPU job (tests, reference/golden runs, benchmarks) runs through `scripts/gpu.sh`, which holds `/tmp/sysone-gpu.lock`. Benchmarks also refuse to start while another process holds a CUDA context (`--allow-shared-gpu` overrides and marks the output). Phase 1 lost its speed numbers to unlocked reference jobs. |
+| Precision knobs (2026-11-13) | Where a kernel can trade fp32-grade internal precision for speed (GDN scan TF32/bf16 operands, attention P split), the end-to-end gate (§9.2) decides, not a per-kernel bit-level match to transformers' fp32 fallback. Defaults stay at the most precise variant until the end-to-end gate has been run with the faster one. |
 
 ## 2. Goals and non-goals
 
@@ -90,8 +93,11 @@ Checked against its `config.json`, `recipe.yaml`, `provenance.json` and the safe
 - **Weights:** RTN quantization, group 16 along K, with an FP8 block scale per group and a per-tensor global scale.
 - **Activations:** `dynamic: local`, `tensor_group` 16. Each token row's group of 16 gets its own FP8 scale at
   run time, under a *static* per-tensor `input_global_scale` (calibrated min-max).
-  - There is no cross-token statistic, so per-row quantization keeps the shared-prefix forward exactly equivalent
-    to the per-question forward the checkpoint was evaluated with.
+  - There is no cross-token statistic, so per-row quantization keeps the shared-prefix forward equivalent to the
+    per-question forward the checkpoint was evaluated with **in exact arithmetic**. In floating point the QDQ
+    reference is very sensitive to kernel shape: changing only the batch size moves its option probabilities by up
+    to 0.2 (W1b, confirmed by its reviewer), and its per-question vs shared-prefix paths differ by up to 0.23. NVFP4
+    is therefore gated statistically (§9.2), not per branch.
   - `gate_proj.input_global_scale == up_proj.input_global_scale` in all 32 layers (verified), so the normed MLP
     input is quantized **once** for the fused gate/up GEMM. The loader asserts this equality and refuses the
     checkpoint otherwise.
@@ -350,7 +356,7 @@ Every test always reports the measured distribution (p50/p99/max), not just pass
 | Kernels | Each op against a torch reference on random inputs (fp32 tolerance per op, documented). |
 | Model | Per-layer hidden states: relative error vs fp32 truth no worse than bf16-reference vs fp32 truth × 1.5. |
 | End-to-end | Per-option probability |Δ| vs bf16 reference: start at p99 ≤ 0.01 and max ≤ 0.05 (the reference's own batched-vs-sequential spread is ≤ 0.03). Top choice agrees wherever the reference margin is > 0.02. Calibration quality (Brier/ECE on the golden corpus labels where available) is not worse than the bf16 reference beyond ε. |
-| NVFP4 | vs the NVFP4 QDQ reference (not bf16), within the envelope of that reference's own cross-process drift. Report vs bf16 as quality information. Activation-quantization kernel bit-exact vs compressed-tensors on random inputs. |
+| NVFP4 | Kernels: activation quantization bit-exact vs compressed-tensors; FP4 GEMMs within 1 ulp of the exact f64 dequant-matmul. Model: **statistical**, because the QDQ reference itself moves by up to 0.2 per option under a batch-shape change (§3.1). On a labeled eval set rebuilt from the checkpoint card's public sources (BANKING77, LEDGAR, LongBench-v2): sysone NVFP4's accuracy, top-1 agreement with the QDQ reference, and mean/p99 \|Δp\| must lie inside the envelope the QDQ reference shows against itself across batch shapes and paths (paired bootstrap). Report vs bf16 as quality information. |
 | Batch invariance | The same request alone vs packed with 63 others: max |Δp| ≤ 0.01. |
 
 ## 10. Benchmarks
@@ -408,9 +414,21 @@ pub trait DecisionEngine: Send {
 - W5 **server & scheduler:** HTTP, batcher, GPU worker, metrics. It develops against a mock `DecisionEngine`.
 - W6 **benchmarks:** load generator, plus reference and vLLM baselines.
 
+**Phase 1: done (2026-11-13).** All nine workstreams merged; see `docs/PHASE1.md` for results and open issues.
+
 **Phase 2: integration and performance**
-- End-to-end gates, bf16 first and then NVFP4 against its QDQ reference.
-- Performance: GEMM autotune, fusions, persistent GDN.
+- Phase 2a (parallel):
+  - I1 **engine integration (bf16):** the `Kernels` implementation over the W3 kernels, the 32-layer packed
+    forward, T-bucket graphs, the real engine behind the server, end-to-end gates against the bf16 goldens, and a
+    per-op forward profile.
+  - P1 **GDN speed:** blocked triangular solve, recompute instead of storing intermediates, per-phase block size;
+    precision variants exposed for the end-to-end gate to choose.
+  - P2 **attention speed:** a D-split accumulator for head_dim 256, 2 CTAs/SM.
+  - E1 **eval set:** the labeled set and statistical NVFP4 gate (§9.2), plus a scorer for any `/v1/systemone`
+    server.
+  - S1 **server fixes** from the W5 review.
+- Phase 2b: NVFP4 end to end; the SIMT GDN scan (cuda-oxide, needs LLVM 21); precision choices from the end-to-end
+  gate; GEMM autotune and fusions guided by I1's profile.
 - Prefix cache (§8).
 
 **Phase 3**

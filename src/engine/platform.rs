@@ -154,3 +154,40 @@ mod tests {
         assert!(p.check().is_err());
     }
 }
+
+/// Other processes currently holding a CUDA context on the GPU, as `nvidia-smi` lists them
+/// (`pid, name, memory`), excluding this process. Graphics clients (the desktop) are not compute apps.
+pub fn gpu_contention() -> Result<Vec<String>> {
+    let out = std::process::Command::new("nvidia-smi")
+        .args(["--query-compute-apps=pid,process_name,used_memory", "--format=csv,noheader"])
+        .output()
+        .context("running nvidia-smi")?;
+    ensure!(out.status.success(), "nvidia-smi failed: {}", String::from_utf8_lossy(&out.stderr));
+    let me = std::process::id().to_string();
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && l.split(',').next().map(str::trim) != Some(me.as_str()))
+        .map(str::to_owned)
+        .collect())
+}
+
+/// Guard for benchmarks: timings taken while other processes use the GPU are not comparable (Phase 1 lost
+/// most of its speed numbers this way). Refuses to run on a shared GPU unless `allow_shared` is set, and
+/// returns a one-line note for the run's output saying which case applied. Run benchmarks through
+/// `scripts/gpu.sh`, which also takes the GPU lock.
+pub fn require_idle_gpu(allow_shared: bool) -> Result<String> {
+    let others = gpu_contention()?;
+    let locked = std::env::var_os("SYSONE_GPU_LOCKED").is_some();
+    let lock_note = if locked { "gpu lock held" } else { "WARNING: not run via scripts/gpu.sh (no GPU lock)" };
+    if others.is_empty() {
+        return Ok(format!("gpu idle at start; {lock_note}"));
+    }
+    anyhow::ensure!(
+        allow_shared,
+        "other processes are using the GPU, so timings would not be authoritative:\n  {}\n\
+         stop them, or pass --allow-shared-gpu to measure anyway",
+        others.join("\n  ")
+    );
+    Ok(format!("SHARED GPU (not authoritative): {}; {lock_note}", others.join(" | ")))
+}

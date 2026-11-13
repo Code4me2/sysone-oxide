@@ -18,6 +18,9 @@ use sysone::engine::platform::{ForwardPoint, PlatformProfile};
 
 #[derive(Parser)]
 struct Args {
+    /// Measure even if other processes use the GPU (the output is then marked not authoritative).
+    #[arg(long)]
+    allow_shared_gpu: bool,
     /// Packed token counts to sweep.
     #[arg(long, value_delimiter = ',', default_value = "256,1024,4096,8192,16384")]
     tokens: Vec<usize>,
@@ -106,6 +109,7 @@ fn gemm(blas: &CudaBlas, w: &CudaSlice<bf16>, x: &CudaSlice<bf16>, y: &mut CudaS
 
 fn main() -> Result<()> {
     let args = Args::parse();
+    println!("# {}", sysone::engine::platform::require_idle_gpu(args.allow_shared_gpu)?);
     let ctx = CudaContext::new(0)?;
     let stream = ctx.default_stream();
     let (major, minor) = ctx.compute_capability()?;

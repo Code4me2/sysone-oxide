@@ -21,6 +21,9 @@ use sysone::kernels::nvfp4::{self, CheckpointProj, GemmKernel, GemmTiles, Nvfp4A
 
 #[derive(Parser)]
 struct Args {
+    /// Measure even if other processes use the GPU (the output is then marked not authoritative).
+    #[arg(long)]
+    allow_shared_gpu: bool,
     #[arg(long, value_delimiter = ',', default_value = "1024,4096,16384")]
     tokens: Vec<usize>,
     /// Launches per timed batch.
@@ -174,6 +177,7 @@ fn time_batch<S>(stream: &Arc<cutile::cuda_core::Stream>, iters: usize, reps: us
 
 fn main() -> Result<()> {
     let args = Args::parse();
+    println!("# {}", sysone::engine::platform::require_idle_gpu(args.allow_shared_gpu)?);
 
     // cuBLAS bf16 for every projection at every T (cudarc context), then free it.
     // The MLP shapes are re-measured right next to their NVFP4 runs (the GPU is shared; see the module docs).

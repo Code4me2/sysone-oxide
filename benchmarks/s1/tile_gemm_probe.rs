@@ -67,6 +67,9 @@ use probe_kernels::{gemm_bf16, gemm_nvfp4};
 
 #[derive(Parser)]
 struct Args {
+    /// Measure even if other processes use the GPU (the output is then marked not authoritative).
+    #[arg(long)]
+    allow_shared_gpu: bool,
     #[arg(long, value_delimiter = ',', default_value = "4096,16384")]
     tokens: Vec<usize>,
     #[arg(long, default_value_t = 10)]
@@ -103,6 +106,7 @@ fn report(kind: &str, t: usize, n: usize, k: usize, tiles: &str, secs: f64) {
 
 fn main() -> Result<()> {
     let args = Args::parse();
+    println!("# {}", sysone::engine::platform::require_idle_gpu(args.allow_shared_gpu)?);
     let device = Context::new(0)?;
     let stream = device.new_stream()?;
     let mut rng = Rng(0x9e3779b97f4a7c15);

@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "device_name": "NVIDIA GB10",
+  "compute_capability": [
+    12,
+    1
+  ],
+  "integrated": true,
+  "sm_count": 48,
+  "total_mem_bytes": 130661142528,
+  "mem_bw_gbs": 220.62141347474426,
+  "gemm_bf16_tflops": 109.81790367131549,
+  "gemm_weight_bytes": 13837008896,
+  "forward": [
+    {
+      "tokens": 256,
+      "ms": 74.1720703125,
+      "tflops": 47.75752196819874,
+      "tokens_per_s": 3451.4339281811453
+    },
+    {
+      "tokens": 1024,
+      "ms": 150.18675537109374,
+      "tflops": 94.34318675101431,
+      "tokens_per_s": 6818.177791176172
+    },
+    {
+      "tokens": 4096,
+      "ms": 624.020654296875,
+      "tflops": 90.82453929650293,
+      "tokens_per_s": 6563.885300583891
+    },
+    {
+      "tokens": 8192,
+      "ms": 1182.08466796875,
+      "tflops": 95.89226554373062,
+      "tokens_per_s": 6930.129644669892
+    },
+    {
+      "tokens": 16384,
+      "ms": 2319.715625,
+      "tflops": 97.7298903834663,
+      "tokens_per_s": 7062.934707783417
+    }
+  ],
+  "note": "hwprobe, iters 20, bw copy 1024 MiB"
+}
