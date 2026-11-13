@@ -653,12 +653,10 @@ fn scan_options_and_precision_variants_vs_f64() {
             ("prefix_bv 16, suffix_bv 128", GdnOptions { prefix_bv: 16, suffix_bv: 128, ..d }, true),
             ("prefix_bv 64, suffix_bv 32", GdnOptions { prefix_bv: 64, suffix_bv: 32, ..d }, true),
             ("tp_fsb 2 (doubling only)", GdnOptions { tp_fsb: 2, ..d }, true),
-            ("split_cat (2-MMA split TF32)", GdnOptions { split_cat: true, ..d }, true),
             ("tp_fsb 64 (substitution only)", GdnOptions { tp_fsb: 64, ..d }, true),
-            ("8 / 4 warps", GdnOptions { prefix_warps: 8, suffix_warps: 8, tp_warps: 4, ..d }, true),
+            ("4 / 8 / 4 warps", GdnOptions { prefix_warps: 4, suffix_warps: 8, tp_warps: 4, ..d }, true),
             ("precision Tf32", GdnOptions { precision: GdnPrecision::Tf32, ..d }, false),
             ("precision Bf16Operands", GdnOptions { precision: GdnPrecision::Bf16Operands, ..d }, false),
-            ("precision Fp32StateTf32Output", GdnOptions { precision: GdnPrecision::Fp32StateTf32Output, ..d }, false),
         ];
         let mut fails = Vec::new();
         for (name, opts, gated) in variants {

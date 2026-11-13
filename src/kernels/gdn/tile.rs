@@ -42,37 +42,16 @@ pub mod gdn_tile {
         mma(a_hi, b_hi, acc)
     }
 
-    /// [`mma_f32x3`] in two tensor-core products instead of three: `a_hi b_hi`, then both cross terms at once
-    /// over a doubled K, `[a_hi | a_lo] @ [b_lo; b_hi]`. Same terms.
-    fn mma_f32x3_cat<const M: i32, const N: i32, const K: i32, const K2: i32>(
-        a: Tile<f32, { [M, K] }>,
-        b: Tile<f32, { [K, N] }>,
-        acc: Tile<f32, { [M, N] }>,
-    ) -> Tile<f32, { [M, N] }> {
-        let a_hi: Tile<tf32, { [M, K] }> = convert_tile(a);
-        let a_hi_f: Tile<f32, { [M, K] }> = convert_tile(a_hi);
-        let a_lo: Tile<tf32, { [M, K] }> = convert_tile(a - a_hi_f);
-        let b_hi: Tile<tf32, { [K, N] }> = convert_tile(b);
-        let b_hi_f: Tile<f32, { [K, N] }> = convert_tile(b_hi);
-        let b_lo: Tile<tf32, { [K, N] }> = convert_tile(b - b_hi_f);
-        let a2: Tile<tf32, { [M, K2] }> = cat(a_hi, a_lo, 1i32);
-        let b2: Tile<tf32, { [K2, N] }> = cat(b_lo, b_hi, 0i32);
-        let acc: Tile<f32, { [M, N] }> = mma(a2, b2, acc);
-        mma(a_hi, b_hi, acc)
-    }
-
     /// `a @ b + acc` at the precision selected by `SPLIT` / `E`: `SPLIT == 3` is [`mma_f32x3`] (fp32-grade);
     /// otherwise both operands are rounded once to `E` (tf32 or bf16) and multiplied on the tensor cores with
     /// fp32 accumulation.
-    fn mma_p<E: ElementType, const SPLIT: i32, const M: i32, const N: i32, const K: i32, const K2: i32>(
+    fn mma_p<E: ElementType, const SPLIT: i32, const M: i32, const N: i32, const K: i32>(
         a: Tile<f32, { [M, K] }>,
         b: Tile<f32, { [K, N] }>,
         acc: Tile<f32, { [M, N] }>,
     ) -> Tile<f32, { [M, N] }> {
         if SPLIT == 3i32 {
             mma_f32x3(a, b, acc)
-        } else if SPLIT == 4i32 {
-            mma_f32x3_cat::<M, N, K, K2>(a, b, acc)
         } else {
             let ae: Tile<E, { [M, K] }> = convert_tile(a);
             let be: Tile<E, { [K, N] }> = convert_tile(b);
@@ -657,9 +636,9 @@ pub mod gdn_tile {
             for j in 0i32..4i32 {
                 let kj: Tile<f32, { [64, 32] }> = k_part.load([0i32, kc + j]);
                 let kjt: Tile<f32, { [32, 64] }> = kj.transpose();
-                kk = mma_p::<E, SPLIT, 64, 64, 32, 64>(kj * bs, kjt, kk);
+                kk = mma_p::<E, SPLIT, 64, 64, 32>(kj * bs, kjt, kk);
                 let qj: Tile<f32, { [64, 32] }> = q_part.load([0i32, kc + j]);
-                qk = mma_p::<EO, SPLIT_O, 64, 64, 32, 64>(qj, kjt, qk);
+                qk = mma_p::<EO, SPLIT_O, 64, 64, 32>(qj, kjt, qk);
             }
             let p: Tile<f32, { [64, 64] }> = select(ge_tile(rows, cols), qk * d, zero);
             let p_out: Tensor<f32, { [-1, -1] }> = rows_f32(p_ptr, start, len, 2048i32, 2048i32, tok);
@@ -694,8 +673,8 @@ pub mod gdn_tile {
                     let bt_: Tile<i32, { [64, 64] }> = broadcast_scalar(b, const_shape![64, 64]);
                     let nb: Tile<i32, { [64, 64] }> = broadcast_scalar(0i32 - b, const_shape![64, 64]);
                     let e: Tile<f32, { [64, 64] }> = select(eq_tile(andi(x, nb), bt_), a, zero);
-                    let m: Tile<f32, { [64, 64] }> = mma_p::<E, SPLIT, 64, 64, 64, 128>(e, tinv, zero);
-                    tinv = mma_p::<E, SPLIT, 64, 64, 64, 128>(negf(tinv), m, tinv);
+                    let m: Tile<f32, { [64, 64] }> = mma_p::<E, SPLIT, 64, 64, 64>(e, tinv, zero);
+                    tinv = mma_p::<E, SPLIT, 64, 64, 64>(negf(tinv), m, tinv);
                 }
                 b = b * 2i32;
             }
@@ -807,29 +786,29 @@ pub mod gdn_tile {
 
                 // x = (k*beta*exp(cum)) S and o = (q*exp(cum)) S, one 32-row block of S at a time.
                 let k0: Tile<f32, { [64, 32] }> = k_part.load([c, kc]);
-                let x: Tile<f32, { [64, BV] }> = mma_p::<E, SPLIT, 64, BV, 32, 64>(k0 * kbe_s, s0, zero_o);
+                let x: Tile<f32, { [64, BV] }> = mma_p::<E, SPLIT, 64, BV, 32>(k0 * kbe_s, s0, zero_o);
                 let q0: Tile<f32, { [64, 32] }> = q_part.load([c, kc]);
-                let o: Tile<f32, { [64, BV] }> = mma_p::<EO, SPLIT_O, 64, BV, 32, 64>(q0 * qd_s, s0, zero_o);
+                let o: Tile<f32, { [64, BV] }> = mma_p::<EO, SPLIT_O, 64, BV, 32>(q0 * qd_s, s0, zero_o);
                 let k1: Tile<f32, { [64, 32] }> = k_part.load([c, kc + 1i32]);
-                let x: Tile<f32, { [64, BV] }> = mma_p::<E, SPLIT, 64, BV, 32, 64>(k1 * kbe_s, s1, x);
+                let x: Tile<f32, { [64, BV] }> = mma_p::<E, SPLIT, 64, BV, 32>(k1 * kbe_s, s1, x);
                 let q1: Tile<f32, { [64, 32] }> = q_part.load([c, kc + 1i32]);
-                let o: Tile<f32, { [64, BV] }> = mma_p::<EO, SPLIT_O, 64, BV, 32, 64>(q1 * qd_s, s1, o);
+                let o: Tile<f32, { [64, BV] }> = mma_p::<EO, SPLIT_O, 64, BV, 32>(q1 * qd_s, s1, o);
                 let k2: Tile<f32, { [64, 32] }> = k_part.load([c, kc + 2i32]);
-                let x: Tile<f32, { [64, BV] }> = mma_p::<E, SPLIT, 64, BV, 32, 64>(k2 * kbe_s, s2, x);
+                let x: Tile<f32, { [64, BV] }> = mma_p::<E, SPLIT, 64, BV, 32>(k2 * kbe_s, s2, x);
                 let q2: Tile<f32, { [64, 32] }> = q_part.load([c, kc + 2i32]);
-                let o: Tile<f32, { [64, BV] }> = mma_p::<EO, SPLIT_O, 64, BV, 32, 64>(q2 * qd_s, s2, o);
+                let o: Tile<f32, { [64, BV] }> = mma_p::<EO, SPLIT_O, 64, BV, 32>(q2 * qd_s, s2, o);
                 let k3: Tile<f32, { [64, 32] }> = k_part.load([c, kc + 3i32]);
-                let x: Tile<f32, { [64, BV] }> = mma_p::<E, SPLIT, 64, BV, 32, 64>(k3 * kbe_s, s3, x);
+                let x: Tile<f32, { [64, BV] }> = mma_p::<E, SPLIT, 64, BV, 32>(k3 * kbe_s, s3, x);
                 let q3: Tile<f32, { [64, 32] }> = q_part.load([c, kc + 3i32]);
-                let o: Tile<f32, { [64, BV] }> = mma_p::<EO, SPLIT_O, 64, BV, 32, 64>(q3 * qd_s, s3, o);
+                let o: Tile<f32, { [64, BV] }> = mma_p::<EO, SPLIT_O, 64, BV, 32>(q3 * qd_s, s3, o);
 
                 let vt: Tile<bf16, { [64, BV] }> = v_part.load([c, vcol]);
                 let vt: Tile<f32, { [64, BV] }> = convert_tile(vt);
                 let y: Tile<f32, { [64, BV] }> = vt * bt.broadcast(const_shape![64, BV]) - x;
                 let tt: Tile<f32, { [64, 64] }> = tinv_part.load([c, h]);
-                let v_new: Tile<f32, { [64, BV] }> = mma_p::<E, SPLIT, 64, BV, 64, 128>(tt, y, zero_o);
+                let v_new: Tile<f32, { [64, BV] }> = mma_p::<E, SPLIT, 64, BV, 64>(tt, y, zero_o);
                 let pt: Tile<f32, { [64, 64] }> = p_part.load([c, h]);
-                let o: Tile<f32, { [64, BV] }> = mma_p::<EO, SPLIT_O, 64, BV, 64, 128>(pt, v_new, o);
+                let o: Tile<f32, { [64, BV] }> = mma_p::<EO, SPLIT_O, 64, BV, 64>(pt, v_new, o);
                 let o_bf: Tile<bf16, { [64, BV] }> = convert_tile(o);
                 out_part.store(o_bf, [c, vcol]);
 
@@ -840,13 +819,13 @@ pub mod gdn_tile {
                 let total: Tile<f32, { [1] }> = reduce_sum(gt, 0i32);
                 let decay: Tile<f32, { [32, BV] }> = exp(total).reshape(const_shape![1, 1]).broadcast(const_shape![32, BV]);
                 let kd0: Tile<f32, { [64, 32] }> = k_part.load([c, kc]);
-                s0 = mma_p::<E, SPLIT, 32, BV, 64, 128>((kd0 * kd_s).transpose(), v_new, s0 * decay);
+                s0 = mma_p::<E, SPLIT, 32, BV, 64>((kd0 * kd_s).transpose(), v_new, s0 * decay);
                 let kd1: Tile<f32, { [64, 32] }> = k_part.load([c, kc + 1i32]);
-                s1 = mma_p::<E, SPLIT, 32, BV, 64, 128>((kd1 * kd_s).transpose(), v_new, s1 * decay);
+                s1 = mma_p::<E, SPLIT, 32, BV, 64>((kd1 * kd_s).transpose(), v_new, s1 * decay);
                 let kd2: Tile<f32, { [64, 32] }> = k_part.load([c, kc + 2i32]);
-                s2 = mma_p::<E, SPLIT, 32, BV, 64, 128>((kd2 * kd_s).transpose(), v_new, s2 * decay);
+                s2 = mma_p::<E, SPLIT, 32, BV, 64>((kd2 * kd_s).transpose(), v_new, s2 * decay);
                 let kd3: Tile<f32, { [64, 32] }> = k_part.load([c, kc + 3i32]);
-                s3 = mma_p::<E, SPLIT, 32, BV, 64, 128>((kd3 * kd_s).transpose(), v_new, s3 * decay);
+                s3 = mma_p::<E, SPLIT, 32, BV, 64>((kd3 * kd_s).transpose(), v_new, s3 * decay);
             }
             if phase == 0i32 {
                 let mut sp: PartitionMut<f32, { [32, BV] }> = unsafe { state.partition_full_mut(const_shape![32, BV]) };

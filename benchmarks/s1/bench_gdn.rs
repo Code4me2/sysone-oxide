@@ -109,7 +109,7 @@ struct Args {
     shapes: Vec<String>,
     #[arg(long, default_value_t = 10)]
     iters: usize,
-    /// Scan precision: fp32 (3xTF32, default), tf32, bf16, mixed (3xTF32 state, TF32 output).
+    /// Scan precision: fp32 (3xTF32, default), tf32, bf16.
     #[arg(long, default_value = "fp32")]
     precision: String,
     /// Override the prefix / suffix scan value-column blocks, the warps per CTA and the forward-substitution
@@ -126,9 +126,6 @@ struct Args {
     tp_warps: Vec<i32>,
     #[arg(long, value_delimiter = ',')]
     tp_fsb: Vec<i32>,
-    /// Split-TF32 as two MMAs (1) or three (0); comma-separated.
-    #[arg(long, value_delimiter = ',')]
-    split_cat: Vec<i32>,
     /// Time the Phase 1 (W3a) four-launch scan instead (inverse, WY, prefix scan, suffix scan).
     #[arg(long)]
     w3a: bool,
@@ -211,7 +208,6 @@ fn main() -> Result<()> {
         "fp32" => GdnPrecision::Fp32Split3,
         "tf32" => GdnPrecision::Tf32,
         "bf16" => GdnPrecision::Bf16Operands,
-        "mixed" => GdnPrecision::Fp32StateTf32Output,
         p => anyhow::bail!("unknown precision {p}"),
     };
     let or = |v: &Vec<usize>, d: usize| if v.is_empty() { vec![d] } else { v.clone() };
@@ -225,10 +221,7 @@ fn main() -> Result<()> {
             {
                 for tp_warps in ori(&args.tp_warps, base.tp_warps) {
                     for tp_fsb in ori(&args.tp_fsb, base.tp_fsb) {
-                        for sc in ori(&args.split_cat, base.split_cat as i32) {
-                            let split_cat = sc != 0;
-                            configs.push(GdnOptions { prefix_bv, suffix_bv, prefix_warps, suffix_warps, tp_warps, tp_fsb, split_cat, ..base });
-                        }
+                        configs.push(GdnOptions { prefix_bv, suffix_bv, prefix_warps, suffix_warps, tp_warps, tp_fsb, ..base });
                     }
                 }
             }
