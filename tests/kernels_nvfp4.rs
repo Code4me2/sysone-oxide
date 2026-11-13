@@ -13,7 +13,7 @@ use cutile::cuda_core::{Stream, f4e2m1fnx2, f8e4m3fn};
 use cutile::half::bf16;
 use cutile::prelude::*;
 use std::path::{Path, PathBuf};
-use sysone::kernels::nvfp4::{self, CheckpointProj, GemmTiles, Nvfp4Act, Nvfp4Linear, QuantTiles};
+use sysone::kernels::nvfp4::{self, CheckpointProj, GemmKernel, GemmTiles, Nvfp4Act, Nvfp4Linear, QuantTiles};
 
 const E2M1: [f64; 8] = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0];
 
@@ -361,11 +361,14 @@ fn gemm_small_vs_cpu_f64() {
     let mut rng = Rng(0xfeed_0000_0000_0042);
     let configs = [
         GemmTiles::DEFAULT,
-        GemmTiles { bm: 64, bn: 128, bk: 128, group_m: 4, blocks_per_sm: 2 },
-        GemmTiles { bm: 128, bn: 128, bk: 256, group_m: 1, blocks_per_sm: 1 },
+        GemmTiles { bm: 128, bn: 64, bk: 128, group_m: 4, blocks_per_sm: 1, kernel: GemmKernel::Raw },
+        GemmTiles { bm: 128, bn: 128, bk: 256, group_m: 1, blocks_per_sm: 1, kernel: GemmKernel::Raw },
+        GemmTiles { bm: 128, bn: 256, bk: 128, group_m: 8, blocks_per_sm: 2, kernel: GemmKernel::Raw },
+        GemmTiles { kernel: GemmKernel::Mapped, ..GemmTiles::DEFAULT },
+        GemmTiles { bm: 64, bn: 128, bk: 128, group_m: 4, blocks_per_sm: 2, kernel: GemmKernel::Mapped },
     ];
     let mut failures = Vec::new();
-    for &(t, nh, k) in &[(1usize, 128usize, 256usize), (37, 128, 512), (128, 256, 256), (300, 128, 1024)] {
+    for &(t, nh, k) in &[(1usize, 256usize, 256usize), (37, 256, 512), (128, 256, 256), (300, 256, 1024)] {
         // Two "projections" (gate, up) with different weight global scales, one shared input scale.
         let igs = 628.0f32;
         let wgs = [9408.0f32, 4128.0f32];
@@ -415,8 +418,10 @@ fn gemm_small_vs_cpu_f64() {
                 }
             }
             println!(
-                "gemm T={t:<4} N={n:<4} K={k:<5} tiles={}x{}x{} gm={} bps={} |err| in bf16 ulps: max {:.3} p99 {:.3}  out of tol {bad}",
-                tiles.bm, tiles.bn, tiles.bk, tiles.group_m, tiles.blocks_per_sm, ulps.max(), ulps.pct(0.99)
+                "gemm T={t:<4} N={n:<4} K={k:<5} tiles={}x{}x{} gm={} bps={} {} |err| in bf16 ulps: max {:.3} p99 {:.3}  out of tol {bad}",
+                tiles.bm, tiles.bn, tiles.bk, tiles.group_m, tiles.blocks_per_sm,
+                format!("{:?}", tiles.kernel),
+                ulps.max(), ulps.pct(0.99)
             );
             if bad > 0 {
                 failures.push((t, n, k, tiles));

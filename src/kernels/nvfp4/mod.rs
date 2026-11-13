@@ -193,9 +193,74 @@ pub mod kernels {
             z.store(out, out_idx);
         }
     }
+
+    /// Raw-schedule variant: 1-D grid, grouped-M swizzle computed in the kernel, scalar per-half alpha.
+    /// Output columns `< split_tile * BN` get `alpha_lo`, the rest `alpha_hi`. Generics: `BM, BN, BK, BK/2, BK/16, GM`.
+    /// Safety: no bounds checks; the host wrapper validates every shape.
+    #[cutile::entry(unchecked_accesses = true)]
+    pub unsafe fn gemm_nvfp4_raw<
+        const BM: i32,
+        const BN: i32,
+        const BK: i32,
+        const BKP: i32,
+        const BKS: i32,
+        const GM: i32,
+    >(
+        z: &Tensor<bf16, { [-1, -1] }>,
+        x: &Tensor<f4e2m1fnx2, { [-1, -1] }>,
+        w: &Tensor<f4e2m1fnx2, { [-1, -1] }>,
+        x_scales: &Tensor<f8e4m3fn, { [-1, -1] }>,
+        w_scales: &Tensor<f8e4m3fn, { [-1, -1] }>,
+        alpha_lo: f32,
+        alpha_hi: f32,
+        split_tile: i32,
+        num_bid_m: i32,
+        num_bid_n: i32,
+        num_blocks: i32,
+    ) {
+        let part_x = x.partition(const_shape![BM, BKP]);
+        let part_w = w.partition(const_shape![BN, BKP]);
+        let part_xs = x_scales.partition(const_shape![BM, BKS]);
+        let part_ws = w_scales.partition(const_shape![BN, BKS]);
+        let mut part_z = unsafe { z.partition_full_mut(const_shape![BM, BN]) };
+        let total = num_bid_m * num_bid_n;
+        let group = GM * num_bid_n;
+        let mut tile_id = get_tile_block_id().0;
+        while tile_id < total {
+            let first_m = (tile_id / group) * GM;
+            let rem_m = num_bid_m - first_m;
+            let gsz = if rem_m < GM { rem_m } else { GM };
+            let in_group = tile_id % group;
+            let bid_m = first_m + in_group % gsz;
+            let bid_n = in_group / gsz;
+            let mut acc: Tile<f32, { [BM, BN] }> = constant(0.0f32, const_shape![BM, BN]);
+            for k in 0i32..num_tiles(&part_x, 1) {
+                let tx = part_x.load([bid_m, k]).unpack(const_shape![BM, BK]);
+                let tw = part_w.load([bid_n, k]).unpack(const_shape![BN, BK]).transpose();
+                let txs = part_xs.load([bid_m, k]);
+                let tws = part_ws.load([bid_n, k]).transpose();
+                acc = mmaf_scaled(tx, tw, acc, txs, tws);
+            }
+            let a: f32 = if bid_n < split_tile { alpha_lo } else { alpha_hi };
+            let out: Tile<bf16, { [BM, BN] }> = convert_tile(acc * broadcast_scalar(a, const_shape![BM, BN]));
+            part_z.store(out, [bid_m, bid_n]);
+            tile_id = tile_id + num_blocks;
+        }
+    }
 }
 
-/// Tile configuration of [`kernels::gemm_nvfp4`].
+/// Which GEMM entry point to launch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GemmKernel {
+    /// [`kernels::gemm_nvfp4_raw`]: grouped-M swizzle computed in the kernel, scalar per-half alpha, no in-kernel
+    /// bounds checks (the host validates every shape). The production path.
+    Raw,
+    /// [`kernels::gemm_nvfp4`]: safe mapped-partition schedule, per-column alpha vector. Slower (the [BM, BN] alpha
+    /// broadcast and the remaining in-kernel checks cost registers); kept as the checked reference variant.
+    Mapped,
+}
+
+/// Tile configuration of the NVFP4 GEMM.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GemmTiles {
     pub bm: usize,
@@ -205,14 +270,21 @@ pub struct GemmTiles {
     pub group_m: usize,
     /// Persistent tile blocks per SM; 0 = one tile block per output tile (no persistence).
     pub blocks_per_sm: usize,
+    pub kernel: GemmKernel,
 }
 
 impl GemmTiles {
     /// Default for elephant-1's MLP shapes on GB10 (sm_121), from `benchmarks/s1/bench_nvfp4.rs`.
-    pub const DEFAULT: GemmTiles = GemmTiles { bm: 128, bn: 128, bk: 128, group_m: 8, blocks_per_sm: 0 };
+    pub const DEFAULT: GemmTiles =
+        GemmTiles { bm: 128, bn: 128, bk: 128, group_m: 8, blocks_per_sm: 0, kernel: GemmKernel::Raw };
 
+    /// Generics of the selected kernel (`BM, BN, BK, BK/2, BK/16, GROUP_M` and, for `Mapped`, the map's `1`).
     pub fn generics(&self) -> Vec<String> {
-        [self.bm, self.bn, self.bk, self.bk / 2, self.bk / GROUP, self.group_m, 1].iter().map(|v| v.to_string()).collect()
+        let mut g = vec![self.bm, self.bn, self.bk, self.bk / 2, self.bk / GROUP, self.group_m];
+        if self.kernel == GemmKernel::Mapped {
+            g.push(1);
+        }
+        g.iter().map(|v| v.to_string()).collect()
     }
 
     /// Number of tile blocks to launch for an `[m, n]` output on a device with `sms` multiprocessors.
@@ -273,6 +345,11 @@ pub struct PreparedNvfp4 {
     pub alpha: Vec<f32>,
     /// The shared `input_global_scale` the activations are quantized with.
     pub input_global_scale: f32,
+    /// Columns `< split_n` use `alpha_lo`, the rest `alpha_hi` (the two projections of a fused gate/up; for one
+    /// projection `split_n = n` and both are equal). Used by [`kernels::gemm_nvfp4_raw`].
+    pub split_n: usize,
+    pub alpha_lo: f32,
+    pub alpha_hi: f32,
 }
 
 /// Convert checkpoint projections sharing one input (gate and up, or down alone) into the kernel layout: rows
@@ -291,7 +368,11 @@ pub fn prepare_weights(projs: &[CheckpointProj<'_>]) -> Result<PreparedNvfp4> {
         scales: Vec::with_capacity(n * k / GROUP),
         alpha: Vec::with_capacity(n),
         input_global_scale: igs,
+        split_n: first.n,
+        alpha_lo: 0.0,
+        alpha_hi: 0.0,
     };
+    ensure!(projs.len() <= 2, "prepare_weights: at most two projections share one input (gate, up)");
     for (i, p) in projs.iter().enumerate() {
         ensure!(p.k == k, "projection {i}: K = {} differs from {k}", p.k);
         ensure!(
@@ -307,6 +388,13 @@ pub fn prepare_weights(projs: &[CheckpointProj<'_>]) -> Result<PreparedNvfp4> {
         out.scales.extend_from_slice(p.weight_scale);
         let alpha = (1.0f64 / (igs as f64 * wgs as f64)) as f32;
         out.alpha.extend(std::iter::repeat_n(alpha, p.n));
+        if i == 0 {
+            out.alpha_lo = alpha;
+        }
+        out.alpha_hi = alpha;
+    }
+    if projs.len() == 1 {
+        out.split_n = n;
     }
     Ok(out)
 }
@@ -317,8 +405,13 @@ pub struct Nvfp4Linear {
     pub k: usize,
     pub packed: Arc<Tensor<f4e2m1fnx2>>,
     pub scales: Arc<Tensor<f8e4m3fn>>,
+    /// Per-column alpha (used by the `Mapped` kernel).
     pub alpha: Arc<Tensor<f32>>,
     pub input_global_scale: f32,
+    /// Columns `< split_n` use `alpha_lo`, the rest `alpha_hi` (used by the `Raw` kernel).
+    pub split_n: usize,
+    pub alpha_lo: f32,
+    pub alpha_hi: f32,
 }
 
 impl Nvfp4Linear {
@@ -332,6 +425,9 @@ impl Nvfp4Linear {
             scales: api::copy_host_vec_to_device(&scales).reshape(&[p.n, p.k / GROUP]).sync_on(stream)?.into(),
             alpha: api::copy_host_vec_to_device(&Arc::new(p.alpha.clone())).sync_on(stream)?.into(),
             input_global_scale: p.input_global_scale,
+            split_n: p.split_n,
+            alpha_lo: p.alpha_lo,
+            alpha_hi: p.alpha_hi,
         })
     }
 }
@@ -355,14 +451,13 @@ impl Nvfp4Act {
     }
 }
 
-/// Quantize bf16 `x [T, K]` into `out` (synchronous on `stream`).
-pub fn quantize(
+/// Quantize bf16 `x [T, K]` into `out`, as a device operation (enqueue with `execute`/`sync_on`, or capture).
+pub fn quantize_op(
     x: &Arc<Tensor<bf16>>,
     igs: f32,
     out: Nvfp4Act,
     tiles: QuantTiles,
-    stream: &Arc<Stream>,
-) -> Result<Nvfp4Act> {
+) -> Result<impl DeviceOp<Output = Nvfp4Act>> {
     let shape = x.shape();
     ensure!(shape.len() == 2, "quantize: x must be rank 2, got {shape:?}");
     let (t, k) = (shape[0] as usize, shape[1] as usize);
@@ -370,11 +465,76 @@ pub fn quantize(
     ensure!(k % tiles.bc == 0 && tiles.bc % GROUP == 0, "quantize: K = {k} vs BC = {}", tiles.bc);
     let q = out.packed.partition([tiles.br, tiles.bc / 2]);
     let s = out.scales.partition([tiles.br, tiles.bc / GROUP]);
-    let (q, s, _, _) = kernels::quantize_nvfp4(q, s, x.clone(), igs).generics(tiles.generics()).sync_on(stream)?;
-    Ok(Nvfp4Act { t, k, packed: q.unpartition(), scales: s.unpartition() })
+    Ok(kernels::quantize_nvfp4(q, s, x.clone(), igs)
+        .generics(tiles.generics())
+        .map(move |(q, s, _, _)| Nvfp4Act { t, k, packed: q.unpartition(), scales: s.unpartition() }))
 }
 
-/// `z [T, N] = bf16(alpha ⊙ (x_q @ W_q^T))` (synchronous on `stream`). `z` must be `[T, N]` bf16.
+/// Synchronous [`quantize_op`].
+pub fn quantize(
+    x: &Arc<Tensor<bf16>>,
+    igs: f32,
+    out: Nvfp4Act,
+    tiles: QuantTiles,
+    stream: &Arc<Stream>,
+) -> Result<Nvfp4Act> {
+    Ok(quantize_op(x, igs, out, tiles)?.sync_on(stream)?)
+}
+
+fn check_gemm_shapes(
+    x: &Tensor<f4e2m1fnx2>,
+    x_scales: &Tensor<f8e4m3fn>,
+    w: &Nvfp4Linear,
+    z: &Tensor<bf16>,
+    tiles: &GemmTiles,
+) -> Result<usize> {
+    let t = x.shape()[0] as usize;
+    ensure!(x.shape() == [t as i32, (w.k / 2) as i32], "gemm: x is {:?}, W has K = {}", x.shape(), w.k);
+    ensure!(x_scales.shape() == [t as i32, (w.k / GROUP) as i32], "gemm: x_scales is {:?}", x_scales.shape());
+    ensure!(w.packed.shape() == [w.n as i32, (w.k / 2) as i32], "gemm: W packed is {:?}", w.packed.shape());
+    ensure!(w.scales.shape() == [w.n as i32, (w.k / GROUP) as i32], "gemm: W scales is {:?}", w.scales.shape());
+    ensure!(w.alpha.shape() == [w.n as i32], "gemm: alpha is {:?}", w.alpha.shape());
+    ensure!(z.shape() == [t as i32, w.n as i32], "gemm: z is {:?}, expected [{t}, {}]", z.shape(), w.n);
+    tiles.validate(w.n, w.k)?;
+    ensure!(w.split_n % tiles.bn == 0, "gemm: alpha split at column {} is not a multiple of BN", w.split_n);
+    Ok(t)
+}
+
+/// `z [T, N] = bf16(alpha ⊙ (x_q @ W_q^T))` with the `Raw` kernel, as a device operation writing into `z`.
+/// `sms` is the device's multiprocessor count (for persistent schedules).
+pub fn gemm_op(
+    x: &Arc<Tensor<f4e2m1fnx2>>,
+    x_scales: &Arc<Tensor<f8e4m3fn>>,
+    w: &Nvfp4Linear,
+    z: Arc<Tensor<bf16>>,
+    tiles: GemmTiles,
+    sms: usize,
+) -> Result<impl DeviceOp<Output = Arc<Tensor<bf16>>>> {
+    ensure!(tiles.kernel == GemmKernel::Raw, "gemm_op launches the Raw kernel");
+    let t = check_gemm_shapes(x, x_scales, w, &z, &tiles)?;
+    let (nm, nn) = (t.div_ceil(tiles.bm), w.n / tiles.bn);
+    let ntb = tiles.num_tile_blocks(t, w.n, sms);
+    // Safety: check_gemm_shapes validated every operand against (T, N, K) and the tiles; the kernel only touches
+    // tiles bid_m < ceil(T/BM), bid_n < N/BN, k < K/BK, and partial row tiles are clipped by the partition views.
+    let op = unsafe {
+        kernels::gemm_nvfp4_raw(
+            z,
+            x.clone(),
+            w.packed.clone(),
+            x_scales.clone(),
+            w.scales.clone(),
+            w.alpha_lo,
+            w.alpha_hi,
+            (w.split_n / tiles.bn) as i32,
+            nm as i32,
+            nn as i32,
+            ntb as i32,
+        )
+    };
+    Ok(op.generics(tiles.generics()).grid((ntb, 1, 1)).map(|out| out.0))
+}
+
+/// Synchronous GEMM with either kernel. `z` must be `[T, N]` bf16.
 pub fn gemm(
     x: &Arc<Tensor<f4e2m1fnx2>>,
     x_scales: &Arc<Tensor<f8e4m3fn>>,
@@ -384,16 +544,21 @@ pub fn gemm(
     sms: usize,
     stream: &Arc<Stream>,
 ) -> Result<Tensor<bf16>> {
-    let t = x.shape()[0] as usize;
-    ensure!(x.shape()[1] as usize * 2 == w.k, "gemm: x has K/2 = {} but W has K = {}", x.shape()[1], w.k);
-    ensure!(z.shape() == [t as i32, w.n as i32], "gemm: z is {:?}, expected [{t}, {}]", z.shape(), w.n);
-    tiles.validate(w.n, w.k)?;
-    let ntb = tiles.num_tile_blocks(t, w.n, sms);
-    let zp = z.partition([tiles.bm, tiles.bn]).map([tiles.group_m, 1], ntb);
-    let (zp, ..) = kernels::gemm_nvfp4(zp, x.clone(), w.packed.clone(), x_scales.clone(), w.scales.clone(), w.alpha.clone())
-        .generics(tiles.generics())
-        .sync_on(stream)?;
-    Ok(zp.unpartition())
+    match tiles.kernel {
+        GemmKernel::Raw => {
+            let z = gemm_op(x, x_scales, w, Arc::new(z), tiles, sms)?.sync_on(stream)?;
+            Arc::try_unwrap(z).map_err(|_| anyhow::anyhow!("gemm: output tensor still shared"))
+        }
+        GemmKernel::Mapped => {
+            let t = check_gemm_shapes(x, x_scales, w, &z, &tiles)?;
+            let zp = z.partition([tiles.bm, tiles.bn]).map([tiles.group_m, 1], tiles.num_tile_blocks(t, w.n, sms));
+            let (zp, ..) =
+                kernels::gemm_nvfp4(zp, x.clone(), w.packed.clone(), x_scales.clone(), w.scales.clone(), w.alpha.clone())
+                    .generics(tiles.generics())
+                    .sync_on(stream)?;
+            Ok(zp.unpartition())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -447,7 +612,7 @@ mod tests {
 
     #[test]
     fn gemm_tiles_generics() {
-        assert_eq!(GemmTiles::DEFAULT.generics(), ["128", "128", "128", "64", "8", "8", "1"]);
+        assert_eq!(GemmTiles::DEFAULT.generics(), ["128", "128", "128", "64", "8", "8"]);
         assert_eq!(GemmTiles { blocks_per_sm: 2, ..GemmTiles::DEFAULT }.num_tile_blocks(16384, 4096, 48), 96);
         assert_eq!(GemmTiles::DEFAULT.num_tile_blocks(100, 256, 48), 2);
     }

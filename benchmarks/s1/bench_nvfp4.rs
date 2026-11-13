@@ -15,8 +15,9 @@ use cudarc::driver::{CudaContext, CudaSlice, CudaStream, sys::CUevent_flags};
 use cutile::cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use cutile::half::bf16;
 use cutile::prelude::*;
+use cutile::cuda_async::device_operation::ExecutionContext;
 use std::time::Instant;
-use sysone::kernels::nvfp4::{self, CheckpointProj, GemmTiles, Nvfp4Act, Nvfp4Linear, QuantTiles};
+use sysone::kernels::nvfp4::{self, CheckpointProj, GemmKernel, GemmTiles, Nvfp4Act, Nvfp4Linear, QuantTiles};
 
 #[derive(Parser)]
 struct Args {
@@ -27,6 +28,23 @@ struct Args {
     /// Sweep tile configurations instead of only the default.
     #[arg(long)]
     sweep: bool,
+    /// Explicit GEMM configs, e.g. `128x128x128g8p0,128x256x128g1p1m` (BMxBNxBK, group_m, blocks per SM; `m` = Mapped kernel).
+    #[arg(long, value_delimiter = ',')]
+    configs: Vec<String>,
+    /// Skip the quantize kernel.
+    #[arg(long)]
+    no_quant: bool,
+    /// Only these MLP GEMMs (`gate_up`, `down`).
+    #[arg(long, value_delimiter = ',', default_value = "gate_up,down")]
+    only: Vec<String>,
+}
+
+fn parse_cfg(s: &str) -> GemmTiles {
+    let (dims, rest) = s.split_once('g').expect("BMxBNxBKg<G>p<P>");
+    let (g, p) = rest.split_once('p').expect("g<G>p<P>");
+    let (p, kernel) = match p.strip_suffix('m') { Some(p) => (p, GemmKernel::Mapped), None => (p, GemmKernel::Raw) };
+    let d: Vec<usize> = dims.split('x').map(|v| v.parse().unwrap()).collect();
+    GemmTiles { bm: d[0], bn: d[1], bk: d[2], group_m: g.parse().unwrap(), blocks_per_sm: p.parse().unwrap(), kernel }
 }
 
 /// GEMMs per forward (DESIGN.md §6.3), as in hwprobe: (name, n, k, count).
@@ -124,13 +142,23 @@ fn random_linear(n_halves: &[usize], k: usize, stream: &Arc<cutile::cuda_core::S
     Nvfp4Linear::upload(&nvfp4::prepare_weights(&projs)?, stream)
 }
 
-fn best_of<F: FnMut() -> Result<()>>(iters: usize, mut f: F) -> Result<f64> {
-    f()?; // JIT compile + warm-up
+/// Mean ms per launch of `iters` back-to-back asynchronous launches (one warm-up batch first, JIT included), best of
+/// `reps` batches. Batching amortizes host synchronization; GPU time-slicing with other processes still shows.
+fn time_batch<S>(stream: &Arc<cutile::cuda_core::Stream>, iters: usize, reps: usize, state: &mut Option<S>,
+                 mut launch: impl FnMut(S, &ExecutionContext) -> Result<S>) -> Result<f64> {
     let mut best = f64::MAX;
-    for _ in 0..iters {
+    for rep in 0..=reps {
+        let ctx = ExecutionContext::new(stream.clone());
+        let n = if rep == 0 { 1 } else { iters };
         let t0 = Instant::now();
-        f()?;
-        best = best.min(t0.elapsed().as_secs_f64() * 1e3);
+        for _ in 0..n {
+            let st = state.take().unwrap();
+            *state = Some(launch(st, &ctx)?);
+        }
+        stream.synchronize()?;
+        if rep > 0 {
+            best = best.min(t0.elapsed().as_secs_f64() * 1e3 / n as f64);
+        }
     }
     Ok(best)
 }
@@ -139,15 +167,15 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     // cuBLAS bf16 for every projection at every T (cudarc context), then free it.
+    // The MLP shapes are re-measured right next to their NVFP4 runs (the GPU is shared; see the module docs).
     let mut bf16_ms = std::collections::BTreeMap::new();
-    {
-        let cctx = CudaContext::new(0)?;
-        let cstream = cctx.default_stream();
-        let blas = CudaBlas::new(cstream.clone())?;
-        for &t in &args.tokens {
-            for &(name, n, k, _) in PROJS {
-                let ms = cublas_ms(&cstream, &blas, t, n, k, args.iters)?;
-                bf16_ms.insert((t, name), ms);
+    let cctx = CudaContext::new(0)?;
+    let cstream = cctx.default_stream();
+    let blas = CudaBlas::new(cstream.clone())?;
+    for &t in &args.tokens {
+        for &(name, n, k, _) in PROJS {
+            if !name.starts_with("mlp.") {
+                bf16_ms.insert((t, name), cublas_ms(&cstream, &blas, t, n, k, args.iters)?);
             }
         }
     }
@@ -160,12 +188,14 @@ fn main() -> Result<()> {
     let dn = random_linear(&[4096], 12288, &stream, &mut rng)?;
     println!("device SMs: {sms}");
 
-    let gemm_cfgs: Vec<GemmTiles> = if args.sweep {
+    let gemm_cfgs: Vec<GemmTiles> = if !args.configs.is_empty() {
+        args.configs.iter().map(|c| parse_cfg(c)).collect()
+    } else if args.sweep {
         let mut v = Vec::new();
         for (bm, bn, bk) in [(128, 128, 128), (128, 256, 128), (256, 128, 128), (128, 128, 256), (64, 256, 128)] {
             for group_m in [1, 8, 16] {
                 for blocks_per_sm in [0, 1, 2] {
-                    v.push(GemmTiles { bm, bn, bk, group_m, blocks_per_sm });
+                    v.push(GemmTiles { bm, bn, bk, group_m, blocks_per_sm, kernel: GemmKernel::Raw });
                 }
             }
         }
@@ -173,8 +203,10 @@ fn main() -> Result<()> {
     } else {
         vec![GemmTiles::DEFAULT]
     };
-    let quant_cfgs: Vec<QuantTiles> = if args.sweep {
-        vec![QuantTiles::DEFAULT, QuantTiles { br: 8, bc: 256 }, QuantTiles { br: 32, bc: 256 }, QuantTiles { br: 16, bc: 512 }]
+    let quant_cfgs: Vec<QuantTiles> = if args.no_quant {
+        vec![]
+    } else if args.sweep {
+        vec![QuantTiles::DEFAULT, QuantTiles { br: 1, bc: 1024 }, QuantTiles { br: 4, bc: 512 }, QuantTiles { br: 8, bc: 256 }, QuantTiles { br: 32, bc: 128 }, QuantTiles { br: 64, bc: 64 }, QuantTiles { br: 16, bc: 512 }]
     } else {
         vec![QuantTiles::DEFAULT]
     };
@@ -185,17 +217,20 @@ fn main() -> Result<()> {
     for &t in &args.tokens {
         let mut best_ms = std::collections::BTreeMap::new();
         for (label, lin) in [("gate_up", &gu), ("down", &dn)] {
+            if !args.only.iter().any(|o| o == label) {
+                continue;
+            }
             let (n, k) = (lin.n, lin.k);
-            let bf = bf16_ms[&(t, if label == "gate_up" { "mlp.gate_up" } else { "mlp.down" })];
+            let bf = cublas_ms(&cstream, &blas, t, n, k, args.iters)?;
             // Quantize kernel (bf16 [T, K] -> NVFP4).
             let xh: Vec<bf16> = (0..t * k).map(|_| bf16::from_f32((rng.next() >> 40) as f32 / 16777216.0 - 0.5)).collect();
             let x: Arc<Tensor<bf16>> = api::copy_host_vec_to_device(&Arc::new(xh)).reshape(&[t, k]).sync_on(&stream)?.into();
             let mut act = Some(Nvfp4Act::zeros(t, k, &stream)?);
-            let mut qbest = (f64::MAX, QuantTiles::DEFAULT);
+            let mut qbest = (if args.no_quant { 0.0 } else { f64::MAX }, QuantTiles::DEFAULT);
             for &qc in &quant_cfgs {
-                let ms = best_of(args.iters, || {
-                    act = Some(nvfp4::quantize(&x, lin.input_global_scale, act.take().unwrap(), qc, &stream)?);
-                    Ok(())
+                let igs = lin.input_global_scale;
+                let ms = time_batch(&stream, args.iters, 3, &mut act, |a, ctx| {
+                    Ok(unsafe { nvfp4::quantize_op(&x, igs, a, qc)?.execute(ctx)? })
                 })?;
                 let gbs = (t * k * 2 + t * k / 2 + t * k / 16) as f64 / (ms * 1e-3) / 1e9;
                 println!("{:<10} {t:>6} {:>6} {k:>6} {:<24} {ms:>9.3} {:>9} {:>10} {:>8}   {gbs:.0} GB/s",
@@ -206,17 +241,25 @@ fn main() -> Result<()> {
             }
             let act = act.unwrap();
             let (xp, xs): (Arc<Tensor<f4e2m1fnx2>>, Arc<Tensor<f8e4m3fn>>) = (act.packed.into(), act.scales.into());
-            let mut z = Some(api::zeros::<bf16>(&[t, n]).sync_on(&stream)?);
+            let z: Arc<Tensor<bf16>> = api::zeros::<bf16>(&[t, n]).sync_on(&stream)?.into();
+            let mut zs = Some(api::zeros::<bf16>(&[t, n]).sync_on(&stream)?);
             let mut gbest = (f64::MAX, GemmTiles::DEFAULT);
             for &gc in &gemm_cfgs {
                 if n % gc.bn != 0 || k % gc.bk != 0 {
                     continue;
                 }
-                let r = best_of(args.iters, || {
-                    z = Some(nvfp4::gemm(&xp, &xs, lin, z.take().unwrap(), gc, sms, &stream)?);
-                    Ok(())
-                });
-                let cfg = format!("{}x{}x{} g{} p{}", gc.bm, gc.bn, gc.bk, gc.group_m, gc.blocks_per_sm);
+                let r = if gc.kernel == GemmKernel::Raw {
+                    let mut st = Some(());
+                    time_batch(&stream, args.iters, 3, &mut st, |(), ctx| {
+                        unsafe { nvfp4::gemm_op(&xp, &xs, lin, z.clone(), gc, sms)?.execute(ctx)? };
+                        Ok(())
+                    })
+                } else {
+                    // The mapped kernel consumes its output partition; time it synchronously.
+                    time_batch(&stream, args.iters, 3, &mut zs, |zz, _| nvfp4::gemm(&xp, &xs, lin, zz, gc, sms, &stream))
+                };
+                let cfg = format!("{}x{}x{} g{} p{}{}", gc.bm, gc.bn, gc.bk, gc.group_m, gc.blocks_per_sm,
+                                  if gc.kernel == GemmKernel::Mapped { " mapped" } else { "" });
                 match r {
                     Ok(ms) => {
                         println!("{label:<10} {t:>6} {n:>6} {k:>6} {cfg:<24} {ms:>9.3} {:>9.1} {:>10.1} {:>8.2}",
@@ -227,11 +270,15 @@ fn main() -> Result<()> {
                     }
                     Err(e) => {
                         println!("{label:<10} {t:>6} {n:>6} {k:>6} {cfg:<24} failed: {e}");
-                        z = Some(api::zeros::<bf16>(&[t, n]).sync_on(&stream)?);
+                        zs = Some(api::zeros::<bf16>(&[t, n]).sync_on(&stream)?);
                     }
                 }
             }
             best_ms.insert(label, (qbest.0, gbest.0, gbest.1, bf));
+            bf16_ms.insert((t, if label == "gate_up" { "mlp.gate_up" } else { "mlp.down" }), bf);
+        }
+        if best_ms.len() < 2 {
+            continue;
         }
         let (qg, gg, gcfg, bg) = best_ms["gate_up"];
         let (qd, gd, dcfg, bd) = best_ms["down"];
