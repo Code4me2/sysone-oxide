@@ -208,3 +208,49 @@ pub fn hidden_ids(repo: &Path, run: &str) -> Result<Vec<String>> {
     ids.sort();
     Ok(ids)
 }
+
+/// Path of a dense hidden dump (gate (a), `reference/hidden_dense.py`) listed in
+/// `tests/golden/dev/model/hidden_dense_manifest.json`; `run` is e.g. `fp32_served` or `bf16_served`.
+pub fn hidden_dense_dump(repo: &Path, run: &str, id: &str) -> Result<PathBuf> {
+    let m = dense_manifest(repo)?;
+    let root = PathBuf::from(m["root"].as_str().context("manifest root")?);
+    let rel = format!("{run}/hidden_{id}.safetensors");
+    let entry = m["files"].get(&rel).with_context(|| format!("{rel} is not in the dense manifest"))?;
+    let path = root.join(&rel);
+    let len = std::fs::metadata(&path).with_context(|| format!("{}", path.display()))?.len();
+    ensure!(Some(len) == entry["bytes"].as_u64(), "{}: size differs from the manifest", path.display());
+    Ok(path)
+}
+
+fn dense_manifest(repo: &Path) -> Result<Value> {
+    let path = repo.join("tests/golden/dev/model/hidden_dense_manifest.json");
+    Ok(serde_json::from_str(&std::fs::read_to_string(&path).with_context(|| format!("{}", path.display()))?)?)
+}
+
+/// Ids of the requests with dense hidden dumps for `run`, sorted (the gate's row order).
+pub fn hidden_dense_ids(repo: &Path, run: &str) -> Result<Vec<String>> {
+    let m = dense_manifest(repo)?;
+    let mut ids: Vec<String> = m["files"]
+        .as_object()
+        .context("files")?
+        .keys()
+        .filter_map(|k| k.strip_prefix(&format!("{run}/hidden_")).and_then(|r| r.strip_suffix(".safetensors")))
+        .map(str::to_string)
+        .collect();
+    ids.sort();
+    Ok(ids)
+}
+
+/// The dense row set's prefix rows (`reference/hidden_dense.py dense_prefix_rows`): every `max(1, P / 1024)`-th
+/// row plus the last two rows.
+pub fn dense_prefix_rows(p: usize) -> Vec<usize> {
+    let s = (p / 1024).max(1);
+    let mut rows: Vec<usize> = (0..p).step_by(s).collect();
+    for r in [p.saturating_sub(2), p.saturating_sub(1)] {
+        if r < p && !rows.contains(&r) {
+            rows.push(r);
+        }
+    }
+    rows.sort_unstable();
+    rows
+}

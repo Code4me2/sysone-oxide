@@ -214,6 +214,127 @@ impl EvalGate {
     }
 }
 
+/// Gate (a): per-layer hidden states vs the fp32 truth (`[model.hidden]`, DESIGN §9.2 "Model"), derived and
+/// validated by `reference/hidden_dense.py`. Per tap, with `e_c(r)` the candidate's and `e_b(r)` the bf16
+/// reference's relative error vs fp32 on the SAME rows `r` (the dense row set, >= `rows_min` rows):
+/// (i) `p99(e_c) <= factor x p99(e_b)` (max reported only); (ii) the lower median of `ln(e_c / e_b)` is at most
+/// `ln(paired_ratio)`; (iii) with `n_up = #{e_c > sign_ratio e_b}`, `n_down = #{e_b > sign_ratio e_c}`, the
+/// one-sided exact binomial `P(X >= k_up | Bin(k_up + k_down, 1/2))` on the counts deflated by the tap's design
+/// effect `D` (`k = floor(n / D + 1/2)`; `sign_design_effect`, measured from reference-only bf16 realizations,
+/// because rows of one request move together) is at least `sign_alpha`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HiddenGate {
+    pub factor: f64,
+    pub paired_ratio: f64,
+    pub sign_ratio: f64,
+    pub sign_alpha: f64,
+    pub rows_min: usize,
+    /// Per tap, in [`HiddenGate::TAPS`] order.
+    pub design_effect: [f64; 6],
+}
+
+/// One candidate-vs-reference comparison of gate (a) on one tap.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HiddenComparison {
+    pub cand: Stats,
+    pub refe: Stats,
+    pub median_log_ratio: f64,
+    pub n_up: usize,
+    pub n_down: usize,
+    pub design_effect: f64,
+    /// `n_up`, `n_down` deflated by the design effect.
+    pub eff_up: usize,
+    pub eff_down: usize,
+    pub sign_p: f64,
+}
+
+impl HiddenGate {
+    /// The taps gate (a) covers (`[model.hidden.<tap>]`).
+    pub const TAPS: [&'static str; 6] = ["layer0", "layer3", "layer4", "layer15", "layer31", "norm"];
+    /// Floor for errors inside the log ratio (an exact zero only occurs for bit-identical rows).
+    pub const EPS: f64 = 1e-30;
+
+    pub fn load(t: &Tolerances) -> Result<Self> {
+        let rows_min = t.f64("model.hidden.rows_min")?;
+        if !(rows_min >= 1.0 && rows_min.fract() == 0.0) {
+            bail!("model.hidden.rows_min = {rows_min} is not a positive integer");
+        }
+        let mut design_effect = [0.0; 6];
+        for (d, tap) in design_effect.iter_mut().zip(Self::TAPS) {
+            *d = t.f64(&format!("model.hidden.{tap}.sign_design_effect"))?;
+            if !(*d >= 1.0) {
+                bail!("model.hidden.{tap}.sign_design_effect = {d} is below 1");
+            }
+        }
+        Ok(Self {
+            factor: t.f64("factor")?,
+            paired_ratio: t.f64("model.hidden.paired_ratio")?,
+            sign_ratio: t.f64("model.hidden.sign_ratio")?,
+            sign_alpha: t.f64("model.hidden.sign_alpha")?,
+            rows_min: rows_min as usize,
+            design_effect,
+        })
+    }
+
+    /// Statistics of candidate errors `cand` against reference errors `refe` (row-aligned, same length) on `tap`.
+    pub fn compare(&self, tap: &str, cand: &[f64], refe: &[f64]) -> Result<HiddenComparison> {
+        let Some(ti) = Self::TAPS.iter().position(|t| *t == tap) else { bail!("unknown tap {tap}") };
+        let d = self.design_effect[ti];
+        if cand.len() != refe.len() || cand.is_empty() {
+            bail!("gate (a) needs row-aligned, non-empty errors ({} vs {})", cand.len(), refe.len());
+        }
+        let lr: Vec<f64> = cand.iter().zip(refe).map(|(c, b)| c.max(Self::EPS).ln() - b.max(Self::EPS).ln()).collect();
+        let n_up = cand.iter().zip(refe).filter(|(c, b)| **c > self.sign_ratio * **b).count();
+        let n_down = cand.iter().zip(refe).filter(|(c, b)| **b > self.sign_ratio * **c).count();
+        let eff = |n: usize| (n as f64 / d + 0.5).floor() as usize;
+        let (eff_up, eff_down) = (eff(n_up), eff(n_down));
+        Ok(HiddenComparison {
+            cand: Stats::of(cand).unwrap(),
+            refe: Stats::of(refe).unwrap(),
+            median_log_ratio: Stats::of(&lr).unwrap().p50,
+            n_up,
+            n_down,
+            design_effect: d,
+            eff_up,
+            eff_down,
+            sign_p: binom_sf_half(eff_up, eff_up + eff_down),
+        })
+    }
+
+    /// The failed criteria (`p99`, `median_log_ratio`, `sign`; empty = this tap passes).
+    pub fn failures(&self, c: &HiddenComparison) -> Vec<String> {
+        let mut out = Vec::new();
+        if !(c.cand.p99 <= self.factor * c.refe.p99) {
+            out.push(format!("p99 {:.4e} > {} x {:.4e}", c.cand.p99, self.factor, c.refe.p99));
+        }
+        if !(c.median_log_ratio <= self.paired_ratio.ln()) {
+            out.push(format!("median_log_ratio {:.4} > ln {}", c.median_log_ratio, self.paired_ratio));
+        }
+        if !(c.sign_p >= self.sign_alpha) {
+            out.push(format!("sign p {:.3e} < {} (rows up {} down {}, design effect {})", c.sign_p, self.sign_alpha,
+                             c.n_up, c.n_down, c.design_effect));
+        }
+        out
+    }
+}
+
+/// `P(X >= k)` for `X ~ Binomial(n, 1/2)` (log-space sum; relative error ~1e-12).
+pub fn binom_sf_half(k: usize, n: usize) -> f64 {
+    if k == 0 {
+        return 1.0;
+    }
+    if k > n {
+        return 0.0;
+    }
+    let mut lnf = vec![0.0f64; n + 1];
+    for i in 1..=n {
+        lnf[i] = lnf[i - 1] + (i as f64).ln();
+    }
+    let terms: Vec<f64> = (k..=n).map(|i| lnf[n] - lnf[i] - lnf[n - i] - n as f64 * std::f64::consts::LN_2).collect();
+    let m = terms.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    (m + terms.iter().map(|t| (t - m).exp()).sum::<f64>().ln()).exp().min(1.0)
+}
+
 /// Distribution summary of an error sample (nearest-rank quantiles).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Stats {
@@ -339,6 +460,20 @@ strict = true
                         "eval.{tier}.{m} = {limit} is below max(factor x {measured}, {floor})");
             }
         }
+        // [model.hidden]: gate (a) (reference/hidden_dense.py). The paired and sign ratios are the global factor,
+        // the sign test is a real test (alpha in (0, 0.05]), and every tap's p99 limit comes from >= rows_min rows.
+        let hg = HiddenGate::load(&t).unwrap_or_else(|e| panic!("[model.hidden]: {e:#}"));
+        assert_eq!((hg.paired_ratio, hg.sign_ratio), (factor, factor), "gate (a) ratios must be the global factor");
+        assert!(hg.sign_alpha > 0.0 && hg.sign_alpha <= 0.05, "sign_alpha = {}", hg.sign_alpha);
+        assert!(hg.rows_min >= 1000, "gate (a) needs >= 1000 rows (A1)");
+        for tap in HiddenGate::TAPS {
+            let k = |m: &str| format!("model.hidden.{tap}.{m}");
+            assert!(t.f64(&k("rel_p99")).is_ok() && t.f64(&k("measured_rel_p99")).is_ok(), "{tap}: no p99 limit");
+            let rows = t.f64(&k("measured_rows")).unwrap();
+            assert!(rows >= hg.rows_min as f64, "{tap}: measured on {rows} rows < rows_min");
+            assert!(t.f64(&k("rel_max")).is_err(), "{tap}: max is reported, not gated (A1)");
+            assert!(t.f64(&k("measured_sign_design_effect")).is_ok(), "{tap}: design effect lacks its measurement");
+        }
         assert!(EvalGate::load(&t, "nvfp4").unwrap().paths.len() >= 3, "NVFP4 envelope needs >= 3 QDQ paths");
         assert_eq!(EvalGate::load(&t, "nvfp4").unwrap().disagree_margin, 0.0, "NVFP4 counts every top-1 change");
         let bf16 = EvalGate::load(&t, "bf16").unwrap();
@@ -390,6 +525,50 @@ strict = true
             if want.is_empty() { passes += 1 } else { fails += 1 }
         }
         assert!(passes > 0 && fails > 0, "the fixture must hold both passing and failing comparisons");
+    }
+
+    #[test]
+    fn binomial_tail_is_exact_enough() {
+        assert_eq!(binom_sf_half(0, 0), 1.0);
+        assert_eq!(binom_sf_half(0, 7), 1.0);
+        assert_eq!(binom_sf_half(8, 7), 0.0);
+        assert!((binom_sf_half(1, 1) - 0.5).abs() < 1e-15);
+        // P(X >= 8 | n = 10) = (45 + 10 + 1) / 1024
+        assert!((binom_sf_half(8, 10) - 56.0 / 1024.0).abs() < 1e-14);
+        assert!((binom_sf_half(5, 10) - 638.0 / 1024.0).abs() < 1e-13);
+        // large n: symmetric middle and a deep tail stay finite and ordered
+        let (a, b) = (binom_sf_half(2000, 4000), binom_sf_half(2200, 4000));
+        assert!(a > 0.5 && a < 0.51 && b > 0.0 && b < 1e-9, "{a} {b}");
+    }
+
+    #[test]
+    fn hidden_gate_applies_its_rule() {
+        let mut text = "factor = 1.5\n[model.hidden]\nrows_min = 4\npaired_ratio = 1.5\nsign_ratio = 1.5\nsign_alpha = 0.01\n"
+            .to_string();
+        for tap in HiddenGate::TAPS {
+            text += &format!("[model.hidden.{tap}]\nsign_design_effect = {}\n", if tap == "norm" { 50.0 } else { 1.0 });
+        }
+        let g = HiddenGate::load(&Tolerances::parse(&text).unwrap()).unwrap();
+        let refe: Vec<f64> = (1..=200).map(|i| 1e-3 * (1.0 + (i % 17) as f64)).collect();
+        assert!(g.failures(&g.compare("layer0", &refe, &refe).unwrap()).is_empty(), "the reference passes itself");
+        let x2: Vec<f64> = refe.iter().map(|x| 2.0 * x).collect();
+        let f = g.failures(&g.compare("layer0", &x2, &refe).unwrap());
+        assert_eq!(f.len(), 3, "{f:?}");
+        // 10 rows > 1.5x worse, none better: significant on independent rows, not with a design effect of 50
+        let mut few = refe.clone();
+        few[..10].iter_mut().for_each(|x| *x *= 1.6);
+        let c = g.compare("layer0", &few, &refe).unwrap();
+        assert_eq!((c.n_up, c.n_down, c.eff_up), (10, 0, 10));
+        assert!(g.failures(&c).iter().any(|f| f.starts_with("sign")));
+        let c = g.compare("norm", &few, &refe).unwrap();
+        assert_eq!((c.eff_up, c.eff_down), (0, 0));
+        assert!(g.failures(&c).is_empty(), "design effect 50 deflates 10 rows to none");
+        let better: Vec<f64> = refe.iter().map(|x| 0.5 * x).collect();
+        assert!(g.failures(&g.compare("layer3", &better, &refe).unwrap()).is_empty());
+        let nan: Vec<f64> = refe.iter().map(|_| f64::NAN).collect();
+        assert!(!g.failures(&g.compare("layer3", &nan, &refe).unwrap()).is_empty(), "NaN must fail");
+        assert!(g.compare("layer3", &refe[..3], &refe).is_err());
+        assert!(g.compare("layer5", &refe, &refe).is_err());
     }
 
     #[test]

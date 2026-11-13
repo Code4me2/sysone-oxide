@@ -102,17 +102,23 @@ def render(report: dict) -> str:
                   f"measured_dp_p99 = {_num(nv['dp_option']['p99'])}",
                   f"measured_dp_max = {_num(nv['dp_option']['max'])}",
                   f"measured_top1_flips = {nv['top1_flips']}"])
-    h = (report.get("hidden") or {}).get("bf16_vs_fp32")
-    if h:
-        L.extend(["", "# Per-layer hidden states (DESIGN §9.2 Model): relative error ||h - h_fp32|| / ||h_fp32|| per row",
-                  "# (answer rows and sampled prefix rows), vs fp32 truth, no worse than FACTOR x the bf16 reference's.",
-                  f"# Measured on {len(h['requests'])} requests: {', '.join(h['requests'])}."])
-        for lv, st in h["rel_err"].items():
-            a = st["all"]
-            L.extend([f"[model.hidden.{lv}]",
-                      f"rel_p99 = {_num(FACTOR * a['p99'])}", f"measured_rel_p99 = {_num(a['p99'])}",
-                      f"rel_max = {_num(FACTOR * a['max'])}", f"measured_rel_max = {_num(a['max'])}",
-                      f"measured_rel_p50 = {_num(a['p50'])}", f"measured_rows = {a['n']}"])
+    # Per-layer hidden states ([model.hidden.*], gate (a)) are no longer derived from the 100 sampled rows of the
+    # W1b dumps: reference/hidden_dense.py writes them as a marked block over the dense row set (Phase 2a A1).
     L.extend(["", "# [kernels.*]: per-op tolerances belong to W3's kernel tests (fp32 torch reference per op, §9.2);",
               "# add them here as [kernels.<op>] tables with the measurement each derives from.", ""])
     return "\n".join(L)
+
+
+def keep_generated_blocks(old: str, new: str) -> str:
+    """Re-append the marked blocks other generators own (`# >>> ... >>>` to `# <<< ... <<<`, e.g. [eval] from
+    reference/eval/stats.py and [model.hidden] from reference/hidden_dense.py) that `new` lacks."""
+    out, rest = new.rstrip("\n") + "\n", old
+    while "# >>> " in rest:
+        start = rest.index("# >>> ")
+        end_tag = rest.index("# <<< ", start)
+        end = rest.index("\n", end_tag) + 1
+        block = rest[start:end]
+        if block.splitlines()[0] not in out:
+            out += "\n" + block
+        rest = rest[end:]
+    return out
