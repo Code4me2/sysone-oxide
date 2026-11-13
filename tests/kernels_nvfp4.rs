@@ -474,10 +474,10 @@ struct Layer0Index {
 #[test]
 fn gemm_layer0_vs_compressed_tensors_qdq() {
     let dir = repo().join("reference/nvfp4/data");
-    let Ok(idx) = std::fs::read(dir.join("layer0.json")) else {
-        println!("SKIPPED: {dir:?}/layer0.json missing; run reference/nvfp4/gen_layer0.py");
-        return;
-    };
+    // The data is generated, not committed; a missing file must fail rather than pass vacuously.
+    let idx = std::fs::read(dir.join("layer0.json")).unwrap_or_else(|e| {
+        panic!("{dir:?}/layer0.json: {e}; generate it with reference/nvfp4/gen_layer0.py (reference venv)")
+    });
     let idx: Layer0Index = serde_json::from_slice(&idx).unwrap();
     let blob = std::fs::read(dir.join("layer0.bin")).unwrap();
     let get_bf16 = |name: &str| {
