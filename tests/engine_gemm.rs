@@ -29,6 +29,7 @@ struct Stats {
 }
 
 /// Compare `y` against the f64 reference; returns error statistics. `ratio` is |err| / tolerance.
+#[allow(clippy::too_many_arguments)]
 fn check(y: &[f32], x: &[f32], x_stride: usize, w: &[f32], t: usize, n: usize, k: usize, bf16_out: bool) -> Stats {
     let mut abs = Vec::with_capacity(t * n);
     let (mut max_ratio, mut max_rel) = (0.0f64, 0.0f64);

@@ -323,3 +323,32 @@ fn meta_upload_matches_batch() {
     }
     assert_eq!(slots, [0, 1, 0], "host slots alternate");
 }
+
+/// Host cost of packing + enqueueing a large batch (16k tokens, 64 requests × 4 questions).
+#[test]
+fn meta_pack_cost_16k() {
+    let ctx = Context::new(0).unwrap();
+    let stream = ctx.new_stream().unwrap();
+    let shape = MetaShape { tokens: 16384, segments: 4097, answers: 4096 };
+    let mut up = MetaUploader::new(&stream, shape).unwrap();
+    let mut rng = Rng(5);
+    let mut b = DecisionBatch::default();
+    for _ in 0..64 {
+        let p: Vec<u32> = (0..216).map(|_| (rng.next() % 1000) as u32).collect();
+        let s: Vec<Vec<u32>> = (0..4).map(|_| (0..10).map(|_| (rng.next() % 1000) as u32).collect()).collect();
+        let refs: Vec<(&[u32], u16)> = s.iter().map(|v| (v.as_slice(), 26u16)).collect();
+        b.push_request(&p, &refs).unwrap();
+    }
+    b.validate().unwrap();
+    let mut times = Vec::new();
+    for _ in 0..20 {
+        let t0 = std::time::Instant::now();
+        let slot = up.pack(&b, 16384).unwrap();
+        up.upload(slot, &stream).unwrap();
+        times.push(t0.elapsed().as_secs_f64() * 1e6);
+    }
+    stream.synchronize().unwrap();
+    times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    println!("pack+enqueue T={} (16384 bucket), {} segments, {} answers: median {:.1} us, max {:.1} us",
+             b.num_tokens(), b.segments.len(), b.num_branches(), times[10], times[19]);
+}

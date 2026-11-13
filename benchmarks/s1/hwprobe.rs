@@ -3,13 +3,18 @@
 //!
 //! cuBLAS bf16 with fp32 accumulation is the baseline every cutile GEMM must beat. Inputs are random so
 //! clocks are not flattered by all-zero data.
+//!
+//! With `--profile-out PATH` it also writes the machine's platform profile (`sysone::engine::platform`), which
+//! the engine and scheduler read to size token budgets and buckets (PLATFORM.md P1, P4).
 
 use anyhow::Result;
 use clap::Parser;
 use cudarc::cublas::{CudaBlas, Gemm, GemmConfig, sys::cublasOperation_t as Op};
 use cudarc::driver::{CudaContext, CudaSlice, CudaStream, sys::CUevent_flags};
 use half::bf16;
+use std::path::PathBuf;
 use std::sync::Arc;
+use sysone::engine::platform::{ForwardPoint, PlatformProfile};
 
 #[derive(Parser)]
 struct Args {
@@ -21,6 +26,9 @@ struct Args {
     /// Copy size for the bandwidth test, in MiB.
     #[arg(long, default_value_t = 1024)]
     bw_mib: usize,
+    /// Write the platform profile (JSON) here.
+    #[arg(long)]
+    profile_out: Option<PathBuf>,
 }
 
 /// One projection of the model: `[T, k] x [n, k]^T`, appearing `count` times per forward.
@@ -102,6 +110,11 @@ fn main() -> Result<()> {
     let stream = ctx.default_stream();
     let (major, minor) = ctx.compute_capability()?;
     println!("device: {} (sm_{major}{minor})", ctx.name()?);
+    use cudarc::driver::sys::CUdevice_attribute as Attr;
+    let integrated = ctx.attribute(Attr::CU_DEVICE_ATTRIBUTE_INTEGRATED)? != 0;
+    let sm_count = ctx.attribute(Attr::CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT)? as u32;
+    let (_, total_mem) = cudarc::driver::result::mem_get_info()?;
+    println!("integrated (unified memory): {integrated}; {sm_count} SMs; {:.1} GiB visible", total_mem as f64 / (1u64 << 30) as f64);
 
     // Memory bandwidth: device-to-device copy moves 2 bytes of traffic per byte copied.
     let bytes = args.bw_mib << 20;
@@ -130,13 +143,16 @@ fn main() -> Result<()> {
     println!("\nper-projection (one instance), bf16 in/out, fp32 accumulate:");
     println!("{:>6} {:<16} {:>9} {:>9}", "T", "proj", "ms", "TFLOP/s");
     let mut forward_rows = Vec::new();
+    let mut best_tflops = 0.0f64;
     for &t in &args.tokens {
         let mut fwd_ms = 0.0;
         let mut fwd_flop = 0.0;
         for (p, ws) in PROJS.iter().zip(&weights) {
             let ms = time_ms(&stream, args.iters, || gemm(&blas, &ws[0], &x, &mut y, t, p.n, p.k))?;
             let flop = 2.0 * (t * p.n * p.k) as f64;
-            println!("{t:>6} {:<16} {ms:>9.3} {:>9.1}", p.name, flop / (ms * 1e-3) / 1e12);
+            let tflops = flop / (ms * 1e-3) / 1e12;
+            best_tflops = best_tflops.max(tflops);
+            println!("{t:>6} {:<16} {ms:>9.3} {tflops:>9.1}", p.name);
             fwd_flop += flop * p.count as f64;
         }
         // Whole-model GEMM sweep with every layer's own weights, in model order.
@@ -159,8 +175,30 @@ fn main() -> Result<()> {
 
     println!("\nGEMM-only forward estimate (all 32 layers, distinct weights):");
     println!("{:>6} {:>10} {:>9} {:>12}", "T", "ms", "TFLOP/s", "tokens/s");
+    let mut forward = Vec::new();
     for (t, ms, flop) in forward_rows {
-        println!("{t:>6} {ms:>10.2} {:>9.1} {:>12.0}", flop / (ms * 1e-3) / 1e12, t as f64 / (ms * 1e-3));
+        let (tflops, tps) = (flop / (ms * 1e-3) / 1e12, t as f64 / (ms * 1e-3));
+        println!("{t:>6} {ms:>10.2} {tflops:>9.1} {tps:>12.0}");
+        forward.push(ForwardPoint { tokens: t, ms, tflops, tokens_per_s: tps });
+    }
+    if let Some(path) = args.profile_out {
+        forward.sort_by_key(|p| p.tokens);
+        let profile = PlatformProfile {
+            version: PlatformProfile::VERSION,
+            device_name: ctx.name()?,
+            compute_capability: [major, minor],
+            integrated,
+            sm_count,
+            total_mem_bytes: total_mem as u64,
+            mem_bw_gbs: bw,
+            gemm_bf16_tflops: best_tflops,
+            gemm_weight_bytes: (weight_gb * 1e9) as u64,
+            forward,
+            note: format!("hwprobe, iters {}, bw copy {} MiB", args.iters, args.bw_mib),
+        };
+        profile.save(&path)?;
+        println!("\nplatform profile written to {} (weight floor {:.1} ms, token budget at 90% of peak tok/s: {:?})",
+                 path.display(), profile.weight_floor_ms(), profile.token_budget(0.9));
     }
     Ok(())
 }
