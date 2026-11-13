@@ -11,6 +11,11 @@
 //! y      = gated_rmsnorm(o, z, norm_w)                    bf16 [T, 4096]
 //! ```
 //!
+//! [`gdn_mixer`] fuses the first two steps differently: the conv also writes each q/k head's inverse L2 norm
+//! ([`tree_conv1d_silu_inv`], into the plan), `gdn_gates` computes g and beta only, and the inverse and scan
+//! kernels rebuild the normalised f32 q and k from the bf16 conv output ([`gdn_chunk_scan_conv`]) instead of
+//! reading 16 KB per token of stored f32 rows.
+//!
 //! Numerics follow `torch_chunk_gated_delta_rule` (chunk 64, UT/WY form, fp32), with deliberate, mathematically
 //! identical changes: fp32 matmuls run as split-TF32 ("3xTF32", ~2^-21 per product) because cuTile's plain f32
 //! `mma` is emulated and spills; the decay to the chunk end uses a reverse scan instead of `cum_last - cum` (which
@@ -122,6 +127,10 @@ pub struct GdnPlan {
     pub num_prefixes: usize,
     chunks: Tensor<i32>,
     segs: Tensor<i32>,
+    /// Per-(token, head) inverse L2 norms of the conv output's q and k heads, f32 `[tokens, 32]` (q heads, then k
+    /// heads), written by [`tree_conv1d_silu_inv`] and read by [`gdn_chunk_scan_conv`]. Per-batch data, kept in
+    /// the plan so that [`GdnScratch`] keeps its fields.
+    qk_inv: Tensor<f32>,
 }
 
 /// Host-side tables of a [`GdnPlan`] (see `tile.rs` for the layouts).
@@ -201,7 +210,8 @@ impl GdnPlan {
         let t = GdnTables::build(segments, tokens, max_chunks, max_segs)?;
         let chunks = api::copy_host_vec_to_device(&Arc::new(t.chunks)).sync_on(stream)?;
         let segs = api::copy_host_vec_to_device(&Arc::new(t.segs)).sync_on(stream)?;
-        Ok(Self { tokens, max_chunks, max_segs, num_prefixes: t.num_prefixes, chunks, segs })
+        let qk_inv = api::zeros::<f32>(&[tokens, 2 * NUM_K_HEADS]).sync_on(stream)?;
+        Ok(Self { tokens, max_chunks, max_segs, num_prefixes: t.num_prefixes, chunks, segs, qk_inv })
     }
 
     /// Rewrite the tables in place for another batch with the same capacities (for graph replay).
@@ -308,7 +318,7 @@ pub unsafe fn tree_conv1d_silu(
     conv_w: &Tensor<bf16>,
     out: DView<bf16>,
 ) -> Result<BoxedDeviceOp<()>> {
-    unsafe { conv_impl(plan, x, conv_w, out, None) }
+    unsafe { conv_impl(plan, x, conv_w, out, ConvQk::None) }
 }
 
 /// [`tree_conv1d_silu`] that also writes the L2-normalised (q also scaled) f32 q and k into `scratch.{q,k}`,
@@ -325,7 +335,31 @@ pub unsafe fn tree_conv1d_silu_qk(
     scratch: &GdnScratch,
 ) -> Result<BoxedDeviceOp<()>> {
     ensure!(plan.tokens <= scratch.tokens, "plan has {} tokens, scratch {}", plan.tokens, scratch.tokens);
-    unsafe { conv_impl(plan, x, conv_w, out, Some(scratch)) }
+    unsafe { conv_impl(plan, x, conv_w, out, ConvQk::F32(scratch)) }
+}
+
+/// [`tree_conv1d_silu`] that also writes the per-(token, head) inverse L2 norms of the q and k heads into the
+/// plan, for [`gdn_chunk_scan_conv`], which rebuilds the normalised f32 q and k from `out` with the same
+/// arithmetic (bit-identical to [`tree_conv1d_silu_qk`]'s) instead of reading 16 KB per token of f32 rows.
+///
+/// # Safety
+/// As for [`tree_conv1d_silu`].
+pub unsafe fn tree_conv1d_silu_inv(
+    plan: &GdnPlan,
+    x: DView<bf16>,
+    conv_w: &Tensor<bf16>,
+    out: DView<bf16>,
+) -> Result<BoxedDeviceOp<()>> {
+    unsafe { conv_impl(plan, x, conv_w, out, ConvQk::InvNorms) }
+}
+
+/// What the conv writes besides its bf16 output.
+enum ConvQk<'a> {
+    None,
+    /// Normalised f32 q and k into the scratch (`gdn_prep` layout).
+    F32(&'a GdnScratch),
+    /// Inverse norms into the plan.
+    InvNorms,
 }
 
 unsafe fn conv_impl(
@@ -333,17 +367,18 @@ unsafe fn conv_impl(
     x: DView<bf16>,
     conv_w: &Tensor<bf16>,
     out: DView<bf16>,
-    qk: Option<&GdnScratch>,
+    qk: ConvQk<'_>,
 ) -> Result<BoxedDeviceOp<()>> {
     x.check("conv input", plan.tokens, CONV_DIM)?;
     out.check("conv output", plan.tokens, CONV_DIM)?;
     let w = check_tensor("conv_w", conv_w, &[CONV_DIM, CONV_KERNEL])?;
-    let (q, k) = match qk {
-        Some(s) => (s.q.device_pointer(), s.k.device_pointer()),
-        // SAFETY: never dereferenced by the kernel without QK.
-        None => unsafe {
+    let inv = plan.qk_inv.device_pointer();
+    let (q, k, mode) = match qk {
+        ConvQk::F32(s) => (s.q.device_pointer(), s.k.device_pointer(), 1),
+        // SAFETY: the q, k pointers are never dereferenced by the kernel in these modes.
+        ConvQk::None | ConvQk::InvNorms => unsafe {
             let p = DevicePointer::<f32>::from_cu_deviceptr(out.ptr.cu_deviceptr());
-            (p, p)
+            (p, p, if matches!(qk, ConvQk::None) { 0 } else { 2 })
         },
     };
     let op = unsafe {
@@ -355,12 +390,13 @@ unsafe fn conv_impl(
             value(out.row_stride as i32),
             q,
             k,
+            inv,
             plan.chunks.device_pointer(),
             value(plan.max_chunks as i32),
             value(plan.tokens as i32),
         )
     }
-    .generics(vec![CONV_DIM.to_string(), CONV_BC.to_string(), (CONV_BC / HEAD_DIM).to_string(), (qk.is_some() as i32).to_string()])
+    .generics(vec![CONV_DIM.to_string(), CONV_BC.to_string(), (CONV_BC / HEAD_DIM).to_string(), mode.to_string()])
     .grid(grid(plan.max_chunks, CONV_DIM / CONV_BC, 1));
     Ok(op.map(|_| ()).boxed())
 }
@@ -529,11 +565,47 @@ pub unsafe fn gdn_chunk_scan_with(
     out: DView<bf16>,
     opts: &GdnOptions,
 ) -> Result<DeviceOpVec<()>> {
+    unsafe { scan_impl(plan, None, v, scratch, out, opts) }
+}
+
+/// [`gdn_chunk_scan_with`] for the mixer's conv output: `conv` is the full `[T, 8192]` bf16 view written by
+/// [`tree_conv1d_silu_inv`] (same plan), whose v columns are the scan's values. Instead of reading f32 q and k
+/// from `scratch.{q,k}` (16 KB per token, written by the conv or `gdn_prep`), it rebuilds them from the bf16 q, k
+/// columns and the plan's inverse norms with the same arithmetic, so the result is bit-identical to
+/// [`tree_conv1d_silu_qk`] followed by [`gdn_chunk_scan_with`]. `scratch.{q,k}` are neither read nor written.
+///
+/// # Safety
+/// As for [`tree_conv1d_silu`].
+pub unsafe fn gdn_chunk_scan_conv(
+    plan: &GdnPlan,
+    conv: DView<bf16>,
+    scratch: &GdnScratch,
+    out: DView<bf16>,
+    opts: &GdnOptions,
+) -> Result<DeviceOpVec<()>> {
+    conv.check("conv", plan.tokens, CONV_DIM)?;
+    unsafe { scan_impl(plan, Some(conv), conv.columns(2 * KEY_DIM, VALUE_DIM)?, scratch, out, opts) }
+}
+
+unsafe fn scan_impl(
+    plan: &GdnPlan,
+    conv: Option<DView<bf16>>,
+    v: DView<bf16>,
+    scratch: &GdnScratch,
+    out: DView<bf16>,
+    opts: &GdnOptions,
+) -> Result<DeviceOpVec<()>> {
     let t = plan.tokens;
     ensure!(t <= scratch.tokens, "plan has {t} tokens, scratch {}", scratch.tokens);
     ensure!(plan.num_prefixes <= scratch.slots, "{} prefixes, scratch has {} state slots", plan.num_prefixes, scratch.slots);
     v.check("v", t, VALUE_DIM)?;
     out.check("scan output", t, VALUE_DIM)?;
+    // q, k source: QKB 1 = rebuilt from the bf16 conv output and the plan's inverse norms; 0 = scratch.{q,k}
+    // (the conv pointer is then unused; v's stands in).
+    let (conv_ptr, conv_stride, qkb) = match conv {
+        Some(c) => (c.ptr, c.row_stride, 1),
+        None => (v.ptr, v.row_stride, 0),
+    };
     ensure!(opts.tp_fsb >= 2 && opts.tp_fsb <= 64 && opts.tp_fsb.count_ones() == 1, "tp_fsb {} (power of two, 2..=64)", opts.tp_fsb);
     for bv in [opts.prefix_bv, opts.suffix_bv] {
         ensure!(matches!(bv, 16 | 32 | 64 | 128), "scan block of {bv} value columns (16, 32, 64 or 128)");
@@ -545,6 +617,9 @@ pub unsafe fn gdn_chunk_scan_with(
         gdn_tile::gdn_chunk_tp(
             sp(&scratch.q),
             sp(&scratch.k),
+            conv_ptr,
+            value(conv_stride as i32),
+            sp(&plan.qk_inv),
             sp(&scratch.g),
             sp(&scratch.beta),
             sp(&scratch.tinv),
@@ -553,7 +628,7 @@ pub unsafe fn gdn_chunk_scan_with(
             value(plan.max_chunks as i32),
         )
     }
-    .generics(tp_gen.iter().map(|g| g.to_string()).chain([opts.tp_fsb.to_string()]).collect())
+    .generics(tp_gen.iter().map(|g| g.to_string()).chain([opts.tp_fsb.to_string(), qkb.to_string()]).collect())
     .compile_options(CompileOptions::default().num_worker_warps_per_cta(opts.tp_warps))
     // Heads fastest: the two v-heads of a k-head (and the heads of one chunk) read the same q, k rows together.
     .grid(grid(NUM_V_HEADS, plan.max_chunks, 1));
@@ -566,6 +641,9 @@ pub unsafe fn gdn_chunk_scan_with(
             gdn_tile::gdn_chunk_scan_fused(
                 sp(&scratch.q),
                 sp(&scratch.k),
+                conv_ptr,
+                value(conv_stride as i32),
+                sp(&plan.qk_inv),
                 v.ptr,
                 value(v.row_stride as i32),
                 sp(&scratch.g),
@@ -581,7 +659,7 @@ pub unsafe fn gdn_chunk_scan_with(
                 value(phase),
             )
         }
-        .generics(scan_gen.iter().map(|g| g.to_string()).chain([bv.to_string()]).collect())
+        .generics(scan_gen.iter().map(|g| g.to_string()).chain([bv.to_string(), qkb.to_string()]).collect())
         .compile_options(CompileOptions::default().num_worker_warps_per_cta(warps))
         // Value blocks fastest, then heads: the CTAs that read one chunk's q, k, Tinv and p (the value blocks of
         // a head, and the two v-heads of a k-head) are launched together and share those reads through L2.
@@ -746,9 +824,9 @@ pub unsafe fn gdn_mixer_with(
     let core = DView::of(&scratch.core)?;
     let mut ops = DeviceOpVec::with_capacity(6);
     unsafe {
-        ops.push(tree_conv1d_silu_qk(plan, qkv, w.conv_w, conv, scratch)?);
+        ops.push(tree_conv1d_silu_inv(plan, qkv, w.conv_w, conv)?);
         ops.push(gdn_gates(plan, conv, a, b, w, scratch)?);
-        ops.push(gdn_chunk_scan_with(plan, conv.columns(2 * KEY_DIM, VALUE_DIM)?, scratch, core, opts)?.map(|_| ()));
+        ops.push(gdn_chunk_scan_conv(plan, conv, scratch, core, opts)?.map(|_| ()));
         ops.push(gated_rmsnorm(plan, core, z, w.norm_w, eps, out)?);
     }
     Ok(ops)

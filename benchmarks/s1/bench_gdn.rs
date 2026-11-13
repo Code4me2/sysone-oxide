@@ -129,6 +129,10 @@ struct Args {
     /// Time the Phase 1 (W3a) four-launch scan instead (inverse, WY, prefix scan, suffix scan).
     #[arg(long)]
     w3a: bool,
+    /// Time the P1 scan reading stored f32 q, k (`tree_conv1d_silu_qk` + `gdn_chunk_scan_with`) instead of the
+    /// mixer's default (`tree_conv1d_silu_inv` + `gdn_chunk_scan_conv`, q and k rebuilt from the bf16 conv output).
+    #[arg(long)]
+    f32_qk: bool,
 }
 
 const SUFFIXES: usize = 8;
@@ -229,15 +233,44 @@ fn main() -> Result<()> {
         }
     }
     let w3a = args.w3a;
+    let f32_qk = args.f32_qk;
     if w3a {
         configs.truncate(1);
     }
     for opts in configs {
-        println!("# {}", if w3a { "W3a scan (tinv, wy, scan_p, scan_s)".to_string() } else { format!("{opts:?} (tinv = Tinv + p, wy unused)") });
-        let scan = |plan: &GdnPlan, v: DView<bf16>, scratch: &GdnScratch, core: DView<bf16>| -> DeviceOpVec<()> {
+        println!(
+            "# {}",
+            if w3a {
+                "W3a scan (tinv, wy, scan_p, scan_s)".to_string()
+            } else {
+                format!("{opts:?} (tinv = Tinv + p, wy unused; q, k {})", if f32_qk { "stored f32" } else { "from the bf16 conv" })
+            }
+        );
+        let scan = |plan: &GdnPlan, conv: DView<bf16>, scratch: &GdnScratch, core: DView<bf16>| -> DeviceOpVec<()> {
+            let v = conv.columns(2 * KEY_DIM, VALUE_DIM).unwrap();
             // SAFETY: as for the other launches below.
             unsafe {
-                if w3a { gdn_chunk_scan_w3a(plan, v, scratch, core) } else { gdn_chunk_scan_with(plan, v, scratch, core, &opts) }
+                if w3a {
+                    gdn_chunk_scan_w3a(plan, v, scratch, core)
+                } else if f32_qk {
+                    gdn_chunk_scan_with(plan, v, scratch, core, &opts)
+                } else {
+                    gdn_chunk_scan_conv(plan, conv, scratch, core, &opts)
+                }
+            }
+            .unwrap()
+        };
+        // The conv of each path: W3a plain (then gdn_prep), P1 with stored f32 q, k, or with inverse norms.
+        let conv_op = |plan: &GdnPlan, x: DView<bf16>, conv: DView<bf16>, scratch: &GdnScratch| -> BoxedDeviceOp<()> {
+            // SAFETY: as for the other launches below.
+            unsafe {
+                if w3a {
+                    tree_conv1d_silu(plan, x, &conv_w, conv)
+                } else if f32_qk {
+                    tree_conv1d_silu_qk(plan, x, &conv_w, conv, scratch)
+                } else {
+                    tree_conv1d_silu_inv(plan, x, &conv_w, conv)
+                }
             }
             .unwrap()
         };
@@ -269,30 +302,23 @@ fn main() -> Result<()> {
             // SAFETY (all launches below): every buffer outlives the synchronous timing loops.
             let a = pv.columns(CONV_DIM + VALUE_DIM, 32)?;
             let b = pv.columns(CONV_DIM + VALUE_DIM + 32, 32)?;
-            let v = conv.columns(2 * KEY_DIM, VALUE_DIM)?;
             let z = pv.columns(CONV_DIM, VALUE_DIM)?;
             let mixer = time(args.iters, &s, &|| {
                 let mut ops = DeviceOpVec::with_capacity(4);
                 unsafe {
+                    ops.push(conv_op(&plan, pv.columns(0, CONV_DIM).unwrap(), conv, &scratch));
                     if w3a {
-                        ops.push(tree_conv1d_silu(&plan, pv.columns(0, CONV_DIM).unwrap(), &conv_w, conv).unwrap());
                         ops.push(gdn_prep(&plan, conv, a, b, &w, &scratch).unwrap());
                     } else {
-                        ops.push(tree_conv1d_silu_qk(&plan, pv.columns(0, CONV_DIM).unwrap(), &conv_w, conv, &scratch).unwrap());
                         ops.push(gdn_gates(&plan, conv, a, b, &w, &scratch).unwrap());
                     }
-                    ops.push(scan(&plan, v, &scratch, core).map(|_| ()));
+                    ops.push(scan(&plan, conv, &scratch, core).map(|_| ()));
                     ops.push(gated_rmsnorm(&plan, core, z, &norm_w, 1e-6, ov).unwrap());
                 }
                 ops
             })?;
-            // P1: conv also writes normalised q, k (prep = gates only); W3a: separate conv and prep.
-            let t_conv = time(args.iters, &s, &|| {
-                let x = pv.columns(0, CONV_DIM).unwrap();
-                one(unsafe {
-                    if w3a { tree_conv1d_silu(&plan, x, &conv_w, conv) } else { tree_conv1d_silu_qk(&plan, x, &conv_w, conv, &scratch) }.unwrap()
-                })
-            })?;
+            // P1: conv also writes inverse norms (or normalised f32 q, k), prep = gates only; W3a: conv, then prep.
+            let t_conv = time(args.iters, &s, &|| one(conv_op(&plan, pv.columns(0, CONV_DIM).unwrap(), conv, &scratch)))?;
             let t_prep = time(args.iters, &s, &|| {
                 one(unsafe { if w3a { gdn_prep(&plan, conv, a, b, &w, &scratch) } else { gdn_gates(&plan, conv, a, b, &w, &scratch) }.unwrap() })
             })?;
@@ -302,7 +328,7 @@ fn main() -> Result<()> {
             let mut parts = [0f64; 4];
             for k in 0..4 {
                 parts[k] = time(args.iters, &s, &|| {
-                    let mut ops = scan(&plan, v, &scratch, core);
+                    let mut ops = scan(&plan, conv, &scratch, core);
                     let keep = ops.remove(k);
                     let mut v = DeviceOpVec::with_capacity(1);
                     v.push(keep);
