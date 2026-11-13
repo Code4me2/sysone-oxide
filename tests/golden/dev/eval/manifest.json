@@ -1,0 +1,16 @@
+{
+ "nvfp4_perq": {
+  "eval/runs/nvfp4_perq/part-000.json": {
+   "bytes": 2453187,
+   "sha256": "b99e4a79b4f80448cad0376657fcd5feb85255358dfaf6aa6f2f79a75ef0783a"
+  },
+  "eval/runs/nvfp4_perq/part-001.json": {
+   "bytes": 46650,
+   "sha256": "25ab8e42e8a319eee596b4d58e7ff8ab35956be3a15a5e76a52d8b973c51f7cb"
+  },
+  "eval/runs/nvfp4_perq/part-002.json": {
+   "bytes": 4120,
+   "sha256": "4bcdd1fec33d6bb24d4318dd7aa5fee6722ea62cc096209a623ccb5fd1839869"
+  }
+ }
+}

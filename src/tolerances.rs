@@ -140,6 +140,75 @@ fn parse_value(v: &str) -> Result<Value> {
     Ok(Value::Num(x))
 }
 
+/// Thresholds of the statistical end-to-end gate on the labeled eval set (`[eval.<tier>]`, DESIGN §9.2),
+/// derived by `reference/eval/stats.py`. A candidate passes iff, against every reference path of the tier:
+/// top-1 disagreement (all questions), mean |dp| and p99 |dp| are at most the limits; the lower bound of the
+/// paired-bootstrap 95% CI of `acc(candidate) - acc(ref)` is at least `-acc_drop`; and (bf16 only)
+/// `Brier(candidate) - Brier(ref) <= brier_rise`. `reference/eval/score.py` applies it to a live server.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EvalGate {
+    pub tier: String,
+    /// The reference paths whose pairwise envelope the limits come from (`+`-separated in the file).
+    pub paths: Vec<String>,
+    pub disagree: f64,
+    pub dp_mean: f64,
+    pub dp_p99: f64,
+    pub acc_drop: f64,
+    pub brier_rise: Option<f64>,
+}
+
+/// One candidate-vs-reference comparison, as `reference/eval/stats.py compare()` computes it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EvalComparison {
+    pub disagree: f64,
+    pub dp_mean: f64,
+    pub dp_p99: f64,
+    /// Lower bound of the paired-bootstrap 95% CI of acc(candidate) - acc(reference).
+    pub acc_diff_ci_lo: f64,
+    pub brier_diff: f64,
+}
+
+impl EvalGate {
+    /// The tiers `tests/tolerances.toml` must carry.
+    pub const TIERS: [&'static str; 2] = ["nvfp4", "bf16"];
+
+    pub fn load(t: &Tolerances, tier: &str) -> Result<Self> {
+        let k = |name: &str| format!("eval.{tier}.{name}");
+        let paths: Vec<String> = t.str(&k("paths"))?.split('+').map(str::to_string).collect();
+        if paths.len() < 2 || paths.iter().any(String::is_empty) {
+            bail!("eval.{tier}.paths needs at least two reference paths");
+        }
+        let brier_rise = if t.get(&k("brier_rise")).is_some() { Some(t.f64(&k("brier_rise"))?) } else { None };
+        Ok(Self {
+            tier: tier.to_string(),
+            paths,
+            disagree: t.f64(&k("disagree"))?,
+            dp_mean: t.f64(&k("dp_mean"))?,
+            dp_p99: t.f64(&k("dp_p99"))?,
+            acc_drop: t.f64(&k("acc_drop"))?,
+            brier_rise,
+        })
+    }
+
+    /// The failed checks of one candidate-vs-reference comparison (empty = this comparison passes).
+    pub fn failures(&self, c: &EvalComparison) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut le = |name: &str, v: f64, lim: f64| {
+            if !(v <= lim) {
+                out.push(format!("{name} {v:.4e} > {lim:.4e}"));
+            }
+        };
+        le("disagree", c.disagree, self.disagree);
+        le("dp_mean", c.dp_mean, self.dp_mean);
+        le("dp_p99", c.dp_p99, self.dp_p99);
+        le("-acc_ci_lo", -c.acc_diff_ci_lo, self.acc_drop);
+        if let Some(b) = self.brier_rise {
+            le("brier_diff", c.brier_diff, b);
+        }
+        out
+    }
+}
+
 /// Distribution summary of an error sample (nearest-rank quantiles).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Stats {
@@ -241,5 +310,44 @@ strict = true
             assert!(t.f64(gate).is_ok(), "missing {gate}");
         }
         assert!(checked >= 10, "only {checked} thresholds carry a measurement");
+
+        // [eval.<tier>]: the statistical eval-set gates (reference/eval/stats.py). Every limit is covered by the
+        // measured_ rule above; here: both tiers load, every gated metric carries its measurement, the NVFP4
+        // envelope spans at least three QDQ kernel shapes, and rates stay rates.
+        for tier in EvalGate::TIERS {
+            let g = EvalGate::load(&t, tier).unwrap_or_else(|e| panic!("[eval.{tier}]: {e:#}"));
+            let mut gated = vec!["disagree", "dp_mean", "dp_p99", "acc_drop"];
+            if tier == "bf16" {
+                assert!(g.brier_rise.is_some(), "eval.bf16 needs brier_rise");
+                gated.push("brier_rise");
+            }
+            for m in gated {
+                assert!(t.f64(&format!("eval.{tier}.measured_{m}")).is_ok(), "eval.{tier}.{m} lacks its measurement");
+            }
+            for (name, v) in [("disagree", g.disagree), ("acc_drop", g.acc_drop), ("dp_mean", g.dp_mean),
+                              ("dp_p99", g.dp_p99)] {
+                assert!(v > 0.0 && v <= 1.0, "eval.{tier}.{name} = {v} is not a rate in (0, 1]");
+            }
+            assert!(g.dp_mean <= g.dp_p99 || g.dp_p99 == 0.0, "eval.{tier}: mean |dp| above its p99");
+        }
+        assert!(EvalGate::load(&t, "nvfp4").unwrap().paths.len() >= 3, "NVFP4 envelope needs >= 3 QDQ paths");
+    }
+
+    #[test]
+    fn eval_gate_applies_its_rule() {
+        let t = Tolerances::parse(
+            "[eval.bf16]\npaths = \"a+b\"\ndisagree = 0.01\ndp_mean = 0.001\ndp_p99 = 0.01\nacc_drop = 0.02\n\
+             brier_rise = 0.005\n[eval.nvfp4]\npaths = \"a\"\ndisagree = 0.1\ndp_mean = 0.1\ndp_p99 = 0.1\nacc_drop = 0.1\n",
+        )
+        .unwrap();
+        let g = EvalGate::load(&t, "bf16").unwrap();
+        assert_eq!(g.paths, ["a", "b"]);
+        let ok = EvalComparison { disagree: 0.01, dp_mean: 5e-4, dp_p99: 0.009, acc_diff_ci_lo: -0.02, brier_diff: 0.0 };
+        assert!(g.failures(&ok).is_empty());
+        let bad = EvalComparison { acc_diff_ci_lo: -0.03, brier_diff: 0.01, ..ok };
+        assert_eq!(g.failures(&bad).len(), 2);
+        let nan = EvalComparison { dp_p99: f64::NAN, ..ok };
+        assert_eq!(g.failures(&nan).len(), 1, "NaN must fail");
+        assert!(EvalGate::load(&t, "nvfp4").is_err(), "a single reference path is no envelope");
     }
 }

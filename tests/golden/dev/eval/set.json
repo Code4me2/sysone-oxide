@@ -1,0 +1,3885 @@
+{
+ "schema": 1,
+ "seed": 20261113,
+ "labeled_qid": "task",
+ "records": 278,
+ "labeled_tasks": 278,
+ "support_questions": 556,
+ "per_source": {
+  "banking77": 128,
+  "ledgar": 128,
+  "longbench_v2": 22
+ },
+ "limits": {
+  "card_branch_limit": 16384,
+  "qev_branch_limit": 32768,
+  "qev_request_limit": 65536
+ },
+ "longbench_v2_eligibility": {
+  "items": 503,
+  "skipped_bad_choices": 1,
+  "context_over_limit": 391,
+  "qev_eligible": 111,
+  "card_eligible": 22,
+  "qev_only_eligible_ids": [
+   "66ebb0e55a08c7b9b35ddd6a",
+   "66ebbe4f5a08c7b9b35de533",
+   "66ebc0c95a08c7b9b35de7f3",
+   "66ebc4af5a08c7b9b35dede0",
+   "66ebc7445a08c7b9b35df155",
+   "66ebc95f5a08c7b9b35df497",
+   "66ebca1e5a08c7b9b35df5e8",
+   "66ebcc1e5a08c7b9b35df87d",
+   "66ebce825a08c7b9b35dfc75",
+   "66ebd0825a08c7b9b35dfe9d",
+   "66ebd22e5a08c7b9b35e0126",
+   "66ebd3075a08c7b9b35e02bd",
+   "66ebd49a5a08c7b9b35e0550",
+   "66ebd5125a08c7b9b35e0616",
+   "66ebd5675a08c7b9b35e06bf",
+   "66ebd92d5a08c7b9b35e0bf0",
+   "66ebda775a08c7b9b35e0dcb",
+   "66ebde0f5a08c7b9b35e1256",
+   "66ebe30a5a08c7b9b35e1693",
+   "66ebe68d5a08c7b9b35e190b",
+   "66ebed525a08c7b9b35e1cb4",
+   "66ebee0a5a08c7b9b35e1d05",
+   "66ec09ec821e116aacb19620",
+   "66ec0d4b821e116aacb19af8",
+   "66ec0d51821e116aacb19b0f",
+   "66ec0f3c821e116aacb19d70",
+   "66ec1db2821e116aacb1ad69",
+   "66ec1e3f821e116aacb1ae7d",
+   "66ec21e6821e116aacb1b2d2",
+   "66ec2e2a821e116aacb1bb9f",
+   "66ec2fde821e116aacb1bd18",
+   "66ec3a46821e116aacb1c49f",
+   "66ec3d1d821e116aacb1c622",
+   "66ec41d3821e116aacb1c874",
+   "66ece358821e116aacb1dc08",
+   "66ece958821e116aacb1df04",
+   "66ed1556821e116aacb1ea14",
+   "66ed2c87821e116aacb1f149",
+   "66ed910a821e116aacb2033b",
+   "66ee490e821e116aacb2149c",
+   "66ee8bab821e116aacb21e44",
+   "66eefa2f821e116aacb2284f",
+   "66eefe85821e116aacb228dc",
+   "66f0ed5a821e116aacb265ab",
+   "66f10d67821e116aacb268d0",
+   "66f120a9821e116aacb26d02",
+   "66f14c70821e116aacb271ee",
+   "66f284ff821e116aacb29763",
+   "66f2aac2821e116aacb2a9de",
+   "66f37635821e116aacb2d017",
+   "66f3918f821e116aacb2d8b7",
+   "66f39aa7821e116aacb2da76",
+   "66f52567821e116aacb329bc",
+   "66f52c6d821e116aacb32cb0",
+   "66f53b9b821e116aacb332fc",
+   "66f55729821e116aacb3358b",
+   "66f55d66821e116aacb33734",
+   "66f56c9c821e116aacb33a45",
+   "66f578fa821e116aacb33c58",
+   "66f58d6c821e116aacb33e76",
+   "66f618f1bb02136c067c16f9",
+   "66f67c18bb02136c067c21b8",
+   "66f68b33bb02136c067c2303",
+   "66f8d84cbb02136c067c465f",
+   "66f95126bb02136c067c5070",
+   "66f958b3bb02136c067c5219",
+   "66f96115bb02136c067c541c",
+   "66fa6867bb02136c067c6b3b",
+   "66fab4bfbb02136c067c754c",
+   "66fb5f73bb02136c067c7ae7",
+   "66fb6d71bb02136c067c7c34",
+   "66fc0152bb02136c067c8826",
+   "66fcf2f2bb02136c067c9169",
+   "66fcfb5fbb02136c067c93ae",
+   "6701cda0bb02136c067cb6eb",
+   "6703933bbb02136c067ccd78",
+   "6703fc69bb02136c067cd7c2",
+   "6704a442bb02136c067cdd91",
+   "67062fbfbb02136c067cf66a",
+   "6708a096bb02136c067d1789",
+   "6709d44abb02136c067d1d5d",
+   "6713066fbb02136c067d3214",
+   "6719b9f1bb02136c067d4389",
+   "6719bc01bb02136c067d43fa",
+   "6719bce5bb02136c067d4447",
+   "671b08c8bb02136c067d4e19",
+   "671b1335bb02136c067d4e88",
+   "671b13f5bb02136c067d4ee3",
+   "671b1480bb02136c067d4f14"
+  ]
+ },
+ "requests_file": "/home/velvet/Desktop/sysone-ref/golden/dev/eval/requests.jsonl",
+ "requests_sha256": "bff2bad6c8b6af187322c5e1faa87841bfaca60cc56432abeb88c75b72d6dfec",
+ "sources": {
+  "banking77": {
+   "revision": "PolyAI/banking77@1846984189f2bc0ac51c6fc3a600fa9e1714e0c6 (test split)",
+   "file": "banking77/data/test-00000-of-00001.parquet",
+   "sha256": "1f40f777c33f0edfa6c530ff84fe2878db6490838c12d22d036f626948905341"
+  },
+  "ledgar": {
+   "revision": "coastalcph/lex_glue@c23fdff1a6bf74e0e1a71cb86f1e781d37da888c (ledgar, test split)",
+   "file": "lex_glue/ledgar/test-00000-of-00001.parquet",
+   "sha256": "af9ed0ec09545d39449ffddca3996a1a7774e2bd0a9d6fc09d4e9dd067892a7a"
+  },
+  "longbench_v2": {
+   "revision": "zai-org/LongBench-v2 (= THUDM/LongBench-v2)@2b48e494f2c7a2f0af81aae178e05c7e1dde0fe9",
+   "file": "longbench_v2/data.json",
+   "sha256": "15d61c22d92c96900b3c4948b6aeea218d3214b676a65df48e7b8555604c7fe2"
+  }
+ },
+ "builder_sha256": "3ae7a57ea46e42fc2c203dd45b4500f1235fd3550c58f1fb5804af8272e2d6ba",
+ "tokenizer_sha256": "a5cd9732badce41de57e6efce8302930ded1c1188c5f81feb2bd6c24c4a1941f",
+ "manifest": [
+  {
+   "id": "banking77-00046",
+   "source": "banking77",
+   "source_index": 46,
+   "gold": {
+    "task": "card_linking"
+   },
+   "n_options": 77,
+   "prefix_tokens": 56,
+   "longest": 767,
+   "total": 928,
+   "request_sha256": "ae7f74cb090bd8669d8e1da90b62e2b4b1a32aa3b38ebd6d2e8f4d91c72619e4"
+  },
+  {
+   "id": "banking77-00052",
+   "source": "banking77",
+   "source_index": 52,
+   "gold": {
+    "task": "card_linking"
+   },
+   "n_options": 77,
+   "prefix_tokens": 58,
+   "longest": 769,
+   "total": 930,
+   "request_sha256": "6b6bab3fdd4c814f5b41eefbb8dee7aefd3f75e42d4a313e108a29f0ee243a1a"
+  },
+  {
+   "id": "banking77-00078",
+   "source": "banking77",
+   "source_index": 78,
+   "gold": {
+    "task": "card_linking"
+   },
+   "n_options": 77,
+   "prefix_tokens": 53,
+   "longest": 764,
+   "total": 925,
+   "request_sha256": "81f1cefd47fd2b8f66428f561f0d4b5e9325b7a40464253ed71b18dbfb4c788e"
+  },
+  {
+   "id": "banking77-00098",
+   "source": "banking77",
+   "source_index": 98,
+   "gold": {
+    "task": "exchange_rate"
+   },
+   "n_options": 77,
+   "prefix_tokens": 54,
+   "longest": 765,
+   "total": 926,
+   "request_sha256": "84627fa329b96cbf9c5de1b2c63fff94bd1f0d2547be9d9200335a994b10361f"
+  },
+  {
+   "id": "banking77-00099",
+   "source": "banking77",
+   "source_index": 99,
+   "gold": {
+    "task": "exchange_rate"
+   },
+   "n_options": 77,
+   "prefix_tokens": 54,
+   "longest": 765,
+   "total": 926,
+   "request_sha256": "c58897b36a68c986ac0a9ffde8c59bac12c9d1386f0fbdf042a9e69094465710"
+  },
+  {
+   "id": "banking77-00159",
+   "source": "banking77",
+   "source_index": 159,
+   "gold": {
+    "task": "card_payment_wrong_exchange_rate"
+   },
+   "n_options": 77,
+   "prefix_tokens": 60,
+   "longest": 771,
+   "total": 932,
+   "request_sha256": "0cb3ba87f780dffbbb13b726e5f3d0fe7447881054f22df452c3b78359da6ad1"
+  },
+  {
+   "id": "banking77-00196",
+   "source": "banking77",
+   "source_index": 196,
+   "gold": {
+    "task": "extra_charge_on_statement"
+   },
+   "n_options": 77,
+   "prefix_tokens": 65,
+   "longest": 776,
+   "total": 937,
+   "request_sha256": "108670817e181f91f5e195bebd8a43f0de89416f5969a418515ce62d0c9cbb0e"
+  },
+  {
+   "id": "banking77-00205",
+   "source": "banking77",
+   "source_index": 205,
+   "gold": {
+    "task": "pending_cash_withdrawal"
+   },
+   "n_options": 77,
+   "prefix_tokens": 62,
+   "longest": 773,
+   "total": 934,
+   "request_sha256": "fc3ba3db30fa70138b7d4373df9fb0744db5a519f09419ead4b365458a86f2e6"
+  },
+  {
+   "id": "banking77-00243",
+   "source": "banking77",
+   "source_index": 243,
+   "gold": {
+    "task": "fiat_currency_support"
+   },
+   "n_options": 77,
+   "prefix_tokens": 52,
+   "longest": 763,
+   "total": 924,
+   "request_sha256": "530a41bb644d7e088a24f8a122c1ca6585db02ffbe1537e568b634b83af519fc"
+  },
+  {
+   "id": "banking77-00252",
+   "source": "banking77",
+   "source_index": 252,
+   "gold": {
+    "task": "fiat_currency_support"
+   },
+   "n_options": 77,
+   "prefix_tokens": 51,
+   "longest": 762,
+   "total": 923,
+   "request_sha256": "af5f67825364a49c28d92ee4ebab0d5b94148b9288926f222dfa1674946a5811"
+  },
+  {
+   "id": "banking77-00254",
+   "source": "banking77",
+   "source_index": 254,
+   "gold": {
+    "task": "fiat_currency_support"
+   },
+   "n_options": 77,
+   "prefix_tokens": 52,
+   "longest": 763,
+   "total": 924,
+   "request_sha256": "c1890f35d5d5c6cdf72c1396e02cf043cae486d36783ddcddf762fd82a3952e0"
+  },
+  {
+   "id": "banking77-00290",
+   "source": "banking77",
+   "source_index": 290,
+   "gold": {
+    "task": "card_delivery_estimate"
+   },
+   "n_options": 77,
+   "prefix_tokens": 53,
+   "longest": 764,
+   "total": 925,
+   "request_sha256": "0a59ed2fa777b05b99711af3bd717381db01fd657f87de7b89a8660aaa178b8b"
+  },
+  {
+   "id": "banking77-00296",
+   "source": "banking77",
+   "source_index": 296,
+   "gold": {
+    "task": "card_delivery_estimate"
+   },
+   "n_options": 77,
+   "prefix_tokens": 54,
+   "longest": 765,
+   "total": 926,
+   "request_sha256": "19cb28e136c3740a68e0dd82dac217da6139f06425972798a00b457e7628b8e2"
+  },
+  {
+   "id": "banking77-00322",
+   "source": "banking77",
+   "source_index": 322,
+   "gold": {
+    "task": "automatic_top_up"
+   },
+   "n_options": 77,
+   "prefix_tokens": 66,
+   "longest": 777,
+   "total": 938,
+   "request_sha256": "8d111243aa443fc481f4bc3daedff6b602f23574c0347049c1eeafd052f8706f"
+  },
+  {
+   "id": "banking77-00329",
+   "source": "banking77",
+   "source_index": 329,
+   "gold": {
+    "task": "automatic_top_up"
+   },
+   "n_options": 77,
+   "prefix_tokens": 65,
+   "longest": 776,
+   "total": 937,
+   "request_sha256": "92fb78f8b58fd2af67a577415aab93087b438e66afed5300d7f82c4af7bf297d"
+  },
+  {
+   "id": "banking77-00376",
+   "source": "banking77",
+   "source_index": 376,
+   "gold": {
+    "task": "card_not_working"
+   },
+   "n_options": 77,
+   "prefix_tokens": 52,
+   "longest": 763,
+   "total": 924,
+   "request_sha256": "200f60dbeda5f20e8c431cdab7766476708aaa9af0c6b9a559c84b97bb3caa8e"
+  },
+  {
+   "id": "banking77-00415",
+   "source": "banking77",
+   "source_index": 415,
+   "gold": {
+    "task": "exchange_via_app"
+   },
+   "n_options": 77,
+   "prefix_tokens": 54,
+   "longest": 765,
+   "total": 926,
+   "request_sha256": "5e9e62c4eebe94080ec6ab686f2c1e7c7e7ca0321de668f5273da2d65dc02e50"
+  },
+  {
+   "id": "banking77-00496",
+   "source": "banking77",
+   "source_index": 496,
+   "gold": {
+    "task": "age_limit"
+   },
+   "n_options": 77,
+   "prefix_tokens": 56,
+   "longest": 767,
+   "total": 928,
+   "request_sha256": "9723e13bb49e27327fd25bb81d368c0ee01eabe62de9ec4568465685028d8734"
+  },
+  {
+   "id": "banking77-00570",
+   "source": "banking77",
+   "source_index": 570,
+   "gold": {
+    "task": "contactless_not_working"
+   },
+   "n_options": 77,
+   "prefix_tokens": 69,
+   "longest": 780,
+   "total": 941,
+   "request_sha256": "11f6fe92d5e546762ba9831624c6b2689beea1cabdd82c78f98a44412caa601f"
+  },
+  {
+   "id": "banking77-00610",
+   "source": "banking77",
+   "source_index": 610,
+   "gold": {
+    "task": "top_up_by_bank_transfer_charge"
+   },
+   "n_options": 77,
+   "prefix_tokens": 58,
+   "longest": 769,
+   "total": 930,
+   "request_sha256": "cf8638b0a96b340b32f9831607a85fd9834e4b165695712ba4b322ae6774f7bb"
+  },
+  {
+   "id": "banking77-00635",
+   "source": "banking77",
+   "source_index": 635,
+   "gold": {
+    "task": "top_up_by_bank_transfer_charge"
+   },
+   "n_options": 77,
+   "prefix_tokens": 56,
+   "longest": 767,
+   "total": 928,
+   "request_sha256": "b5f189447c4fbb9d81a598152b773b9964b16b1b6390b4dcc251cf06469fc985"
+  },
+  {
+   "id": "banking77-00698",
+   "source": "banking77",
+   "source_index": 698,
+   "gold": {
+    "task": "cancel_transfer"
+   },
+   "n_options": 77,
+   "prefix_tokens": 52,
+   "longest": 763,
+   "total": 924,
+   "request_sha256": "d3a6bf8cccfd1fa31021a8f31623dd185a283b5597fc1e283d9af4ed1c4b977b"
+  },
+  {
+   "id": "banking77-00758",
+   "source": "banking77",
+   "source_index": 758,
+   "gold": {
+    "task": "top_up_limits"
+   },
+   "n_options": 77,
+   "prefix_tokens": 53,
+   "longest": 764,
+   "total": 925,
+   "request_sha256": "38996823d306f74a847e3bfebba8b6c3a9b7d82b26ef904339b2dfc51e53d799"
+  },
+  {
+   "id": "banking77-00777",
+   "source": "banking77",
+   "source_index": 777,
+   "gold": {
+    "task": "wrong_amount_of_cash_received"
+   },
+   "n_options": 77,
+   "prefix_tokens": 79,
+   "longest": 790,
+   "total": 951,
+   "request_sha256": "884b082ed348eaa45792bd1aca835d0e18f88cd06492be218b790e02889b2499"
+  },
+  {
+   "id": "banking77-00783",
+   "source": "banking77",
+   "source_index": 783,
+   "gold": {
+    "task": "wrong_amount_of_cash_received"
+   },
+   "n_options": 77,
+   "prefix_tokens": 57,
+   "longest": 768,
+   "total": 929,
+   "request_sha256": "a0c17c2114ed117e8ad8d35b9d9f5ebadf657e82eb23063eaef807ee0de514fe"
+  },
+  {
+   "id": "banking77-00823",
+   "source": "banking77",
+   "source_index": 823,
+   "gold": {
+    "task": "card_payment_fee_charged"
+   },
+   "n_options": 77,
+   "prefix_tokens": 58,
+   "longest": 769,
+   "total": 930,
+   "request_sha256": "b376c2c17f785b77c13d599fa067e071c0cc8be995bb5b653fe120b5726ac212"
+  },
+  {
+   "id": "banking77-00917",
+   "source": "banking77",
+   "source_index": 917,
+   "gold": {
+    "task": "supported_cards_and_currencies"
+   },
+   "n_options": 77,
+   "prefix_tokens": 52,
+   "longest": 763,
+   "total": 924,
+   "request_sha256": "4a565d65180ce1253dd0b67f306488250b614cb1d5ba8831549583866a7565cf"
+  },
+  {
+   "id": "banking77-00970",
+   "source": "banking77",
+   "source_index": 970,
+   "gold": {
+    "task": "card_acceptance"
+   },
+   "n_options": 77,
+   "prefix_tokens": 57,
+   "longest": 768,
+   "total": 929,
+   "request_sha256": "1aac32e5b372bcf5b3c9809fa94253197d0b3a7db341e2a133a5d6c36f77a060"
+  },
+  {
+   "id": "banking77-00976",
+   "source": "banking77",
+   "source_index": 976,
+   "gold": {
+    "task": "card_acceptance"
+   },
+   "n_options": 77,
+   "prefix_tokens": 51,
+   "longest": 762,
+   "total": 923,
+   "request_sha256": "ad4427c2d86b02a3062142eec61a12a01d77d51133852fed0606eb9b49fc47d7"
+  },
+  {
+   "id": "banking77-01050",
+   "source": "banking77",
+   "source_index": 1050,
+   "gold": {
+    "task": "balance_not_updated_after_cheque_or_cash_deposit"
+   },
+   "n_options": 77,
+   "prefix_tokens": 56,
+   "longest": 767,
+   "total": 928,
+   "request_sha256": "7adfe0c1b0947e7eb973ebfdc5ff5249d8f75394d55b08cc14ae5dc1d5ed3f6b"
+  },
+  {
+   "id": "banking77-01072",
+   "source": "banking77",
+   "source_index": 1072,
+   "gold": {
+    "task": "balance_not_updated_after_cheque_or_cash_deposit"
+   },
+   "n_options": 77,
+   "prefix_tokens": 72,
+   "longest": 783,
+   "total": 944,
+   "request_sha256": "a4e087e31691b6092857850c1b902e66515975c4538eb084a8aa3c246d1ec6c8"
+  },
+  {
+   "id": "banking77-01074",
+   "source": "banking77",
+   "source_index": 1074,
+   "gold": {
+    "task": "balance_not_updated_after_cheque_or_cash_deposit"
+   },
+   "n_options": 77,
+   "prefix_tokens": 55,
+   "longest": 766,
+   "total": 927,
+   "request_sha256": "82c33e4035212c016069251bcdefc52608b0033ae098f504baecc76095998320"
+  },
+  {
+   "id": "banking77-01097",
+   "source": "banking77",
+   "source_index": 1097,
+   "gold": {
+    "task": "card_payment_not_recognised"
+   },
+   "n_options": 77,
+   "prefix_tokens": 55,
+   "longest": 766,
+   "total": 927,
+   "request_sha256": "fef960a8250269c027c76267229b395260db1401ab21aafcab617f54a4327d75"
+  },
+  {
+   "id": "banking77-01116",
+   "source": "banking77",
+   "source_index": 1116,
+   "gold": {
+    "task": "card_payment_not_recognised"
+   },
+   "n_options": 77,
+   "prefix_tokens": 59,
+   "longest": 770,
+   "total": 931,
+   "request_sha256": "070444525996b619c02be7f854e7d64ec68f411fe25db4d5161bf0c676ecc06d"
+  },
+  {
+   "id": "banking77-01131",
+   "source": "banking77",
+   "source_index": 1131,
+   "gold": {
+    "task": "edit_personal_details"
+   },
+   "n_options": 77,
+   "prefix_tokens": 54,
+   "longest": 765,
+   "total": 926,
+   "request_sha256": "5db7aed2e8393709f6a47eae1fff64038d6fd3f9bee77f1d49254d22ce0bbf71"
+  },
+  {
+   "id": "banking77-01137",
+   "source": "banking77",
+   "source_index": 1137,
+   "gold": {
+    "task": "edit_personal_details"
+   },
+   "n_options": 77,
+   "prefix_tokens": 56,
+   "longest": 767,
+   "total": 928,
+   "request_sha256": "6fb9f6b171e745d906f25e9c6409058291ecdf6a8657e0131fb35ec1792a7a45"
+  },
+  {
+   "id": "banking77-01180",
+   "source": "banking77",
+   "source_index": 1180,
+   "gold": {
+    "task": "why_verify_identity"
+   },
+   "n_options": 77,
+   "prefix_tokens": 55,
+   "longest": 766,
+   "total": 927,
+   "request_sha256": "52a1d29d216e52929c1d2df2787c4997edb1412052141c44f6ed880e6484a46a"
+  },
+  {
+   "id": "banking77-01185",
+   "source": "banking77",
+   "source_index": 1185,
+   "gold": {
+    "task": "why_verify_identity"
+   },
+   "n_options": 77,
+   "prefix_tokens": 54,
+   "longest": 765,
+   "total": 926,
+   "request_sha256": "2c31509a6c28912eca502ac6c6d55c9e15357c21b620dfc54701e4ddfbcd0ef6"
+  },
+  {
+   "id": "banking77-01211",
+   "source": "banking77",
+   "source_index": 1211,
+   "gold": {
+    "task": "unable_to_verify_identity"
+   },
+   "n_options": 77,
+   "prefix_tokens": 52,
+   "longest": 763,
+   "total": 924,
+   "request_sha256": "683826de2fe2c8094c25024029399da3454b9b509495654f9abc3b8f066ce3c1"
+  },
+  {
+   "id": "banking77-01228",
+   "source": "banking77",
+   "source_index": 1228,
+   "gold": {
+    "task": "unable_to_verify_identity"
+   },
+   "n_options": 77,
+   "prefix_tokens": 53,
+   "longest": 764,
+   "total": 925,
+   "request_sha256": "69f88b6da43c1dd629ab3571641f5a63200258cff93d3dee5cbedb93d06320ec"
+  },
+  {
+   "id": "banking77-01246",
+   "source": "banking77",
+   "source_index": 1246,
+   "gold": {
+    "task": "get_physical_card"
+   },
+   "n_options": 77,
+   "prefix_tokens": 53,
+   "longest": 764,
+   "total": 925,
+   "request_sha256": "50b026df39905b5032dcc8017c9ccdb7cb449bd0529488907ad23ed4b860e361"
+  },
+  {
+   "id": "banking77-01270",
+   "source": "banking77",
+   "source_index": 1270,
+   "gold": {
+    "task": "get_physical_card"
+   },
+   "n_options": 77,
+   "prefix_tokens": 52,
+   "longest": 763,
+   "total": 924,
+   "request_sha256": "b8a6f1664621d9921ca6ae90c34d681eb1e47f0ad7d9c3c33e7d33e25b1619f3"
+  },
+  {
+   "id": "banking77-01278",
+   "source": "banking77",
+   "source_index": 1278,
+   "gold": {
+    "task": "get_physical_card"
+   },
+   "n_options": 77,
+   "prefix_tokens": 52,
+   "longest": 763,
+   "total": 924,
+   "request_sha256": "e2eae55f4e1c9a1b2f94268de749b524a6555c58dd40483ca9437d580efc348c"
+  },
+  {
+   "id": "banking77-01285",
+   "source": "banking77",
+   "source_index": 1285,
+   "gold": {
+    "task": "visa_or_mastercard"
+   },
+   "n_options": 77,
+   "prefix_tokens": 54,
+   "longest": 765,
+   "total": 926,
+   "request_sha256": "62048bcde70c46b88aafc5f52b51030a85253ac4a10643b09b40d9b070c98b9d"
+  },
+  {
+   "id": "banking77-01297",
+   "source": "banking77",
+   "source_index": 1297,
+   "gold": {
+    "task": "visa_or_mastercard"
+   },
+   "n_options": 77,
+   "prefix_tokens": 51,
+   "longest": 762,
+   "total": 923,
+   "request_sha256": "cc211ef2ec97b8041b546aeeea53c807929ba1f7c9541f34552e69909506b6f8"
+  },
+  {
+   "id": "banking77-01315",
+   "source": "banking77",
+   "source_index": 1315,
+   "gold": {
+    "task": "visa_or_mastercard"
+   },
+   "n_options": 77,
+   "prefix_tokens": 52,
+   "longest": 763,
+   "total": 924,
+   "request_sha256": "1051b074079b46728aad0261e247e1119c9ca48cecec2b4cf4e98f5795a80950"
+  },
+  {
+   "id": "banking77-01317",
+   "source": "banking77",
+   "source_index": 1317,
+   "gold": {
+    "task": "visa_or_mastercard"
+   },
+   "n_options": 77,
+   "prefix_tokens": 59,
+   "longest": 770,
+   "total": 931,
+   "request_sha256": "a2eae54964011f1a16e4e01c80a2d40dbae1553fc78fae2caa27642cf205fcd3"
+  },
+  {
+   "id": "banking77-01321",
+   "source": "banking77",
+   "source_index": 1321,
+   "gold": {
+    "task": "topping_up_by_card"
+   },
+   "n_options": 77,
+   "prefix_tokens": 60,
+   "longest": 771,
+   "total": 932,
+   "request_sha256": "d06494c96f5448567a4430a4d00c39cfccf0ee797b9446586e6cde944af4f1f5"
+  },
+  {
+   "id": "banking77-01339",
+   "source": "banking77",
+   "source_index": 1339,
+   "gold": {
+    "task": "topping_up_by_card"
+   },
+   "n_options": 77,
+   "prefix_tokens": 56,
+   "longest": 767,
+   "total": 928,
+   "request_sha256": "c35e7236d2ccd4ed35a4aad64b3786ab77830b774c4b0fc50f2e2ab709e13698"
+  },
+  {
+   "id": "banking77-01368",
+   "source": "banking77",
+   "source_index": 1368,
+   "gold": {
+    "task": "disposable_card_limits"
+   },
+   "n_options": 77,
+   "prefix_tokens": 53,
+   "longest": 764,
+   "total": 925,
+   "request_sha256": "88ab8954a645e3ae1879f4565a555be95a03d83d466747dd1db5353642cd04cf"
+  },
+  {
+   "id": "banking77-01386",
+   "source": "banking77",
+   "source_index": 1386,
+   "gold": {
+    "task": "disposable_card_limits"
+   },
+   "n_options": 77,
+   "prefix_tokens": 53,
+   "longest": 764,
+   "total": 925,
+   "request_sha256": "3cbe5960e799f1e55cf406a7d2c03e175638e02c2b53f0b7a46e31baeb980852"
+  },
+  {
+   "id": "banking77-01397",
+   "source": "banking77",
+   "source_index": 1397,
+   "gold": {
+    "task": "disposable_card_limits"
+   },
+   "n_options": 77,
+   "prefix_tokens": 55,
+   "longest": 766,
+   "total": 927,
+   "request_sha256": "d8e4e53cf5ec67748d17ac962bf44fabae026fcb868686b0c989ed506ad6bf90"
+  },
+  {
+   "id": "banking77-01411",
+   "source": "banking77",
+   "source_index": 1411,
+   "gold": {
+    "task": "compromised_card"
+   },
+   "n_options": 77,
+   "prefix_tokens": 58,
+   "longest": 769,
+   "total": 930,
+   "request_sha256": "48019416546e52d6e91e6b7f50dbbd0ae173c19832da8668db5a65abd0be4a20"
+  },
+  {
+   "id": "banking77-01415",
+   "source": "banking77",
+   "source_index": 1415,
+   "gold": {
+    "task": "compromised_card"
+   },
+   "n_options": 77,
+   "prefix_tokens": 70,
+   "longest": 781,
+   "total": 942,
+   "request_sha256": "3ef3f0835d146dd93ea8bbb6b52c82366488bc50ed2ce4fe2d23fbb3f771bd81"
+  },
+  {
+   "id": "banking77-01425",
+   "source": "banking77",
+   "source_index": 1425,
+   "gold": {
+    "task": "compromised_card"
+   },
+   "n_options": 77,
+   "prefix_tokens": 52,
+   "longest": 763,
+   "total": 924,
+   "request_sha256": "8a71de4d1fa88c0954089d3196c673c380ef1e92379c8a1b2c122db74fc1b10f"
+  },
+  {
+   "id": "banking77-01446",
+   "source": "banking77",
+   "source_index": 1446,
+   "gold": {
+    "task": "atm_support"
+   },
+   "n_options": 77,
+   "prefix_tokens": 52,
+   "longest": 763,
+   "total": 924,
+   "request_sha256": "0787c07aa8681fdaf7146eb9be3545f06782402e7c89d26a6912e055160d870f"
+  },
+  {
+   "id": "banking77-01447",
+   "source": "banking77",
+   "source_index": 1447,
+   "gold": {
+    "task": "atm_support"
+   },
+   "n_options": 77,
+   "prefix_tokens": 52,
+   "longest": 763,
+   "total": 924,
+   "request_sha256": "daf87f329db9f7eeba370f3b475c7ed202edab1c9a428ba7b19d830115566507"
+  },
+  {
+   "id": "banking77-01451",
+   "source": "banking77",
+   "source_index": 1451,
+   "gold": {
+    "task": "atm_support"
+   },
+   "n_options": 77,
+   "prefix_tokens": 56,
+   "longest": 767,
+   "total": 928,
+   "request_sha256": "143e6736976ac58f4bac87cc695998e9b15d3052433b2806ade6e2558efae1d7"
+  },
+  {
+   "id": "banking77-01455",
+   "source": "banking77",
+   "source_index": 1455,
+   "gold": {
+    "task": "atm_support"
+   },
+   "n_options": 77,
+   "prefix_tokens": 53,
+   "longest": 764,
+   "total": 925,
+   "request_sha256": "92ede1b9b2b7ef67ac7f3815a2b3dae659e8c6b09dfdb8d38cc83da8acf8eb2b"
+  },
+  {
+   "id": "banking77-01467",
+   "source": "banking77",
+   "source_index": 1467,
+   "gold": {
+    "task": "atm_support"
+   },
+   "n_options": 77,
+   "prefix_tokens": 59,
+   "longest": 770,
+   "total": 931,
+   "request_sha256": "224e14f0d7e1627fb7ad4ad593f225e69765199bf3d7fba5318de15b7ba12d55"
+  },
+  {
+   "id": "banking77-01490",
+   "source": "banking77",
+   "source_index": 1490,
+   "gold": {
+    "task": "direct_debit_payment_not_recognised"
+   },
+   "n_options": 77,
+   "prefix_tokens": 61,
+   "longest": 772,
+   "total": 933,
+   "request_sha256": "7eba964dd41051ff108efe1b613543b6fbbc1fd45d82fcfed9a9ac8dc321232e"
+  },
+  {
+   "id": "banking77-01513",
+   "source": "banking77",
+   "source_index": 1513,
+   "gold": {
+    "task": "direct_debit_payment_not_recognised"
+   },
+   "n_options": 77,
+   "prefix_tokens": 60,
+   "longest": 771,
+   "total": 932,
+   "request_sha256": "c2a51024d167972d8c3f472331234a3282b009d6eebb31796f7dfac616847f7d"
+  },
+  {
+   "id": "banking77-01561",
+   "source": "banking77",
+   "source_index": 1561,
+   "gold": {
+    "task": "declined_cash_withdrawal"
+   },
+   "n_options": 77,
+   "prefix_tokens": 50,
+   "longest": 761,
+   "total": 922,
+   "request_sha256": "2f1bedabaf983bdff3f06e6fa0526d188409d3df1120b498d7e7709a5ac6e64e"
+  },
+  {
+   "id": "banking77-01566",
+   "source": "banking77",
+   "source_index": 1566,
+   "gold": {
+    "task": "declined_cash_withdrawal"
+   },
+   "n_options": 77,
+   "prefix_tokens": 60,
+   "longest": 771,
+   "total": 932,
+   "request_sha256": "1e76a708e1c89fa0c919c7d08349f6ab44e05a3ffe44134754b82de562725a15"
+  },
+  {
+   "id": "banking77-01576",
+   "source": "banking77",
+   "source_index": 1576,
+   "gold": {
+    "task": "declined_cash_withdrawal"
+   },
+   "n_options": 77,
+   "prefix_tokens": 55,
+   "longest": 766,
+   "total": 927,
+   "request_sha256": "5e24198892e0033d93ac526d8b2e9819a77d5adcba93052e6658c40d6fa01af2"
+  },
+  {
+   "id": "banking77-01588",
+   "source": "banking77",
+   "source_index": 1588,
+   "gold": {
+    "task": "declined_cash_withdrawal"
+   },
+   "n_options": 77,
+   "prefix_tokens": 52,
+   "longest": 763,
+   "total": 924,
+   "request_sha256": "08be04274c70a9eef771385673e583e36e2dc3057e639f45fe04be816179c6c6"
+  },
+  {
+   "id": "banking77-01593",
+   "source": "banking77",
+   "source_index": 1593,
+   "gold": {
+    "task": "declined_cash_withdrawal"
+   },
+   "n_options": 77,
+   "prefix_tokens": 53,
+   "longest": 764,
+   "total": 925,
+   "request_sha256": "35f6bc4282c138187eda292e6dd89feb1ca90a8bd85def0a4a8e0b6e74f47fe1"
+  },
+  {
+   "id": "banking77-01646",
+   "source": "banking77",
+   "source_index": 1646,
+   "gold": {
+    "task": "lost_or_stolen_phone"
+   },
+   "n_options": 77,
+   "prefix_tokens": 57,
+   "longest": 768,
+   "total": 929,
+   "request_sha256": "23299b6af7cf7525005b1ec7cd5bff0073c8351355a37de4320b5dd643fafa7d"
+  },
+  {
+   "id": "banking77-01665",
+   "source": "banking77",
+   "source_index": 1665,
+   "gold": {
+    "task": "lost_or_stolen_phone"
+   },
+   "n_options": 77,
+   "prefix_tokens": 72,
+   "longest": 783,
+   "total": 944,
+   "request_sha256": "9fe00c3f6da01af6654f6e3deb7cbc2a52aa02eb533641960d25902408bf02ff"
+  },
+  {
+   "id": "banking77-01684",
+   "source": "banking77",
+   "source_index": 1684,
+   "gold": {
+    "task": "request_refund"
+   },
+   "n_options": 77,
+   "prefix_tokens": 51,
+   "longest": 762,
+   "total": 923,
+   "request_sha256": "83b267ab898ccb24c46771497ecfec1d470481cf6a5d8a7436c180b14ecc27ee"
+  },
+  {
+   "id": "banking77-01716",
+   "source": "banking77",
+   "source_index": 1716,
+   "gold": {
+    "task": "request_refund"
+   },
+   "n_options": 77,
+   "prefix_tokens": 52,
+   "longest": 763,
+   "total": 924,
+   "request_sha256": "32cab9cce07c4ebf21d3ec8c6df7c14ab26387966a8a087d328cdfefa29adca8"
+  },
+  {
+   "id": "banking77-01793",
+   "source": "banking77",
+   "source_index": 1793,
+   "gold": {
+    "task": "Refund_not_showing_up"
+   },
+   "n_options": 77,
+   "prefix_tokens": 49,
+   "longest": 760,
+   "total": 921,
+   "request_sha256": "448d9c3da0d333d84a773eb18c038b0ec8581fcf82dc0a454a6e585fa1f071fa"
+  },
+  {
+   "id": "banking77-01858",
+   "source": "banking77",
+   "source_index": 1858,
+   "gold": {
+    "task": "pending_transfer"
+   },
+   "n_options": 77,
+   "prefix_tokens": 54,
+   "longest": 765,
+   "total": 926,
+   "request_sha256": "b3605545fe0eb2d271de4559b35f9c4cc85cf362ee5864ab37632d9277595f12"
+  },
+  {
+   "id": "banking77-01860",
+   "source": "banking77",
+   "source_index": 1860,
+   "gold": {
+    "task": "pending_transfer"
+   },
+   "n_options": 77,
+   "prefix_tokens": 55,
+   "longest": 766,
+   "total": 927,
+   "request_sha256": "f9b87dc766c73167adaaa0c6b948442d32a23ee4b3246d1b64b5b2a7b433df06"
+  },
+  {
+   "id": "banking77-01870",
+   "source": "banking77",
+   "source_index": 1870,
+   "gold": {
+    "task": "pending_transfer"
+   },
+   "n_options": 77,
+   "prefix_tokens": 53,
+   "longest": 764,
+   "total": 925,
+   "request_sha256": "e508d451b151757840cd363910c7e3796887f9c8aa40772af164c8ab33a2e5db"
+  },
+  {
+   "id": "banking77-01909",
+   "source": "banking77",
+   "source_index": 1909,
+   "gold": {
+    "task": "terminate_account"
+   },
+   "n_options": 77,
+   "prefix_tokens": 51,
+   "longest": 762,
+   "total": 923,
+   "request_sha256": "18d4d51b88e391566d8df175754f032f7a1801c6b2097ed55776a344e1ee7579"
+  },
+  {
+   "id": "banking77-01947",
+   "source": "banking77",
+   "source_index": 1947,
+   "gold": {
+    "task": "card_swallowed"
+   },
+   "n_options": 77,
+   "prefix_tokens": 59,
+   "longest": 770,
+   "total": 931,
+   "request_sha256": "c6fe0fc4dbb6c9ef06081ca717f7673dddc74c4d6710b395ba2b949d88618f32"
+  },
+  {
+   "id": "banking77-01956",
+   "source": "banking77",
+   "source_index": 1956,
+   "gold": {
+    "task": "card_swallowed"
+   },
+   "n_options": 77,
+   "prefix_tokens": 53,
+   "longest": 764,
+   "total": 925,
+   "request_sha256": "54065fa3f0fc066e5a4a00d95daca2c946588778ef91f1cea5c777c81285de33"
+  },
+  {
+   "id": "banking77-01999",
+   "source": "banking77",
+   "source_index": 1999,
+   "gold": {
+    "task": "transaction_charged_twice"
+   },
+   "n_options": 77,
+   "prefix_tokens": 61,
+   "longest": 772,
+   "total": 933,
+   "request_sha256": "85bc57720f9b1c6aa36dd00cddfd3ae799fa26406b5d0303aae954359bceca84"
+  },
+  {
+   "id": "banking77-02006",
+   "source": "banking77",
+   "source_index": 2006,
+   "gold": {
+    "task": "verify_source_of_funds"
+   },
+   "n_options": 77,
+   "prefix_tokens": 53,
+   "longest": 764,
+   "total": 925,
+   "request_sha256": "6036bec56684e6ab0e0df6bc852b1b327c61477df646425a77e9683aeeff91b9"
+  },
+  {
+   "id": "banking77-02014",
+   "source": "banking77",
+   "source_index": 2014,
+   "gold": {
+    "task": "verify_source_of_funds"
+   },
+   "n_options": 77,
+   "prefix_tokens": 57,
+   "longest": 768,
+   "total": 929,
+   "request_sha256": "2cd6b27116101d08e90b6236ab113a80f85066dafa1ebc5052c46dac1af8cc21"
+  },
+  {
+   "id": "banking77-02020",
+   "source": "banking77",
+   "source_index": 2020,
+   "gold": {
+    "task": "verify_source_of_funds"
+   },
+   "n_options": 77,
+   "prefix_tokens": 56,
+   "longest": 767,
+   "total": 928,
+   "request_sha256": "ce4c452a85bb08375d046efd6b486087a8a5bad1a8e354688a84aa4152439e03"
+  },
+  {
+   "id": "banking77-02041",
+   "source": "banking77",
+   "source_index": 2041,
+   "gold": {
+    "task": "transfer_timing"
+   },
+   "n_options": 77,
+   "prefix_tokens": 57,
+   "longest": 768,
+   "total": 929,
+   "request_sha256": "395be0293082aaa3cf32c2e9b2b10d81732582de0c507b235e18d145e6b8fe07"
+  },
+  {
+   "id": "banking77-02043",
+   "source": "banking77",
+   "source_index": 2043,
+   "gold": {
+    "task": "transfer_timing"
+   },
+   "n_options": 77,
+   "prefix_tokens": 56,
+   "longest": 767,
+   "total": 928,
+   "request_sha256": "7b0a2d903e6253bc5cfd2ebdf9dfb1676b1ba0701543d890b2f9e6e9d432b505"
+  },
+  {
+   "id": "banking77-02073",
+   "source": "banking77",
+   "source_index": 2073,
+   "gold": {
+    "task": "transfer_timing"
+   },
+   "n_options": 77,
+   "prefix_tokens": 61,
+   "longest": 772,
+   "total": 933,
+   "request_sha256": "7d8a978d106fde178f552b5d4f74adadb6b710a891a487af7e5b606b4eec73a8"
+  },
+  {
+   "id": "banking77-02077",
+   "source": "banking77",
+   "source_index": 2077,
+   "gold": {
+    "task": "transfer_timing"
+   },
+   "n_options": 77,
+   "prefix_tokens": 65,
+   "longest": 776,
+   "total": 937,
+   "request_sha256": "ece57f9a0068d4f36cc508cd81f60401179c046916cb901dd9582232230355f8"
+  },
+  {
+   "id": "banking77-02085",
+   "source": "banking77",
+   "source_index": 2085,
+   "gold": {
+    "task": "reverted_card_payment?"
+   },
+   "n_options": 77,
+   "prefix_tokens": 56,
+   "longest": 767,
+   "total": 928,
+   "request_sha256": "a7798ae6e090900cd6d7aed78e7b64277de3a69607397841dc14112be145fed1"
+  },
+  {
+   "id": "banking77-02105",
+   "source": "banking77",
+   "source_index": 2105,
+   "gold": {
+    "task": "reverted_card_payment?"
+   },
+   "n_options": 77,
+   "prefix_tokens": 58,
+   "longest": 769,
+   "total": 930,
+   "request_sha256": "069a45483f8bf2dac8077f56978a67da83f0ca171a1c72e21706b7cddbd5ef4c"
+  },
+  {
+   "id": "banking77-02143",
+   "source": "banking77",
+   "source_index": 2143,
+   "gold": {
+    "task": "change_pin"
+   },
+   "n_options": 77,
+   "prefix_tokens": 54,
+   "longest": 765,
+   "total": 926,
+   "request_sha256": "db42a0264acaf265a85758a56baa2559530503d80777ab9bc608035f8fc532a0"
+  },
+  {
+   "id": "banking77-02173",
+   "source": "banking77",
+   "source_index": 2173,
+   "gold": {
+    "task": "beneficiary_not_allowed"
+   },
+   "n_options": 77,
+   "prefix_tokens": 61,
+   "longest": 772,
+   "total": 933,
+   "request_sha256": "4952a1ec7ef35bccba0b7b476d09ffe37397b58f6ba2ecbb9f33edd4aaee519a"
+  },
+  {
+   "id": "banking77-02183",
+   "source": "banking77",
+   "source_index": 2183,
+   "gold": {
+    "task": "beneficiary_not_allowed"
+   },
+   "n_options": 77,
+   "prefix_tokens": 60,
+   "longest": 771,
+   "total": 932,
+   "request_sha256": "063df5b42378202ca4f4c3a7ab32eb1fd7085b3a87b30086841359b8eb43aa09"
+  },
+  {
+   "id": "banking77-02239",
+   "source": "banking77",
+   "source_index": 2239,
+   "gold": {
+    "task": "transfer_fee_charged"
+   },
+   "n_options": 77,
+   "prefix_tokens": 54,
+   "longest": 765,
+   "total": 926,
+   "request_sha256": "3902262ef64731c54552ded4f12334f16e619d9a01f015377bc7f3040f53747d"
+  },
+  {
+   "id": "banking77-02244",
+   "source": "banking77",
+   "source_index": 2244,
+   "gold": {
+    "task": "receiving_money"
+   },
+   "n_options": 77,
+   "prefix_tokens": 52,
+   "longest": 763,
+   "total": 924,
+   "request_sha256": "b4689045df87f8384b74ed58bb2cdf771f636ef104e21371289226d117fd421e"
+  },
+  {
+   "id": "banking77-02292",
+   "source": "banking77",
+   "source_index": 2292,
+   "gold": {
+    "task": "failed_transfer"
+   },
+   "n_options": 77,
+   "prefix_tokens": 57,
+   "longest": 768,
+   "total": 929,
+   "request_sha256": "ac431601c4385ef906e5577dde50c5561a0e8a414fa1124e39f6a1ceda6914d1"
+  },
+  {
+   "id": "banking77-02317",
+   "source": "banking77",
+   "source_index": 2317,
+   "gold": {
+    "task": "failed_transfer"
+   },
+   "n_options": 77,
+   "prefix_tokens": 78,
+   "longest": 789,
+   "total": 950,
+   "request_sha256": "d39ab28eb47d70d43962bb381b69cbd4f912613a1132e75fab8149d87b75240f"
+  },
+  {
+   "id": "banking77-02370",
+   "source": "banking77",
+   "source_index": 2370,
+   "gold": {
+    "task": "verify_top_up"
+   },
+   "n_options": 77,
+   "prefix_tokens": 58,
+   "longest": 769,
+   "total": 930,
+   "request_sha256": "5a31956902219eb3d5e5034463827cad2ca84c09514da79d845dac091fcb8343"
+  },
+  {
+   "id": "banking77-02453",
+   "source": "banking77",
+   "source_index": 2453,
+   "gold": {
+    "task": "top_up_by_cash_or_cheque"
+   },
+   "n_options": 77,
+   "prefix_tokens": 56,
+   "longest": 767,
+   "total": 928,
+   "request_sha256": "26421bd5ec4263562ad6293a63fc106fb44fdf219103fb5a7d824b1c3edb87cf"
+  },
+  {
+   "id": "banking77-02469",
+   "source": "banking77",
+   "source_index": 2469,
+   "gold": {
+    "task": "top_up_by_cash_or_cheque"
+   },
+   "n_options": 77,
+   "prefix_tokens": 55,
+   "longest": 766,
+   "total": 927,
+   "request_sha256": "a668db0c0c7b8716098323ff0ccf85d4f8ec0dc85ebf2baa69ed7c687d7522d9"
+  },
+  {
+   "id": "banking77-02473",
+   "source": "banking77",
+   "source_index": 2473,
+   "gold": {
+    "task": "top_up_by_cash_or_cheque"
+   },
+   "n_options": 77,
+   "prefix_tokens": 55,
+   "longest": 766,
+   "total": 927,
+   "request_sha256": "2d9ed9d1bcb0e2d0f8b44c195b5a98a63e89e5665efe00588d7d3a08c1f11100"
+  },
+  {
+   "id": "banking77-02474",
+   "source": "banking77",
+   "source_index": 2474,
+   "gold": {
+    "task": "top_up_by_cash_or_cheque"
+   },
+   "n_options": 77,
+   "prefix_tokens": 53,
+   "longest": 764,
+   "total": 925,
+   "request_sha256": "2805c4245c968ffe7b4150da0ee30f6a985ea121248beae9cac47303a09c927a"
+  },
+  {
+   "id": "banking77-02475",
+   "source": "banking77",
+   "source_index": 2475,
+   "gold": {
+    "task": "top_up_by_cash_or_cheque"
+   },
+   "n_options": 77,
+   "prefix_tokens": 61,
+   "longest": 772,
+   "total": 933,
+   "request_sha256": "3a26f879513290b1b6f1c79da2fa4b9462126bbb690ea2492b54d249838a75f1"
+  },
+  {
+   "id": "banking77-02486",
+   "source": "banking77",
+   "source_index": 2486,
+   "gold": {
+    "task": "order_physical_card"
+   },
+   "n_options": 77,
+   "prefix_tokens": 50,
+   "longest": 761,
+   "total": 922,
+   "request_sha256": "2f406d3cfba718d9d6b76788dd36f0e98c030e7e5ca0994df2e286b158488574"
+  },
+  {
+   "id": "banking77-02491",
+   "source": "banking77",
+   "source_index": 2491,
+   "gold": {
+    "task": "order_physical_card"
+   },
+   "n_options": 77,
+   "prefix_tokens": 54,
+   "longest": 765,
+   "total": 926,
+   "request_sha256": "3724884865b84763a9f3e72d78917f97954429638fdfe559c5203ffb82889c88"
+  },
+  {
+   "id": "banking77-02494",
+   "source": "banking77",
+   "source_index": 2494,
+   "gold": {
+    "task": "order_physical_card"
+   },
+   "n_options": 77,
+   "prefix_tokens": 52,
+   "longest": 763,
+   "total": 924,
+   "request_sha256": "8934fd8ddef2c050cb499c860ef24cf1768451f437f094ebb3c19371c6d04b1c"
+  },
+  {
+   "id": "banking77-02513",
+   "source": "banking77",
+   "source_index": 2513,
+   "gold": {
+    "task": "order_physical_card"
+   },
+   "n_options": 77,
+   "prefix_tokens": 52,
+   "longest": 763,
+   "total": 924,
+   "request_sha256": "23c5ed898b203d333db2b84348f1656db6dce8b84cab8f58c17732f4d7800580"
+  },
+  {
+   "id": "banking77-02542",
+   "source": "banking77",
+   "source_index": 2542,
+   "gold": {
+    "task": "virtual_card_not_working"
+   },
+   "n_options": 77,
+   "prefix_tokens": 58,
+   "longest": 769,
+   "total": 930,
+   "request_sha256": "00cabcbf6346ebd4dd4ab2fe748b858001c181790b801ebf5818790cc2409b13"
+  },
+  {
+   "id": "banking77-02609",
+   "source": "banking77",
+   "source_index": 2609,
+   "gold": {
+    "task": "get_disposable_virtual_card"
+   },
+   "n_options": 77,
+   "prefix_tokens": 57,
+   "longest": 768,
+   "total": 929,
+   "request_sha256": "2d1030ef4d00be7cd0dcb1248bc16541649694733f8a9e2f0335683125a879c6"
+  },
+  {
+   "id": "banking77-02625",
+   "source": "banking77",
+   "source_index": 2625,
+   "gold": {
+    "task": "get_disposable_virtual_card"
+   },
+   "n_options": 77,
+   "prefix_tokens": 54,
+   "longest": 765,
+   "total": 926,
+   "request_sha256": "935cf84c65ef788c09b5a791c4880b0a8aafd6c1a765d717a3b18f5e5a106043"
+  },
+  {
+   "id": "banking77-02638",
+   "source": "banking77",
+   "source_index": 2638,
+   "gold": {
+    "task": "get_disposable_virtual_card"
+   },
+   "n_options": 77,
+   "prefix_tokens": 50,
+   "longest": 761,
+   "total": 922,
+   "request_sha256": "87b7b6d19254df3efab7b4fe97270703597c6291926f9e59501a60ac58817efe"
+  },
+  {
+   "id": "banking77-02645",
+   "source": "banking77",
+   "source_index": 2645,
+   "gold": {
+    "task": "top_up_failed"
+   },
+   "n_options": 77,
+   "prefix_tokens": 54,
+   "longest": 765,
+   "total": 926,
+   "request_sha256": "d7a7c693c990263216ca5d42db250644170acd24300bfec2bd93a3099a68c149"
+  },
+  {
+   "id": "banking77-02688",
+   "source": "banking77",
+   "source_index": 2688,
+   "gold": {
+    "task": "balance_not_updated_after_bank_transfer"
+   },
+   "n_options": 77,
+   "prefix_tokens": 53,
+   "longest": 764,
+   "total": 925,
+   "request_sha256": "a71a408d93d755c709ea960c628b32056b5a4ad2503b8266ff0da79118dbd807"
+  },
+  {
+   "id": "banking77-02689",
+   "source": "banking77",
+   "source_index": 2689,
+   "gold": {
+    "task": "balance_not_updated_after_bank_transfer"
+   },
+   "n_options": 77,
+   "prefix_tokens": 57,
+   "longest": 768,
+   "total": 929,
+   "request_sha256": "fc206884cd15bb18ea8b5ce4bedb28c33e1c6c3c5b4cdafd6d327714a34db50d"
+  },
+  {
+   "id": "banking77-02693",
+   "source": "banking77",
+   "source_index": 2693,
+   "gold": {
+    "task": "balance_not_updated_after_bank_transfer"
+   },
+   "n_options": 77,
+   "prefix_tokens": 54,
+   "longest": 765,
+   "total": 926,
+   "request_sha256": "4c3f81d4ddbe9483e34aaa5674b2f99cdb79773e6e9facdb60f18d00ad517dd5"
+  },
+  {
+   "id": "banking77-02778",
+   "source": "banking77",
+   "source_index": 2778,
+   "gold": {
+    "task": "exchange_charge"
+   },
+   "n_options": 77,
+   "prefix_tokens": 57,
+   "longest": 768,
+   "total": 929,
+   "request_sha256": "074ab37c25d7c0588f0ba9b03b6388aa3b845637b32d73123dc02d93f63714e0"
+  },
+  {
+   "id": "banking77-02784",
+   "source": "banking77",
+   "source_index": 2784,
+   "gold": {
+    "task": "exchange_charge"
+   },
+   "n_options": 77,
+   "prefix_tokens": 55,
+   "longest": 766,
+   "total": 927,
+   "request_sha256": "85f6fe8ba6ad1b76095a62e24cadc1f00dfa534180b9a1590373daae866673d6"
+  },
+  {
+   "id": "banking77-02822",
+   "source": "banking77",
+   "source_index": 2822,
+   "gold": {
+    "task": "top_up_by_card_charge"
+   },
+   "n_options": 77,
+   "prefix_tokens": 52,
+   "longest": 763,
+   "total": 924,
+   "request_sha256": "462939038cae660cf11dd3373757e12688111bbe264920f46b0043042766d83b"
+  },
+  {
+   "id": "banking77-02839",
+   "source": "banking77",
+   "source_index": 2839,
+   "gold": {
+    "task": "top_up_by_card_charge"
+   },
+   "n_options": 77,
+   "prefix_tokens": 55,
+   "longest": 766,
+   "total": 927,
+   "request_sha256": "32e9e686fd3e627df55f2e5311e767a2ce0b7da5190d4bb5c1b5c225494bbb31"
+  },
+  {
+   "id": "banking77-02854",
+   "source": "banking77",
+   "source_index": 2854,
+   "gold": {
+    "task": "activate_my_card"
+   },
+   "n_options": 77,
+   "prefix_tokens": 66,
+   "longest": 777,
+   "total": 938,
+   "request_sha256": "feebee9109d230b304efb43bb838018d8caaa47c5d846b10fd1ad606c25656d3"
+  },
+  {
+   "id": "banking77-02858",
+   "source": "banking77",
+   "source_index": 2858,
+   "gold": {
+    "task": "activate_my_card"
+   },
+   "n_options": 77,
+   "prefix_tokens": 57,
+   "longest": 768,
+   "total": 929,
+   "request_sha256": "b6da0943dea0f682af60ad1767e6c2016f045a9c6332fcf3e2ea6f1bc925d9b5"
+  },
+  {
+   "id": "banking77-02905",
+   "source": "banking77",
+   "source_index": 2905,
+   "gold": {
+    "task": "cash_withdrawal_charge"
+   },
+   "n_options": 77,
+   "prefix_tokens": 87,
+   "longest": 798,
+   "total": 959,
+   "request_sha256": "672e5268f766a8e7325f9f3ea3b527965915348e1d1ddea5725d80ac319a7610"
+  },
+  {
+   "id": "banking77-02940",
+   "source": "banking77",
+   "source_index": 2940,
+   "gold": {
+    "task": "card_about_to_expire"
+   },
+   "n_options": 77,
+   "prefix_tokens": 59,
+   "longest": 770,
+   "total": 931,
+   "request_sha256": "8ce0b206754d84087d20cb033f36f19ed3ed363a5fb3037ca1d4c8c49ced64cf"
+  },
+  {
+   "id": "banking77-02974",
+   "source": "banking77",
+   "source_index": 2974,
+   "gold": {
+    "task": "apple_pay_or_google_pay"
+   },
+   "n_options": 77,
+   "prefix_tokens": 62,
+   "longest": 773,
+   "total": 934,
+   "request_sha256": "fcd0697190443a91105f0272c845bd47facd39657084771abcb17423b63785b8"
+  },
+  {
+   "id": "banking77-02996",
+   "source": "banking77",
+   "source_index": 2996,
+   "gold": {
+    "task": "apple_pay_or_google_pay"
+   },
+   "n_options": 77,
+   "prefix_tokens": 54,
+   "longest": 765,
+   "total": 926,
+   "request_sha256": "625e2c7ee0d75ad50f020a6d2eb4d4477cd6382e0959b81050da92bdd83594c0"
+  },
+  {
+   "id": "banking77-03013",
+   "source": "banking77",
+   "source_index": 3013,
+   "gold": {
+    "task": "verify_my_identity"
+   },
+   "n_options": 77,
+   "prefix_tokens": 53,
+   "longest": 764,
+   "total": 925,
+   "request_sha256": "d07abeda9ca3d90d4f0a1f9180884eedf9c524faa1651e4ae780527af8359a01"
+  },
+  {
+   "id": "banking77-03044",
+   "source": "banking77",
+   "source_index": 3044,
+   "gold": {
+    "task": "country_support"
+   },
+   "n_options": 77,
+   "prefix_tokens": 57,
+   "longest": 768,
+   "total": 929,
+   "request_sha256": "a138530609be5ee0ee303846e866771109d9712c905afd37b13d997af889e4e2"
+  },
+  {
+   "id": "banking77-03071",
+   "source": "banking77",
+   "source_index": 3071,
+   "gold": {
+    "task": "country_support"
+   },
+   "n_options": 77,
+   "prefix_tokens": 50,
+   "longest": 761,
+   "total": 922,
+   "request_sha256": "87587b97403f543953cc5787dd72f74a18f00e6ea412df1777135115df2fdf42"
+  },
+  {
+   "id": "banking77-03073",
+   "source": "banking77",
+   "source_index": 3073,
+   "gold": {
+    "task": "country_support"
+   },
+   "n_options": 77,
+   "prefix_tokens": 54,
+   "longest": 765,
+   "total": 926,
+   "request_sha256": "e4e47ae13efed76d4fc511ed082d8c6e16efea698d20016a5721e906db603292"
+  },
+  {
+   "id": "banking77-03079",
+   "source": "banking77",
+   "source_index": 3079,
+   "gold": {
+    "task": "country_support"
+   },
+   "n_options": 77,
+   "prefix_tokens": 55,
+   "longest": 766,
+   "total": 927,
+   "request_sha256": "a88fbcedec0e5736e585fab474a54c6177177e6d6955b3596759ad5b180b1349"
+  },
+  {
+   "id": "ledgar-00118",
+   "source": "ledgar",
+   "source_index": 118,
+   "gold": {
+    "task": "Entire Agreements"
+   },
+   "n_options": 100,
+   "prefix_tokens": 115,
+   "longest": 853,
+   "total": 996,
+   "request_sha256": "2b1dade3273ecf0f226f29cab35635eae4b18d2e28a09ed7b54a169dc30d9518"
+  },
+  {
+   "id": "ledgar-00186",
+   "source": "ledgar",
+   "source_index": 186,
+   "gold": {
+    "task": "Indemnifications"
+   },
+   "n_options": 100,
+   "prefix_tokens": 382,
+   "longest": 1120,
+   "total": 1263,
+   "request_sha256": "d4e03af8c36f0149cb97afd3cdcdaa2a81dc005a500991142fa8f6fab2951c9e"
+  },
+  {
+   "id": "ledgar-00213",
+   "source": "ledgar",
+   "source_index": 213,
+   "gold": {
+    "task": "Governing Laws"
+   },
+   "n_options": 100,
+   "prefix_tokens": 69,
+   "longest": 807,
+   "total": 950,
+   "request_sha256": "15e0b91f919b7da54135907e4745c3500ee2175437b844cdf3379515b3897fae"
+  },
+  {
+   "id": "ledgar-00313",
+   "source": "ledgar",
+   "source_index": 313,
+   "gold": {
+    "task": "Survival"
+   },
+   "n_options": 100,
+   "prefix_tokens": 169,
+   "longest": 907,
+   "total": 1050,
+   "request_sha256": "9449b026c35a53623afb420691f525fed15dc0618e1ac0b9ebd8b928fef17346"
+  },
+  {
+   "id": "ledgar-00389",
+   "source": "ledgar",
+   "source_index": 389,
+   "gold": {
+    "task": "Fees"
+   },
+   "n_options": 100,
+   "prefix_tokens": 227,
+   "longest": 965,
+   "total": 1108,
+   "request_sha256": "ff3b5badf19b76a0954402ab58047db638d8943a7ed73abd56ebdd70b65b5eb2"
+  },
+  {
+   "id": "ledgar-00526",
+   "source": "ledgar",
+   "source_index": 526,
+   "gold": {
+    "task": "Binding Effects"
+   },
+   "n_options": 100,
+   "prefix_tokens": 127,
+   "longest": 865,
+   "total": 1008,
+   "request_sha256": "1fa40bcfe8c745aea53dd5e8da94bbfffeb708e6f5c1b9b700de5652b3c3a869"
+  },
+  {
+   "id": "ledgar-00654",
+   "source": "ledgar",
+   "source_index": 654,
+   "gold": {
+    "task": "Financial Statements"
+   },
+   "n_options": 100,
+   "prefix_tokens": 452,
+   "longest": 1190,
+   "total": 1333,
+   "request_sha256": "a4848d30854c9eb338d22d576f10907a6bb52a83751757d6ccb175cdad304b3c"
+  },
+  {
+   "id": "ledgar-00665",
+   "source": "ledgar",
+   "source_index": 665,
+   "gold": {
+    "task": "Compliance With Laws"
+   },
+   "n_options": 100,
+   "prefix_tokens": 71,
+   "longest": 809,
+   "total": 952,
+   "request_sha256": "4c5635652461b9ef37d91cdbe470c05781e73db950bfb76d30e693befab0c0d0"
+  },
+  {
+   "id": "ledgar-00672",
+   "source": "ledgar",
+   "source_index": 672,
+   "gold": {
+    "task": "No Conflicts"
+   },
+   "n_options": 100,
+   "prefix_tokens": 187,
+   "longest": 925,
+   "total": 1068,
+   "request_sha256": "2e649a75589775a7d1cc2123183f3d2ef2cf606dbb524b469b57cfac8b10edf2"
+  },
+  {
+   "id": "ledgar-00770",
+   "source": "ledgar",
+   "source_index": 770,
+   "gold": {
+    "task": "Change In Control"
+   },
+   "n_options": 100,
+   "prefix_tokens": 90,
+   "longest": 828,
+   "total": 971,
+   "request_sha256": "8db7544d047a20b879eb5758f0fa7c7c7934b9f16d3da6c49d40f5bd6e0e7305"
+  },
+  {
+   "id": "ledgar-00791",
+   "source": "ledgar",
+   "source_index": 791,
+   "gold": {
+    "task": "Counterparts"
+   },
+   "n_options": 100,
+   "prefix_tokens": 78,
+   "longest": 816,
+   "total": 959,
+   "request_sha256": "1a923fedbd9bc598e6f19cb3317d08898ba32d24489fd0e074f2cc6cf9899f7c"
+  },
+  {
+   "id": "ledgar-01145",
+   "source": "ledgar",
+   "source_index": 1145,
+   "gold": {
+    "task": "Solvency"
+   },
+   "n_options": 100,
+   "prefix_tokens": 87,
+   "longest": 825,
+   "total": 968,
+   "request_sha256": "29765e9222a3abc0bea46f27ca03c396c6985716bd9d117bbe015c20f6aa650b"
+  },
+  {
+   "id": "ledgar-01244",
+   "source": "ledgar",
+   "source_index": 1244,
+   "gold": {
+    "task": "Entire Agreements"
+   },
+   "n_options": 100,
+   "prefix_tokens": 91,
+   "longest": 829,
+   "total": 972,
+   "request_sha256": "90de0fa1f700c75e58ec192a95ccb85787135595f230e3327340733592053332"
+  },
+  {
+   "id": "ledgar-01267",
+   "source": "ledgar",
+   "source_index": 1267,
+   "gold": {
+    "task": "Governing Laws"
+   },
+   "n_options": 100,
+   "prefix_tokens": 67,
+   "longest": 805,
+   "total": 948,
+   "request_sha256": "5b84cfed224d9d423c63301436f3315abe10d42c1f80e07b37ea86c3366582fa"
+  },
+  {
+   "id": "ledgar-01351",
+   "source": "ledgar",
+   "source_index": 1351,
+   "gold": {
+    "task": "Governing Laws"
+   },
+   "n_options": 100,
+   "prefix_tokens": 76,
+   "longest": 814,
+   "total": 957,
+   "request_sha256": "649eef1b249e68af2b91e64f29b617abfb8726145aa23d593d1a2e97a704164e"
+  },
+  {
+   "id": "ledgar-01719",
+   "source": "ledgar",
+   "source_index": 1719,
+   "gold": {
+    "task": "Assignments"
+   },
+   "n_options": 100,
+   "prefix_tokens": 155,
+   "longest": 893,
+   "total": 1036,
+   "request_sha256": "7f14231ca0fbd6777bed85fb8813ccf716e7634f54f3b9d93319497b4267da98"
+  },
+  {
+   "id": "ledgar-01797",
+   "source": "ledgar",
+   "source_index": 1797,
+   "gold": {
+    "task": "Terms"
+   },
+   "n_options": 100,
+   "prefix_tokens": 83,
+   "longest": 821,
+   "total": 964,
+   "request_sha256": "c07be787d7657800dc2623389a6474bf01de93ac249089facdd3fec3e18c9501"
+  },
+  {
+   "id": "ledgar-02064",
+   "source": "ledgar",
+   "source_index": 2064,
+   "gold": {
+    "task": "Notices"
+   },
+   "n_options": 100,
+   "prefix_tokens": 245,
+   "longest": 983,
+   "total": 1126,
+   "request_sha256": "8a5897fc61d7fc58d92559b2f88dd55459708136e39b8f905499f5b27fe4ef16"
+  },
+  {
+   "id": "ledgar-02216",
+   "source": "ledgar",
+   "source_index": 2216,
+   "gold": {
+    "task": "Governing Laws"
+   },
+   "n_options": 100,
+   "prefix_tokens": 65,
+   "longest": 803,
+   "total": 946,
+   "request_sha256": "25602724387efc21c217b5de4b7ef6daade40552f0d657ad7f01ed17d96fd879"
+  },
+  {
+   "id": "ledgar-02294",
+   "source": "ledgar",
+   "source_index": 2294,
+   "gold": {
+    "task": "Notices"
+   },
+   "n_options": 100,
+   "prefix_tokens": 291,
+   "longest": 1029,
+   "total": 1172,
+   "request_sha256": "06757afdabe91a11d536eee8fea2412ad7ef76e7a8a039976dcffa53747adb61"
+  },
+  {
+   "id": "ledgar-02549",
+   "source": "ledgar",
+   "source_index": 2549,
+   "gold": {
+    "task": "Notices"
+   },
+   "n_options": 100,
+   "prefix_tokens": 115,
+   "longest": 853,
+   "total": 996,
+   "request_sha256": "46cceb7e5337b06732556236ffb0b084eb3ff304d4cd4c4550a43df0d987cf5b"
+  },
+  {
+   "id": "ledgar-02603",
+   "source": "ledgar",
+   "source_index": 2603,
+   "gold": {
+    "task": "Duties"
+   },
+   "n_options": 100,
+   "prefix_tokens": 179,
+   "longest": 917,
+   "total": 1060,
+   "request_sha256": "3762610c44acfe01ea22a77ad5d329730650caa41335927d8d5fb8c854ab1779"
+  },
+  {
+   "id": "ledgar-02616",
+   "source": "ledgar",
+   "source_index": 2616,
+   "gold": {
+    "task": "Approvals"
+   },
+   "n_options": 100,
+   "prefix_tokens": 152,
+   "longest": 890,
+   "total": 1033,
+   "request_sha256": "cba748a2ec92282ac5540dc1120d5d83eb5799ca95916468d322894ee16760fb"
+  },
+  {
+   "id": "ledgar-02647",
+   "source": "ledgar",
+   "source_index": 2647,
+   "gold": {
+    "task": "Entire Agreements"
+   },
+   "n_options": 100,
+   "prefix_tokens": 175,
+   "longest": 913,
+   "total": 1056,
+   "request_sha256": "175aa98bebc41d0037242849eb41a3f4092a96656b411a97f87dfd892bb04ad5"
+  },
+  {
+   "id": "ledgar-02705",
+   "source": "ledgar",
+   "source_index": 2705,
+   "gold": {
+    "task": "Governing Laws"
+   },
+   "n_options": 100,
+   "prefix_tokens": 224,
+   "longest": 962,
+   "total": 1105,
+   "request_sha256": "07714ff8ff4a7fc433e7acfeb5fc3392786024683667303a342b7498ce91fd77"
+  },
+  {
+   "id": "ledgar-02745",
+   "source": "ledgar",
+   "source_index": 2745,
+   "gold": {
+    "task": "Governing Laws"
+   },
+   "n_options": 100,
+   "prefix_tokens": 69,
+   "longest": 807,
+   "total": 950,
+   "request_sha256": "db345b6f07cc5eb6f4f058b017333b840503c1f8b4c2d52aac995a63891f3e9f"
+  },
+  {
+   "id": "ledgar-02784",
+   "source": "ledgar",
+   "source_index": 2784,
+   "gold": {
+    "task": "Binding Effects"
+   },
+   "n_options": 100,
+   "prefix_tokens": 128,
+   "longest": 866,
+   "total": 1009,
+   "request_sha256": "87b91d483dd541f473d569a495d5d83587fe55d651007782c61b9f0f491d415d"
+  },
+  {
+   "id": "ledgar-02792",
+   "source": "ledgar",
+   "source_index": 2792,
+   "gold": {
+    "task": "Governing Laws"
+   },
+   "n_options": 100,
+   "prefix_tokens": 121,
+   "longest": 859,
+   "total": 1002,
+   "request_sha256": "48107e4e781fcb4c0ce263be4eb2691c252902539f7f73ba9b1c15c10f6eddb1"
+  },
+  {
+   "id": "ledgar-02928",
+   "source": "ledgar",
+   "source_index": 2928,
+   "gold": {
+    "task": "Applicable Laws"
+   },
+   "n_options": 100,
+   "prefix_tokens": 89,
+   "longest": 827,
+   "total": 970,
+   "request_sha256": "9074a1fe377d8645e966b4590c8b2fa7610160c14b027da86db9cd3d427995cc"
+  },
+  {
+   "id": "ledgar-02974",
+   "source": "ledgar",
+   "source_index": 2974,
+   "gold": {
+    "task": "Entire Agreements"
+   },
+   "n_options": 100,
+   "prefix_tokens": 90,
+   "longest": 828,
+   "total": 971,
+   "request_sha256": "15f2e8656eed5ce75c6169ac0a46665076572ce09e22c58598aa181b3c39c289"
+  },
+  {
+   "id": "ledgar-02983",
+   "source": "ledgar",
+   "source_index": 2983,
+   "gold": {
+    "task": "Change In Control"
+   },
+   "n_options": 100,
+   "prefix_tokens": 67,
+   "longest": 805,
+   "total": 948,
+   "request_sha256": "a2130431a857c3d7c5e249ec77ffbb2cbd14185a7d8c4427af17037c6de57ba2"
+  },
+  {
+   "id": "ledgar-03091",
+   "source": "ledgar",
+   "source_index": 3091,
+   "gold": {
+    "task": "Expenses"
+   },
+   "n_options": 100,
+   "prefix_tokens": 145,
+   "longest": 883,
+   "total": 1026,
+   "request_sha256": "fda6c00a760e227f5b7757536a24a2f829a84d5622421b218272c2f3f174e82c"
+  },
+  {
+   "id": "ledgar-03106",
+   "source": "ledgar",
+   "source_index": 3106,
+   "gold": {
+    "task": "Waivers"
+   },
+   "n_options": 100,
+   "prefix_tokens": 92,
+   "longest": 830,
+   "total": 973,
+   "request_sha256": "b7010cf652c2867d611d12632919fa759a278bb180ba27a6e7603f66f508b61e"
+  },
+  {
+   "id": "ledgar-03166",
+   "source": "ledgar",
+   "source_index": 3166,
+   "gold": {
+    "task": "Terminations"
+   },
+   "n_options": 100,
+   "prefix_tokens": 397,
+   "longest": 1135,
+   "total": 1278,
+   "request_sha256": "73c20e4bf5cb002a29b363fce0c24a982c3120dfba7356d6f43d17b3c67210b7"
+  },
+  {
+   "id": "ledgar-03463",
+   "source": "ledgar",
+   "source_index": 3463,
+   "gold": {
+    "task": "Severability"
+   },
+   "n_options": 100,
+   "prefix_tokens": 173,
+   "longest": 911,
+   "total": 1054,
+   "request_sha256": "89b5e8c877c8bc8eeb0f066e40312a35eeaecd5aff2021499f81d4d074c8ebab"
+  },
+  {
+   "id": "ledgar-03517",
+   "source": "ledgar",
+   "source_index": 3517,
+   "gold": {
+    "task": "Amendments"
+   },
+   "n_options": 100,
+   "prefix_tokens": 74,
+   "longest": 812,
+   "total": 955,
+   "request_sha256": "252b3115152ce0ba368be8c06b646c4327fcec8923e10164eb4ee3e089b0df5c"
+  },
+  {
+   "id": "ledgar-03519",
+   "source": "ledgar",
+   "source_index": 3519,
+   "gold": {
+    "task": "Further Assurances"
+   },
+   "n_options": 100,
+   "prefix_tokens": 151,
+   "longest": 889,
+   "total": 1032,
+   "request_sha256": "5486e47505812016c8abd69b8c31cd595cb30f286071d82d263bdde3a8fa5d93"
+  },
+  {
+   "id": "ledgar-03540",
+   "source": "ledgar",
+   "source_index": 3540,
+   "gold": {
+    "task": "Governing Laws"
+   },
+   "n_options": 100,
+   "prefix_tokens": 69,
+   "longest": 807,
+   "total": 950,
+   "request_sha256": "2814801ba8e9b2903c13968c878692cf4e615ee858bd83d1bb573e262c1d29df"
+  },
+  {
+   "id": "ledgar-03610",
+   "source": "ledgar",
+   "source_index": 3610,
+   "gold": {
+    "task": "General"
+   },
+   "n_options": 100,
+   "prefix_tokens": 136,
+   "longest": 874,
+   "total": 1017,
+   "request_sha256": "c7d9fa4b3a89f3e0fad24acb6c4b1e0dc912b4ac7722b8b3f6ffcbf7ebaea453"
+  },
+  {
+   "id": "ledgar-03668",
+   "source": "ledgar",
+   "source_index": 3668,
+   "gold": {
+    "task": "Notices"
+   },
+   "n_options": 100,
+   "prefix_tokens": 137,
+   "longest": 875,
+   "total": 1018,
+   "request_sha256": "133a448f5f6731b9d89ec4acd29b4eae22ec7a6312afdb903db89e9b193ce918"
+  },
+  {
+   "id": "ledgar-03793",
+   "source": "ledgar",
+   "source_index": 3793,
+   "gold": {
+    "task": "Effectiveness"
+   },
+   "n_options": 100,
+   "prefix_tokens": 90,
+   "longest": 828,
+   "total": 971,
+   "request_sha256": "36b9a88767444138de73a052fe78c86dee5693f074b2cac8de256fd31e3c2478"
+  },
+  {
+   "id": "ledgar-03831",
+   "source": "ledgar",
+   "source_index": 3831,
+   "gold": {
+    "task": "Entire Agreements"
+   },
+   "n_options": 100,
+   "prefix_tokens": 102,
+   "longest": 840,
+   "total": 983,
+   "request_sha256": "e5a19f32e5e008e9a4f32989ba17819df78bc64fd9663d0bd6c59dce0f5f4f34"
+  },
+  {
+   "id": "ledgar-03926",
+   "source": "ledgar",
+   "source_index": 3926,
+   "gold": {
+    "task": "General"
+   },
+   "n_options": 100,
+   "prefix_tokens": 113,
+   "longest": 851,
+   "total": 994,
+   "request_sha256": "9b9315fecc7d7f53ad2df42c5d5de08c53bf4d322672faa2b036f7d186ff3066"
+  },
+  {
+   "id": "ledgar-04056",
+   "source": "ledgar",
+   "source_index": 4056,
+   "gold": {
+    "task": "Existence"
+   },
+   "n_options": 100,
+   "prefix_tokens": 133,
+   "longest": 871,
+   "total": 1014,
+   "request_sha256": "4c16d123083b5d6ee3464d45fdee9c5136ef030ea5568f5f8bfd91c15646b0f0"
+  },
+  {
+   "id": "ledgar-04062",
+   "source": "ledgar",
+   "source_index": 4062,
+   "gold": {
+    "task": "General"
+   },
+   "n_options": 100,
+   "prefix_tokens": 183,
+   "longest": 921,
+   "total": 1064,
+   "request_sha256": "5dc7f16c4c4d346c14c50f226667baba371b54f452176f05c98005e2d3f25acf"
+  },
+  {
+   "id": "ledgar-04416",
+   "source": "ledgar",
+   "source_index": 4416,
+   "gold": {
+    "task": "Terminations"
+   },
+   "n_options": 100,
+   "prefix_tokens": 108,
+   "longest": 846,
+   "total": 989,
+   "request_sha256": "ee8c42b226b95cb96d7cdd632fcdec75e2319805884ce2267a4b5d708eb157bd"
+  },
+  {
+   "id": "ledgar-04431",
+   "source": "ledgar",
+   "source_index": 4431,
+   "gold": {
+    "task": "Assignments"
+   },
+   "n_options": 100,
+   "prefix_tokens": 164,
+   "longest": 902,
+   "total": 1045,
+   "request_sha256": "388508e5c75e7c5429c511ec818bd28ce7a5e89668852aa003b864c165e90e04"
+  },
+  {
+   "id": "ledgar-04569",
+   "source": "ledgar",
+   "source_index": 4569,
+   "gold": {
+    "task": "Counterparts"
+   },
+   "n_options": 100,
+   "prefix_tokens": 135,
+   "longest": 873,
+   "total": 1016,
+   "request_sha256": "bd2b2c2ae8bc7a3856faca4c1f8993bb3d639247214ed5618fa06e2c04b6eca8"
+  },
+  {
+   "id": "ledgar-04602",
+   "source": "ledgar",
+   "source_index": 4602,
+   "gold": {
+    "task": "Insurances"
+   },
+   "n_options": 100,
+   "prefix_tokens": 168,
+   "longest": 906,
+   "total": 1049,
+   "request_sha256": "546cf772eebdd20797584e8f55752fb774f011951636e0850aca2ce5ebcd312f"
+  },
+  {
+   "id": "ledgar-04625",
+   "source": "ledgar",
+   "source_index": 4625,
+   "gold": {
+    "task": "Counterparts"
+   },
+   "n_options": 100,
+   "prefix_tokens": 85,
+   "longest": 823,
+   "total": 966,
+   "request_sha256": "7da7bb634d7d85234ec2364ccebad8c61705a847eb07970bff0e778f33ccc6bf"
+  },
+  {
+   "id": "ledgar-04675",
+   "source": "ledgar",
+   "source_index": 4675,
+   "gold": {
+    "task": "Entire Agreements"
+   },
+   "n_options": 100,
+   "prefix_tokens": 228,
+   "longest": 966,
+   "total": 1109,
+   "request_sha256": "1cd206216d3c3d64331b1d46d5deb1e1a03e311f89d0b78eae0b16186b08eb1e"
+  },
+  {
+   "id": "ledgar-04719",
+   "source": "ledgar",
+   "source_index": 4719,
+   "gold": {
+    "task": "Terminations"
+   },
+   "n_options": 100,
+   "prefix_tokens": 496,
+   "longest": 1234,
+   "total": 1377,
+   "request_sha256": "d971197be8db621474e3f420430c747253490a14fe64a54f29732ba372210629"
+  },
+  {
+   "id": "ledgar-04896",
+   "source": "ledgar",
+   "source_index": 4896,
+   "gold": {
+    "task": "Indemnifications"
+   },
+   "n_options": 100,
+   "prefix_tokens": 201,
+   "longest": 939,
+   "total": 1082,
+   "request_sha256": "e9fd6bb5b2aa59815ee56696685121c9a36675a1e8deab1e5502b282e06a19e9"
+  },
+  {
+   "id": "ledgar-04984",
+   "source": "ledgar",
+   "source_index": 4984,
+   "gold": {
+    "task": "Transactions With Affiliates"
+   },
+   "n_options": 100,
+   "prefix_tokens": 185,
+   "longest": 923,
+   "total": 1066,
+   "request_sha256": "10a6cb46feb030dd0db1aaa9d33e147f97516f503339a181d09ae9ea2ac85821"
+  },
+  {
+   "id": "ledgar-05009",
+   "source": "ledgar",
+   "source_index": 5009,
+   "gold": {
+    "task": "Amendments"
+   },
+   "n_options": 100,
+   "prefix_tokens": 65,
+   "longest": 803,
+   "total": 946,
+   "request_sha256": "0de208a7e26cd6181459548d058c631d1d965f0e443a35563df3c115664b79bd"
+  },
+  {
+   "id": "ledgar-05041",
+   "source": "ledgar",
+   "source_index": 5041,
+   "gold": {
+    "task": "Further Assurances"
+   },
+   "n_options": 100,
+   "prefix_tokens": 277,
+   "longest": 1015,
+   "total": 1158,
+   "request_sha256": "1cc3817b4e72e16c5799bdf1a51317b79ded43c63ebeb883a6c89d2e8dc40410"
+  },
+  {
+   "id": "ledgar-05137",
+   "source": "ledgar",
+   "source_index": 5137,
+   "gold": {
+    "task": "Severability"
+   },
+   "n_options": 100,
+   "prefix_tokens": 84,
+   "longest": 822,
+   "total": 965,
+   "request_sha256": "cc9a0b0c72518174d604bf9c89b37bcfc798eac705894c0b6c4173ae47122b3f"
+  },
+  {
+   "id": "ledgar-05239",
+   "source": "ledgar",
+   "source_index": 5239,
+   "gold": {
+    "task": "Forfeitures"
+   },
+   "n_options": 100,
+   "prefix_tokens": 209,
+   "longest": 947,
+   "total": 1090,
+   "request_sha256": "6b29726efec1c9a4e58b5116942a0dc48331591201b1293a1a3b1a55d4b8abba"
+  },
+  {
+   "id": "ledgar-05271",
+   "source": "ledgar",
+   "source_index": 5271,
+   "gold": {
+    "task": "Governing Laws"
+   },
+   "n_options": 100,
+   "prefix_tokens": 103,
+   "longest": 841,
+   "total": 984,
+   "request_sha256": "88470664af905f301c1e3ba70072d2d3bca31410e87188eae1572e891413aaa0"
+  },
+  {
+   "id": "ledgar-05306",
+   "source": "ledgar",
+   "source_index": 5306,
+   "gold": {
+    "task": "Assignments"
+   },
+   "n_options": 100,
+   "prefix_tokens": 173,
+   "longest": 911,
+   "total": 1054,
+   "request_sha256": "f677542829986a56ca5b922bdb53fc192fe74fef91e254ad841617e79a53cb1c"
+  },
+  {
+   "id": "ledgar-05307",
+   "source": "ledgar",
+   "source_index": 5307,
+   "gold": {
+    "task": "Governing Laws"
+   },
+   "n_options": 100,
+   "prefix_tokens": 78,
+   "longest": 816,
+   "total": 959,
+   "request_sha256": "715596a5658aab14bb3ff8756924587bc3ce80b6c5a3480686b6cdb45e420daf"
+  },
+  {
+   "id": "ledgar-05332",
+   "source": "ledgar",
+   "source_index": 5332,
+   "gold": {
+    "task": "Entire Agreements"
+   },
+   "n_options": 100,
+   "prefix_tokens": 113,
+   "longest": 851,
+   "total": 994,
+   "request_sha256": "61dfccc9eaea27a1c3d931985bbfd175cbcbf99365b7d17d7cb1f80e396abf46"
+  },
+  {
+   "id": "ledgar-05410",
+   "source": "ledgar",
+   "source_index": 5410,
+   "gold": {
+    "task": "General"
+   },
+   "n_options": 100,
+   "prefix_tokens": 140,
+   "longest": 878,
+   "total": 1021,
+   "request_sha256": "fc38b56aad07f3c2ecaf3fb7eeb67e0f4cb2df2f2ccb69dbd59a0240698ceeeb"
+  },
+  {
+   "id": "ledgar-05441",
+   "source": "ledgar",
+   "source_index": 5441,
+   "gold": {
+    "task": "Survival"
+   },
+   "n_options": 100,
+   "prefix_tokens": 100,
+   "longest": 838,
+   "total": 981,
+   "request_sha256": "5046d329582656475b389fd8b7db4c92cee5674b1cda889302fffe57fbd17428"
+  },
+  {
+   "id": "ledgar-05504",
+   "source": "ledgar",
+   "source_index": 5504,
+   "gold": {
+    "task": "Brokers"
+   },
+   "n_options": 100,
+   "prefix_tokens": 137,
+   "longest": 875,
+   "total": 1018,
+   "request_sha256": "71f516127f6af17b2b98788c0216572c2a11dce57904aa585e543e3306d518e6"
+  },
+  {
+   "id": "ledgar-05568",
+   "source": "ledgar",
+   "source_index": 5568,
+   "gold": {
+    "task": "Sales"
+   },
+   "n_options": 100,
+   "prefix_tokens": 208,
+   "longest": 946,
+   "total": 1089,
+   "request_sha256": "c6b88f09b494de485512c7bf31706cfe7bf8694cf9663a43512caaaf02ecccd2"
+  },
+  {
+   "id": "ledgar-05579",
+   "source": "ledgar",
+   "source_index": 5579,
+   "gold": {
+    "task": "Forfeitures"
+   },
+   "n_options": 100,
+   "prefix_tokens": 130,
+   "longest": 868,
+   "total": 1011,
+   "request_sha256": "c425913912f4ad5f5888587f2124c53f4a52f00b096a3fc168433f125122f383"
+  },
+  {
+   "id": "ledgar-05617",
+   "source": "ledgar",
+   "source_index": 5617,
+   "gold": {
+    "task": "Headings"
+   },
+   "n_options": 100,
+   "prefix_tokens": 76,
+   "longest": 814,
+   "total": 957,
+   "request_sha256": "187c00c8fa6ea6db3ce3900188cbe1fc72c81e29a805bcdde7f356814e176cfc"
+  },
+  {
+   "id": "ledgar-05651",
+   "source": "ledgar",
+   "source_index": 5651,
+   "gold": {
+    "task": "Forfeitures"
+   },
+   "n_options": 100,
+   "prefix_tokens": 72,
+   "longest": 810,
+   "total": 953,
+   "request_sha256": "7bf24c5b4222e010b27749b3525dab8c82f226fcff04d9b4868e6b1a0c8918e4"
+  },
+  {
+   "id": "ledgar-05752",
+   "source": "ledgar",
+   "source_index": 5752,
+   "gold": {
+    "task": "Capitalization"
+   },
+   "n_options": 100,
+   "prefix_tokens": 425,
+   "longest": 1163,
+   "total": 1306,
+   "request_sha256": "a9735a5dd60b876892b8c6b88ee6d43bdfbb7acff7026d380a78d9de42090a23"
+  },
+  {
+   "id": "ledgar-05899",
+   "source": "ledgar",
+   "source_index": 5899,
+   "gold": {
+    "task": "Notices"
+   },
+   "n_options": 100,
+   "prefix_tokens": 289,
+   "longest": 1027,
+   "total": 1170,
+   "request_sha256": "362561d630f0cd7351e2cd0f28273c44ba813eb130b241f179ff0b8adccb95e2"
+  },
+  {
+   "id": "ledgar-05971",
+   "source": "ledgar",
+   "source_index": 5971,
+   "gold": {
+    "task": "Miscellaneous"
+   },
+   "n_options": 100,
+   "prefix_tokens": 153,
+   "longest": 891,
+   "total": 1034,
+   "request_sha256": "5ccf0b9db3e7b74387a55f1ad8fd16a1351a8e339da340946bf1e84d862f19d4"
+  },
+  {
+   "id": "ledgar-05989",
+   "source": "ledgar",
+   "source_index": 5989,
+   "gold": {
+    "task": "Remedies"
+   },
+   "n_options": 100,
+   "prefix_tokens": 65,
+   "longest": 803,
+   "total": 946,
+   "request_sha256": "b966fe87de24176f270d87446a31228acba33c43f0e8fcdb9dd2a871f5860954"
+  },
+  {
+   "id": "ledgar-06144",
+   "source": "ledgar",
+   "source_index": 6144,
+   "gold": {
+    "task": "Headings"
+   },
+   "n_options": 100,
+   "prefix_tokens": 89,
+   "longest": 827,
+   "total": 970,
+   "request_sha256": "fdd0f56e1f1ca6290273e10356354c38acd6b27e84f5db3151507ae0c4fbc7da"
+  },
+  {
+   "id": "ledgar-06148",
+   "source": "ledgar",
+   "source_index": 6148,
+   "gold": {
+    "task": "Authority"
+   },
+   "n_options": 100,
+   "prefix_tokens": 182,
+   "longest": 920,
+   "total": 1063,
+   "request_sha256": "61e44e5c9bdd8008acd9778d4ff4451a1225af218465fcbdaee1461aac641377"
+  },
+  {
+   "id": "ledgar-06153",
+   "source": "ledgar",
+   "source_index": 6153,
+   "gold": {
+    "task": "Assigns"
+   },
+   "n_options": 100,
+   "prefix_tokens": 75,
+   "longest": 813,
+   "total": 956,
+   "request_sha256": "b914dcad73d49b58e00f62cf4b9fbe22c6c77e488e8bfe2ca23749f75d476c12"
+  },
+  {
+   "id": "ledgar-06309",
+   "source": "ledgar",
+   "source_index": 6309,
+   "gold": {
+    "task": "Assignments"
+   },
+   "n_options": 100,
+   "prefix_tokens": 148,
+   "longest": 886,
+   "total": 1029,
+   "request_sha256": "7f7f64a85b1ec755f6f37f674934d6d71ba67d926707fae674d869d6ce401adf"
+  },
+  {
+   "id": "ledgar-06405",
+   "source": "ledgar",
+   "source_index": 6405,
+   "gold": {
+    "task": "Headings"
+   },
+   "n_options": 100,
+   "prefix_tokens": 104,
+   "longest": 842,
+   "total": 985,
+   "request_sha256": "8d78632ddb8659a5068a46d2cd63d6353563064e736019774b177267d2985c96"
+  },
+  {
+   "id": "ledgar-06547",
+   "source": "ledgar",
+   "source_index": 6547,
+   "gold": {
+    "task": "Transactions With Affiliates"
+   },
+   "n_options": 100,
+   "prefix_tokens": 138,
+   "longest": 876,
+   "total": 1019,
+   "request_sha256": "6b56f26c2cdd1736037aaa159790693256ba703eced8e2e7fe079b2bfc1c1df3"
+  },
+  {
+   "id": "ledgar-06664",
+   "source": "ledgar",
+   "source_index": 6664,
+   "gold": {
+    "task": "Survival"
+   },
+   "n_options": 100,
+   "prefix_tokens": 73,
+   "longest": 811,
+   "total": 954,
+   "request_sha256": "7a93f655dd5e504aabf484318bb4f133431b169bb8910793aa5c0174e14b58bf"
+  },
+  {
+   "id": "ledgar-06754",
+   "source": "ledgar",
+   "source_index": 6754,
+   "gold": {
+    "task": "Notices"
+   },
+   "n_options": 100,
+   "prefix_tokens": 110,
+   "longest": 848,
+   "total": 991,
+   "request_sha256": "e7fde849ffba3c6503255a4de60f434c29658fccfeb1399015ac8d7e760663cb"
+  },
+  {
+   "id": "ledgar-06880",
+   "source": "ledgar",
+   "source_index": 6880,
+   "gold": {
+    "task": "Counterparts"
+   },
+   "n_options": 100,
+   "prefix_tokens": 146,
+   "longest": 884,
+   "total": 1027,
+   "request_sha256": "60b338c35152b908842ae171e4d664f4743da3a3c9ffc5a181e8189e59420230"
+  },
+  {
+   "id": "ledgar-06992",
+   "source": "ledgar",
+   "source_index": 6992,
+   "gold": {
+    "task": "Consents"
+   },
+   "n_options": 100,
+   "prefix_tokens": 87,
+   "longest": 825,
+   "total": 968,
+   "request_sha256": "c2f897d40147addd3fca58a54a3edb676035e62b3641f8d6d5dc6188307baef0"
+  },
+  {
+   "id": "ledgar-07508",
+   "source": "ledgar",
+   "source_index": 7508,
+   "gold": {
+    "task": "Headings"
+   },
+   "n_options": 100,
+   "prefix_tokens": 82,
+   "longest": 820,
+   "total": 963,
+   "request_sha256": "02bdab5bb8b021bd89cfacb5de29dcbd515085d8056ad78fa198f7c6bc55e25c"
+  },
+  {
+   "id": "ledgar-07511",
+   "source": "ledgar",
+   "source_index": 7511,
+   "gold": {
+    "task": "Tax Withholdings"
+   },
+   "n_options": 100,
+   "prefix_tokens": 140,
+   "longest": 878,
+   "total": 1021,
+   "request_sha256": "21ca344f64c708948e3f51ca951af57e052005ac4fbcb3c5a685b1e23a6e8f2d"
+  },
+  {
+   "id": "ledgar-07557",
+   "source": "ledgar",
+   "source_index": 7557,
+   "gold": {
+    "task": "Construction"
+   },
+   "n_options": 100,
+   "prefix_tokens": 68,
+   "longest": 806,
+   "total": 949,
+   "request_sha256": "079a3230785c2999d167d85e66377225ca2a5ac402d7e5afec18459a1e390977"
+  },
+  {
+   "id": "ledgar-07569",
+   "source": "ledgar",
+   "source_index": 7569,
+   "gold": {
+    "task": "Waivers"
+   },
+   "n_options": 100,
+   "prefix_tokens": 131,
+   "longest": 869,
+   "total": 1012,
+   "request_sha256": "985d57c2c0fc87955444fe291ee4cf8ab569811bd0ab63496849757c58afa038"
+  },
+  {
+   "id": "ledgar-07622",
+   "source": "ledgar",
+   "source_index": 7622,
+   "gold": {
+    "task": "Solvency"
+   },
+   "n_options": 100,
+   "prefix_tokens": 101,
+   "longest": 839,
+   "total": 982,
+   "request_sha256": "d2c2c204a42227445ac26ea0d620fe030bc04d98d01eb1e930717e02314be15a"
+  },
+  {
+   "id": "ledgar-07685",
+   "source": "ledgar",
+   "source_index": 7685,
+   "gold": {
+    "task": "Releases"
+   },
+   "n_options": 100,
+   "prefix_tokens": 164,
+   "longest": 902,
+   "total": 1045,
+   "request_sha256": "a185d8ab2dc063cac0316335b6bb44367a0fac11d6bffb44d675a9274bf933ba"
+  },
+  {
+   "id": "ledgar-07711",
+   "source": "ledgar",
+   "source_index": 7711,
+   "gold": {
+    "task": "Construction"
+   },
+   "n_options": 100,
+   "prefix_tokens": 133,
+   "longest": 871,
+   "total": 1014,
+   "request_sha256": "b2e51b4f6e8be3779ddac4a2b69b172ace719e5447a79d37443da65f3b92507e"
+  },
+  {
+   "id": "ledgar-07762",
+   "source": "ledgar",
+   "source_index": 7762,
+   "gold": {
+    "task": "Benefits"
+   },
+   "n_options": 100,
+   "prefix_tokens": 137,
+   "longest": 875,
+   "total": 1018,
+   "request_sha256": "86ddcde945104fab3188a2b796496f2afc1e6677b81ba9f0425875a133d4abb8"
+  },
+  {
+   "id": "ledgar-07776",
+   "source": "ledgar",
+   "source_index": 7776,
+   "gold": {
+    "task": "No Waivers"
+   },
+   "n_options": 100,
+   "prefix_tokens": 74,
+   "longest": 812,
+   "total": 955,
+   "request_sha256": "16a7b0277f087f6df2ced1efc738b53122eab2b26a3cb94939d3ce1b797796a6"
+  },
+  {
+   "id": "ledgar-07813",
+   "source": "ledgar",
+   "source_index": 7813,
+   "gold": {
+    "task": "Entire Agreements"
+   },
+   "n_options": 100,
+   "prefix_tokens": 89,
+   "longest": 827,
+   "total": 970,
+   "request_sha256": "054d0d0dd745f728e53f4daea61bdc77488fe2b0b25ea20b42e57a97d03940e3"
+  },
+  {
+   "id": "ledgar-07823",
+   "source": "ledgar",
+   "source_index": 7823,
+   "gold": {
+    "task": "Use Of Proceeds"
+   },
+   "n_options": 100,
+   "prefix_tokens": 303,
+   "longest": 1041,
+   "total": 1184,
+   "request_sha256": "f3bc8a7f3c9b8db0582d55bf9abff199c465cb37383d120e6174df8b8104b4d1"
+  },
+  {
+   "id": "ledgar-07910",
+   "source": "ledgar",
+   "source_index": 7910,
+   "gold": {
+    "task": "Vacations"
+   },
+   "n_options": 100,
+   "prefix_tokens": 67,
+   "longest": 805,
+   "total": 948,
+   "request_sha256": "e0d93b58759f1428128dbc8bc2939aeb84ba08e1bf4b39d37672bc6260be7b5d"
+  },
+  {
+   "id": "ledgar-07928",
+   "source": "ledgar",
+   "source_index": 7928,
+   "gold": {
+    "task": "Entire Agreements"
+   },
+   "n_options": 100,
+   "prefix_tokens": 136,
+   "longest": 874,
+   "total": 1017,
+   "request_sha256": "75fc86065e60ecdb8341c801669b17eadc24a08616f18e01157744a51113d56d"
+  },
+  {
+   "id": "ledgar-07938",
+   "source": "ledgar",
+   "source_index": 7938,
+   "gold": {
+    "task": "Financial Statements"
+   },
+   "n_options": 100,
+   "prefix_tokens": 192,
+   "longest": 930,
+   "total": 1073,
+   "request_sha256": "cc4eadfe005bba8c6205cd00177fb1dccba0a45b62a815ab0a2972b6e61619a1"
+  },
+  {
+   "id": "ledgar-07967",
+   "source": "ledgar",
+   "source_index": 7967,
+   "gold": {
+    "task": "Taxes"
+   },
+   "n_options": 100,
+   "prefix_tokens": 70,
+   "longest": 808,
+   "total": 951,
+   "request_sha256": "40d58844b25cb82418336196c5bf1917d3cc9a2dddf7c4e54dee55269fd3b33f"
+  },
+  {
+   "id": "ledgar-08007",
+   "source": "ledgar",
+   "source_index": 8007,
+   "gold": {
+    "task": "Vesting"
+   },
+   "n_options": 100,
+   "prefix_tokens": 182,
+   "longest": 920,
+   "total": 1063,
+   "request_sha256": "5cfb3a5860d564ca5c204a06aa8dc20997cf0111f21635ced0e4ca4619f565a9"
+  },
+  {
+   "id": "ledgar-08009",
+   "source": "ledgar",
+   "source_index": 8009,
+   "gold": {
+    "task": "Base Salary"
+   },
+   "n_options": 100,
+   "prefix_tokens": 212,
+   "longest": 950,
+   "total": 1093,
+   "request_sha256": "80e9c6bb3b21fc32d340063a93ac2473b6abe03c7a4282cef1f8033adf1355be"
+  },
+  {
+   "id": "ledgar-08028",
+   "source": "ledgar",
+   "source_index": 8028,
+   "gold": {
+    "task": "Severability"
+   },
+   "n_options": 100,
+   "prefix_tokens": 185,
+   "longest": 923,
+   "total": 1066,
+   "request_sha256": "e89b90d4601a1d78865b17f1bcad397619ff74d2bb3a7ab6a77cf0c0507b0e4a"
+  },
+  {
+   "id": "ledgar-08462",
+   "source": "ledgar",
+   "source_index": 8462,
+   "gold": {
+    "task": "Financial Statements"
+   },
+   "n_options": 100,
+   "prefix_tokens": 142,
+   "longest": 880,
+   "total": 1023,
+   "request_sha256": "20cf2f276469067d8af1f82862eb1de83968c07be923092ba7d045de4f91266f"
+  },
+  {
+   "id": "ledgar-08547",
+   "source": "ledgar",
+   "source_index": 8547,
+   "gold": {
+    "task": "Notices"
+   },
+   "n_options": 100,
+   "prefix_tokens": 160,
+   "longest": 898,
+   "total": 1041,
+   "request_sha256": "37334472454216d0f89a2499aef694b3736b416ebfa83311e169f37d5d4be2b9"
+  },
+  {
+   "id": "ledgar-08756",
+   "source": "ledgar",
+   "source_index": 8756,
+   "gold": {
+    "task": "Notices"
+   },
+   "n_options": 100,
+   "prefix_tokens": 164,
+   "longest": 902,
+   "total": 1045,
+   "request_sha256": "f35352f61a16c8c4c98957cf754f38df44267742d0ad65bee51689aa5d8604bf"
+  },
+  {
+   "id": "ledgar-08770",
+   "source": "ledgar",
+   "source_index": 8770,
+   "gold": {
+    "task": "No Defaults"
+   },
+   "n_options": 100,
+   "prefix_tokens": 69,
+   "longest": 807,
+   "total": 950,
+   "request_sha256": "16173f2309a02f75701643086bb6f7ce1f80d2e644c6708633cb9cfa385beb11"
+  },
+  {
+   "id": "ledgar-08814",
+   "source": "ledgar",
+   "source_index": 8814,
+   "gold": {
+    "task": "Consent To Jurisdiction"
+   },
+   "n_options": 100,
+   "prefix_tokens": 311,
+   "longest": 1049,
+   "total": 1192,
+   "request_sha256": "2530cd38fced26c9370a568fff93f33b9910e931dd93c403625e67c9c384ef3e"
+  },
+  {
+   "id": "ledgar-08819",
+   "source": "ledgar",
+   "source_index": 8819,
+   "gold": {
+    "task": "Confidentiality"
+   },
+   "n_options": 100,
+   "prefix_tokens": 476,
+   "longest": 1214,
+   "total": 1357,
+   "request_sha256": "2f4af87186f827e47c53766548b525720dfec017f5b3d11a9eb2e4cec6491b81"
+  },
+  {
+   "id": "ledgar-08885",
+   "source": "ledgar",
+   "source_index": 8885,
+   "gold": {
+    "task": "Headings"
+   },
+   "n_options": 100,
+   "prefix_tokens": 81,
+   "longest": 819,
+   "total": 962,
+   "request_sha256": "5817910cfc3cba47a281f4b758e5de8628f3969369f763edb4f8f9f72db1102c"
+  },
+  {
+   "id": "ledgar-09039",
+   "source": "ledgar",
+   "source_index": 9039,
+   "gold": {
+    "task": "Disclosures"
+   },
+   "n_options": 100,
+   "prefix_tokens": 154,
+   "longest": 892,
+   "total": 1035,
+   "request_sha256": "85ad3163f377bce6b6c8267e91a47db076353297e62ca85c998e5c5fef51f5ec"
+  },
+  {
+   "id": "ledgar-09063",
+   "source": "ledgar",
+   "source_index": 9063,
+   "gold": {
+    "task": "Fees"
+   },
+   "n_options": 100,
+   "prefix_tokens": 83,
+   "longest": 821,
+   "total": 964,
+   "request_sha256": "c46751e70de5eebad6e39a8b707493864b0bcb2b7282c75a2ffb26b92a67dc90"
+  },
+  {
+   "id": "ledgar-09082",
+   "source": "ledgar",
+   "source_index": 9082,
+   "gold": {
+    "task": "Notices"
+   },
+   "n_options": 100,
+   "prefix_tokens": 157,
+   "longest": 895,
+   "total": 1038,
+   "request_sha256": "985d6e6f97de033ea69e94a94364d86aea7cc009bfea29f2be994b55fcae7b8f"
+  },
+  {
+   "id": "ledgar-09136",
+   "source": "ledgar",
+   "source_index": 9136,
+   "gold": {
+    "task": "Specific Performance"
+   },
+   "n_options": 100,
+   "prefix_tokens": 159,
+   "longest": 897,
+   "total": 1040,
+   "request_sha256": "5295ad7eefb4d10e91a999a6d1f3654a7722d4a573b7f93c53aa2e2d7fb8855d"
+  },
+  {
+   "id": "ledgar-09139",
+   "source": "ledgar",
+   "source_index": 9139,
+   "gold": {
+    "task": "Indemnity"
+   },
+   "n_options": 100,
+   "prefix_tokens": 369,
+   "longest": 1107,
+   "total": 1250,
+   "request_sha256": "b9cc4c3f275c99fd655b9c267e6d6426bde027cbad4d269291ece97804a3aa8f"
+  },
+  {
+   "id": "ledgar-09258",
+   "source": "ledgar",
+   "source_index": 9258,
+   "gold": {
+    "task": "Anti-Corruption Laws"
+   },
+   "n_options": 100,
+   "prefix_tokens": 97,
+   "longest": 835,
+   "total": 978,
+   "request_sha256": "457ec590e537e26456769afaaafc7cd008d047df0efc4482f8176b28e2228bd0"
+  },
+  {
+   "id": "ledgar-09266",
+   "source": "ledgar",
+   "source_index": 9266,
+   "gold": {
+    "task": "Assignments"
+   },
+   "n_options": 100,
+   "prefix_tokens": 381,
+   "longest": 1119,
+   "total": 1262,
+   "request_sha256": "efb6a6d06b6125a28ef56d3e9c113caf86f192827df2f26b1fd934931b6b976b"
+  },
+  {
+   "id": "ledgar-09272",
+   "source": "ledgar",
+   "source_index": 9272,
+   "gold": {
+    "task": "Fees"
+   },
+   "n_options": 100,
+   "prefix_tokens": 125,
+   "longest": 863,
+   "total": 1006,
+   "request_sha256": "305e1e79d6e328793f37a10d4569c8cac6a9586ad6e5744639c90e30b8d803eb"
+  },
+  {
+   "id": "ledgar-09321",
+   "source": "ledgar",
+   "source_index": 9321,
+   "gold": {
+    "task": "Notices"
+   },
+   "n_options": 100,
+   "prefix_tokens": 157,
+   "longest": 895,
+   "total": 1038,
+   "request_sha256": "45ae1352acd10bdea24d5a7ebe8ade7d97bff1f01c6677956a919297d0c85182"
+  },
+  {
+   "id": "ledgar-09413",
+   "source": "ledgar",
+   "source_index": 9413,
+   "gold": {
+    "task": "No Conflicts"
+   },
+   "n_options": 100,
+   "prefix_tokens": 142,
+   "longest": 880,
+   "total": 1023,
+   "request_sha256": "ed66f5662e981774aeac9d45d615392ddbbcdf50a4684119d596bb08d0274dc5"
+  },
+  {
+   "id": "ledgar-09439",
+   "source": "ledgar",
+   "source_index": 9439,
+   "gold": {
+    "task": "Closings"
+   },
+   "n_options": 100,
+   "prefix_tokens": 113,
+   "longest": 851,
+   "total": 994,
+   "request_sha256": "1a72e62dfad4c48a26ecf8bb0f5e404a8e31da50c04866a7039206177622c75c"
+  },
+  {
+   "id": "ledgar-09464",
+   "source": "ledgar",
+   "source_index": 9464,
+   "gold": {
+    "task": "Erisa"
+   },
+   "n_options": 100,
+   "prefix_tokens": 200,
+   "longest": 938,
+   "total": 1081,
+   "request_sha256": "5ec1d56756e14dae4e58843b0c59f39d753abd8593116a32e6d978b437a7d3d4"
+  },
+  {
+   "id": "ledgar-09502",
+   "source": "ledgar",
+   "source_index": 9502,
+   "gold": {
+    "task": "Authorizations"
+   },
+   "n_options": 100,
+   "prefix_tokens": 165,
+   "longest": 903,
+   "total": 1046,
+   "request_sha256": "97c6f58ca5cf6d557d82987c600e3fffb4d04c6238957dc35fada674c9d74b8f"
+  },
+  {
+   "id": "ledgar-09532",
+   "source": "ledgar",
+   "source_index": 9532,
+   "gold": {
+    "task": "Expenses"
+   },
+   "n_options": 100,
+   "prefix_tokens": 78,
+   "longest": 816,
+   "total": 959,
+   "request_sha256": "bfcc4b19236640ddc4d650b535ee3ef94aae964d00fe86db96b64e012f8de061"
+  },
+  {
+   "id": "ledgar-09579",
+   "source": "ledgar",
+   "source_index": 9579,
+   "gold": {
+    "task": "Waiver Of Jury Trials"
+   },
+   "n_options": 100,
+   "prefix_tokens": 445,
+   "longest": 1183,
+   "total": 1326,
+   "request_sha256": "ede36be9a8202aa35a7fadd9d90cad0d72135e17268fbdee0e74f34869d00659"
+  },
+  {
+   "id": "ledgar-09608",
+   "source": "ledgar",
+   "source_index": 9608,
+   "gold": {
+    "task": "Assignments"
+   },
+   "n_options": 100,
+   "prefix_tokens": 195,
+   "longest": 933,
+   "total": 1076,
+   "request_sha256": "0452feceeb01a3c992254c2096a3073cfbf58b942a54ed52b052500d6faf6b83"
+  },
+  {
+   "id": "ledgar-09716",
+   "source": "ledgar",
+   "source_index": 9716,
+   "gold": {
+    "task": "Governing Laws"
+   },
+   "n_options": 100,
+   "prefix_tokens": 160,
+   "longest": 898,
+   "total": 1041,
+   "request_sha256": "faf7dd7bdadbc8c41254d40c974c8538098159926129e9a2efce03c09835845e"
+  },
+  {
+   "id": "ledgar-09801",
+   "source": "ledgar",
+   "source_index": 9801,
+   "gold": {
+    "task": "Terminations"
+   },
+   "n_options": 100,
+   "prefix_tokens": 146,
+   "longest": 884,
+   "total": 1027,
+   "request_sha256": "8d5b3c72c3f5e7923980e9dc23c03214916e5a1146e9e20293deaa58cdaf3abc"
+  },
+  {
+   "id": "ledgar-09842",
+   "source": "ledgar",
+   "source_index": 9842,
+   "gold": {
+    "task": "Assignments"
+   },
+   "n_options": 100,
+   "prefix_tokens": 240,
+   "longest": 978,
+   "total": 1121,
+   "request_sha256": "61333cb731238892c80a58b6f3338a948c078322056f71b4fb95f8cae1435f73"
+  },
+  {
+   "id": "ledgar-09923",
+   "source": "ledgar",
+   "source_index": 9923,
+   "gold": {
+    "task": "Expenses"
+   },
+   "n_options": 100,
+   "prefix_tokens": 64,
+   "longest": 802,
+   "total": 945,
+   "request_sha256": "168c851e49e7951f59ee2b76d8f4c7c829be3abf127f31b25f041acb41474da7"
+  },
+  {
+   "id": "longbench_v2-66f78ecfbb02136c067c2f12",
+   "source": "longbench_v2",
+   "source_index": "66f78ecfbb02136c067c2f12",
+   "gold": {
+    "task": "It believes that the current situation has exceeded expectations and is committed to mediating the conflict."
+   },
+   "n_options": 4,
+   "prefix_tokens": 15534,
+   "longest": 15669,
+   "total": 15808,
+   "request_sha256": "a3a7ba31ead2ea0d6ce5672a1c51bfe1107afe35845e4f52c466e85af070cd79",
+   "meta": {
+    "domain": "Multi-Document QA",
+    "sub_domain": "Multi-news",
+    "difficulty": "easy",
+    "length": "short"
+   }
+  },
+  {
+   "id": "longbench_v2-6704a83dbb02136c067cde1b",
+   "source": "longbench_v2",
+   "source_index": "6704a83dbb02136c067cde1b",
+   "gold": {
+    "task": "The critical literacy perspective posits that literacy practices are inherently tied to issues of social justice and equity, while literacy as social practice provides a framework for understanding how identities are constructed through social interactions. However, multiliteracies often create tensions by prioritizing technological proficiency over critical engagement, which can marginalize voices that do not conform to dominant cultural narratives."
+   },
+   "n_options": 4,
+   "prefix_tokens": 15283,
+   "longest": 15645,
+   "total": 15784,
+   "request_sha256": "f79669f766f858d358fa6694bc09231b9b3e0b1e676f4c37dcef9805202265f1",
+   "meta": {
+    "domain": "Single-Document QA",
+    "sub_domain": "Literary",
+    "difficulty": "hard",
+    "length": "short"
+   }
+  },
+  {
+   "id": "longbench_v2-66fbab85bb02136c067c81dc",
+   "source": "longbench_v2",
+   "source_index": "66fbab85bb02136c067c81dc",
+   "gold": {
+    "task": "the cooperation between various people"
+   },
+   "n_options": 4,
+   "prefix_tokens": 11388,
+   "longest": 11467,
+   "total": 11606,
+   "request_sha256": "8b56fc5abd387af00b355a05baae20056b35c8cc1754247a279d6667ba8e21cc",
+   "meta": {
+    "domain": "Multi-Document QA",
+    "sub_domain": "Multi-news",
+    "difficulty": "hard",
+    "length": "short"
+   }
+  },
+  {
+   "id": "longbench_v2-66fa7f1dbb02136c067c6e6b",
+   "source": "longbench_v2",
+   "source_index": "66fa7f1dbb02136c067c6e6b",
+   "gold": {
+    "task": "②④⑤⑥"
+   },
+   "n_options": 4,
+   "prefix_tokens": 15734,
+   "longest": 15875,
+   "total": 16014,
+   "request_sha256": "931064421c46f863ea7f6e3c7fb924933100ac57ad104f15c5a3c6ecc00ef1ba",
+   "meta": {
+    "domain": "Multi-Document QA",
+    "sub_domain": "Multi-news",
+    "difficulty": "easy",
+    "length": "short"
+   }
+  },
+  {
+   "id": "longbench_v2-66fe8eb3bb02136c067ca35f",
+   "source": "longbench_v2",
+   "source_index": "66fe8eb3bb02136c067ca35f",
+   "gold": {
+    "task": "None of them"
+   },
+   "n_options": 4,
+   "prefix_tokens": 15602,
+   "longest": 15781,
+   "total": 15920,
+   "request_sha256": "a6637fb869e346b8c53828ad267414b3fe3cb8f3e35d5a3dd64bee6988bf8067",
+   "meta": {
+    "domain": "Single-Document QA",
+    "sub_domain": "Legal",
+    "difficulty": "hard",
+    "length": "short"
+   }
+  },
+  {
+   "id": "longbench_v2-67040276bb02136c067cd8ae",
+   "source": "longbench_v2",
+   "source_index": "67040276bb02136c067cd8ae",
+   "gold": {
+    "task": "Enacting laws that allow for equal shares of inheritance based on the economic contributions of heirs can challenge traditional interpretations and promote a more equitable legal framework, while still being grounded in Islamic principles."
+   },
+   "n_options": 4,
+   "prefix_tokens": 13951,
+   "longest": 14197,
+   "total": 14336,
+   "request_sha256": "d522f92c42d23f7986ceab1c13d8eff507fd9b048e711223010131a42060db8a",
+   "meta": {
+    "domain": "Single-Document QA",
+    "sub_domain": "Legal",
+    "difficulty": "hard",
+    "length": "short"
+   }
+  },
+  {
+   "id": "longbench_v2-66eae4de5a08c7b9b35dd12d",
+   "source": "longbench_v2",
+   "source_index": "66eae4de5a08c7b9b35dd12d",
+   "gold": {
+    "task": "Process accurate coordinates of object parts generated by VLMs to form a 3D grounding."
+   },
+   "n_options": 4,
+   "prefix_tokens": 15697,
+   "longest": 15821,
+   "total": 15960,
+   "request_sha256": "0ccd12aac3e429da6c094800477a464e699b58b42d02488238f5882e6f7b11db",
+   "meta": {
+    "domain": "Single-Document QA",
+    "sub_domain": "Academic",
+    "difficulty": "hard",
+    "length": "short"
+   }
+  },
+  {
+   "id": "longbench_v2-66ec356a821e116aacb1c22b",
+   "source": "longbench_v2",
+   "source_index": "66ec356a821e116aacb1c22b",
+   "gold": {
+    "task": "The basic terms of the main agreement are defined."
+   },
+   "n_options": 4,
+   "prefix_tokens": 10910,
+   "longest": 11021,
+   "total": 11160,
+   "request_sha256": "df0b14a4d39c799bdd8b7ed2258ff18b25c33aed37274e5402777e170de46203",
+   "meta": {
+    "domain": "Multi-Document QA",
+    "sub_domain": "Legal",
+    "difficulty": "hard",
+    "length": "short"
+   }
+  },
+  {
+   "id": "longbench_v2-66f91f2cbb02136c067c4b1e",
+   "source": "longbench_v2",
+   "source_index": "66f91f2cbb02136c067c4b1e",
+   "gold": {
+    "task": "Matthew and Marilla sent Mrs. Spencer word by other people but there are some misunderstanding in between."
+   },
+   "n_options": 4,
+   "prefix_tokens": 12760,
+   "longest": 12889,
+   "total": 13028,
+   "request_sha256": "0dc1508da966de58a173d412a79581535c587cfa4f893c1ef02dd3ea088b3b84",
+   "meta": {
+    "domain": "Single-Document QA",
+    "sub_domain": "Literary",
+    "difficulty": "hard",
+    "length": "short"
+   }
+  },
+  {
+   "id": "longbench_v2-66f9625fbb02136c067c5456",
+   "source": "longbench_v2",
+   "source_index": "66f9625fbb02136c067c5456",
+   "gold": {
+    "task": "Begin the proofreading and annotation step."
+   },
+   "n_options": 4,
+   "prefix_tokens": 13130,
+   "longest": 13241,
+   "total": 13380,
+   "request_sha256": "8b18230e6546b33ace84807cef079c659394dbb47fab20b0aa5edd40627bd940",
+   "meta": {
+    "domain": "Long In-context Learning",
+    "sub_domain": "User guide QA",
+    "difficulty": "easy",
+    "length": "short"
+   }
+  },
+  {
+   "id": "longbench_v2-66ebe0fb5a08c7b9b35e14f5",
+   "source": "longbench_v2",
+   "source_index": "66ebe0fb5a08c7b9b35e14f5",
+   "gold": {
+    "task": "A reasonable and objective person would not consider PepsiCo's advertisement to be an offer."
+   },
+   "n_options": 4,
+   "prefix_tokens": 15862,
+   "longest": 16012,
+   "total": 16151,
+   "request_sha256": "1dbcc84917d12d713ce61d55f7a51b9e38cd98b8bc5edb5d9c73db27beccfc2b",
+   "meta": {
+    "domain": "Single-Document QA",
+    "sub_domain": "Legal",
+    "difficulty": "hard",
+    "length": "short"
+   }
+  },
+  {
+   "id": "longbench_v2-66f41e45821e116aacb30ec3",
+   "source": "longbench_v2",
+   "source_index": "66f41e45821e116aacb30ec3",
+   "gold": {
+    "task": "President Biden said that the main reason why the United States refused to accept illegal immigrants from Mexico into  the United States is that their entry method is illegal and easy to cause unrest,  and the United States is friendly and welcoming to those who immigrate to the United States through legal channels."
+   },
+   "n_options": 4,
+   "prefix_tokens": 13370,
+   "longest": 13612,
+   "total": 13751,
+   "request_sha256": "4f56f0a65099e9c5117b0a57c024b49fe580542568714d6113737803d0383112",
+   "meta": {
+    "domain": "Multi-Document QA",
+    "sub_domain": "Governmental",
+    "difficulty": "hard",
+    "length": "short"
+   }
+  },
+  {
+   "id": "longbench_v2-66f37eb9821e116aacb2d295",
+   "source": "longbench_v2",
+   "source_index": "66f37eb9821e116aacb2d295",
+   "gold": {
+    "task": "The Fourteenth Amendment is unclear."
+   },
+   "n_options": 4,
+   "prefix_tokens": 10227,
+   "longest": 10337,
+   "total": 10476,
+   "request_sha256": "24c2c9b71fe928892f8457bf33626cc822865070a73f33f5b446a7185f37eb3f",
+   "meta": {
+    "domain": "Multi-Document QA",
+    "sub_domain": "Legal",
+    "difficulty": "easy",
+    "length": "short"
+   }
+  },
+  {
+   "id": "longbench_v2-66ec1de5821e116aacb1adca",
+   "source": "longbench_v2",
+   "source_index": "66ec1de5821e116aacb1adca",
+   "gold": {
+    "task": "MagicDrive encode the class labels and the corner points separately, and then uses an MLP to compress them into a vector."
+   },
+   "n_options": 4,
+   "prefix_tokens": 15557,
+   "longest": 15776,
+   "total": 15915,
+   "request_sha256": "e89d0870d97bf866376922e440e2f9b09b77f0928048f0fcb2bc38c04469b370",
+   "meta": {
+    "domain": "Single-Document QA",
+    "sub_domain": "Academic",
+    "difficulty": "easy",
+    "length": "short"
+   }
+  },
+  {
+   "id": "longbench_v2-66f2b676821e116aacb2b27a",
+   "source": "longbench_v2",
+   "source_index": "66f2b676821e116aacb2b27a",
+   "gold": {
+    "task": "Through the concerted efforts of multiple parties, the quality of carbon emission data has been comprehensively improved, as evidenced by the increased quantifiability of indicators and the decline in carbon emissions. In the 2023 annual verification work, the number of non-compliance issues identified by verification agencies decreased by approximately 35.7% compared to 2022."
+   },
+   "n_options": 4,
+   "prefix_tokens": 13110,
+   "longest": 13496,
+   "total": 13635,
+   "request_sha256": "a799b64efc9f62a73fb07e49f71bea6dec4c247fc09006fa2e36daf8379c2a29",
+   "meta": {
+    "domain": "Single-Document QA",
+    "sub_domain": "Financial",
+    "difficulty": "hard",
+    "length": "short"
+   }
+  },
+  {
+   "id": "longbench_v2-66f6bcf3bb02136c067c2703",
+   "source": "longbench_v2",
+   "source_index": "66f6bcf3bb02136c067c2703",
+   "gold": {
+    "task": "With insufficient tools to fight COVID-19, the United States mobilized all of society to insist on surviving the outbreak with the least disruption to the United States."
+   },
+   "n_options": 4,
+   "prefix_tokens": 10965,
+   "longest": 11152,
+   "total": 11291,
+   "request_sha256": "5c748570668d4642f786ee7a39519d5c79d2327f181e235211743a5718f9f6c4",
+   "meta": {
+    "domain": "Multi-Document QA",
+    "sub_domain": "Governmental",
+    "difficulty": "hard",
+    "length": "short"
+   }
+  },
+  {
+   "id": "longbench_v2-66f3abe6821e116aacb2e1d2",
+   "source": "longbench_v2",
+   "source_index": "66f3abe6821e116aacb2e1d2",
+   "gold": {
+    "task": "Developing one-day tours can help boost Hong Kong's tourism industry."
+   },
+   "n_options": 4,
+   "prefix_tokens": 11360,
+   "longest": 11491,
+   "total": 11630,
+   "request_sha256": "d0f026816b2638fe245604445bcb7971fbba862f235b422e394e840d110d476b",
+   "meta": {
+    "domain": "Multi-Document QA",
+    "sub_domain": "Multi-news",
+    "difficulty": "easy",
+    "length": "short"
+   }
+  },
+  {
+   "id": "longbench_v2-66ec25a5821e116aacb1b5d1",
+   "source": "longbench_v2",
+   "source_index": "66ec25a5821e116aacb1b5d1",
+   "gold": {
+    "task": "The key distinction between a security interest and a lease lies in whether the lessor retains the right to recover the leased asset."
+   },
+   "n_options": 4,
+   "prefix_tokens": 14659,
+   "longest": 14816,
+   "total": 14955,
+   "request_sha256": "750a2d6f75a03a609e08a8f0b1755cb2007de35ba32960b1e36e0b572f7065e2",
+   "meta": {
+    "domain": "Single-Document QA",
+    "sub_domain": "Legal",
+    "difficulty": "easy",
+    "length": "short"
+   }
+  },
+  {
+   "id": "longbench_v2-66f41348821e116aacb30c89",
+   "source": "longbench_v2",
+   "source_index": "66f41348821e116aacb30c89",
+   "gold": {
+    "task": "If Jordan wants more compensation, he needs to prove as little damage as he can mitigate."
+   },
+   "n_options": 4,
+   "prefix_tokens": 12350,
+   "longest": 12511,
+   "total": 12650,
+   "request_sha256": "d8f23d1ddde5c2f20f02e63f5745843c1c6af2db9314d271d1bdf187bfbab23f",
+   "meta": {
+    "domain": "Multi-Document QA",
+    "sub_domain": "Legal",
+    "difficulty": "hard",
+    "length": "short"
+   }
+  },
+  {
+   "id": "longbench_v2-66f2e0bc821e116aacb2bf37",
+   "source": "longbench_v2",
+   "source_index": "66f2e0bc821e116aacb2bf37",
+   "gold": {
+    "task": "Ginsburg does not support providing maternity leave to women alone."
+   },
+   "n_options": 4,
+   "prefix_tokens": 10814,
+   "longest": 10938,
+   "total": 11077,
+   "request_sha256": "724b19a4f76e29455e58a53a1d48ecd97bb61ff68a968cd20ea8f551c55db698",
+   "meta": {
+    "domain": "Multi-Document QA",
+    "sub_domain": "Legal",
+    "difficulty": "hard",
+    "length": "short"
+   }
+  },
+  {
+   "id": "longbench_v2-66f8c6b4bb02136c067c4480",
+   "source": "longbench_v2",
+   "source_index": "66f8c6b4bb02136c067c4480",
+   "gold": {
+    "task": "duration A has the largest number of deaths per day, duration A has the largest number of injuries per day."
+   },
+   "n_options": 4,
+   "prefix_tokens": 13667,
+   "longest": 13896,
+   "total": 14035,
+   "request_sha256": "d923ab0583a191c5590370e6a6170d3e2a28e61e077fdbeafdc2507e6113023e",
+   "meta": {
+    "domain": "Multi-Document QA",
+    "sub_domain": "Multi-news",
+    "difficulty": "hard",
+    "length": "short"
+   }
+  },
+  {
+   "id": "longbench_v2-66f245cc821e116aacb28698",
+   "source": "longbench_v2",
+   "source_index": "66f245cc821e116aacb28698",
+   "gold": {
+    "task": "Between 2012 and 2017, negative review rate on Yelp could be abnormally low."
+   },
+   "n_options": 4,
+   "prefix_tokens": 10221,
+   "longest": 10373,
+   "total": 10512,
+   "request_sha256": "1c64c1e9f49d2e1ab766f3c02eced6df2ce47caf4fa87739e40f9b0b57de564d",
+   "meta": {
+    "domain": "Multi-Document QA",
+    "sub_domain": "Multi-news",
+    "difficulty": "easy",
+    "length": "short"
+   }
+  }
+ ]
+}
