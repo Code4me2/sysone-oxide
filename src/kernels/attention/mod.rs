@@ -64,77 +64,91 @@ pub fn positions(segments: &[Segment]) -> Vec<i32> {
     pos
 }
 
+/// Tokens per tile block in [`qk_norm_rope`].
+pub const ROPE_TOKENS: usize = 4;
+
 #[cutile::module]
 pub mod qk_norm_rope_module {
     use cutile::core::*;
 
-    /// Zero-centred RMSNorm of `H` heads (`x` is `[H, D]` fp32) and RoPE on the first `2 * R2` dims.
-    /// `x_lo`/`x_hi` are dims `0..R2` and `R2..2*R2` of the same heads, loaded separately; they go through
-    /// the same arithmetic as `x`, so they equal the corresponding slices of the normed `x` bit for bit.
-    fn norm_rope<const H: i32, const D: i32, const R2: i32, const NC: i32>(
-        x: Tile<f32, { [H, D] }>,
-        x_lo: Tile<f32, { [H, R2] }>,
-        x_hi: Tile<f32, { [H, R2] }>,
+    /// Zero-centred RMSNorm of `RH` head rows (`x` is `[RH, D]` fp32) and RoPE on the first `2 * R2` dims
+    /// with per-row `cos`/`sin` (`[RH, R2]`, already bf16-rounded). `x_lo`/`x_hi` are dims `0..R2` and
+    /// `R2..2*R2` of the same rows, loaded separately; they go through the same arithmetic as `x`, so they
+    /// equal the corresponding slices of the normed `x` bit for bit.
+    fn norm_rope<const RH: i32, const D: i32, const R2: i32, const NC: i32>(
+        x: Tile<f32, { [RH, D] }>,
+        x_lo: Tile<f32, { [RH, R2] }>,
+        x_hi: Tile<f32, { [RH, R2] }>,
         opw: Tile<f32, { [1, D] }>,
         opw_lo: Tile<f32, { [1, R2] }>,
         opw_hi: Tile<f32, { [1, R2] }>,
-        cos_b: Tile<f32, { [1, R2] }>,
-        sin_b: Tile<f32, { [1, R2] }>,
+        cos_r: Tile<f32, { [RH, R2] }>,
+        sin_r: Tile<f32, { [RH, R2] }>,
         eps: f32,
-        s3: Shape<{ [H, NC, R2] }>,
-    ) -> Tile<bf16, { [H, D] }> {
-        let ss: Tile<f32, { [H] }> = reduce_sum(x * x, 1i32);
+        s3: Shape<{ [RH, NC, R2] }>,
+    ) -> Tile<bf16, { [RH, D] }> {
+        let ss: Tile<f32, { [RH] }> = reduce_sum(x * x, 1i32);
         let d: f32 = convert_scalar(D);
-        let mean: Tile<f32, { [H] }> = true_div(ss, broadcast_scalar(d, const_shape![H]));
-        let inv: Tile<f32, { [H] }> = rsqrt(mean + broadcast_scalar(eps, const_shape![H]), ftz::Disabled);
-        let inv: Tile<f32, { [H, 1] }> = inv.reshape(const_shape![H, 1]);
+        let mean: Tile<f32, { [RH] }> = true_div(ss, broadcast_scalar(d, const_shape![RH]));
+        let inv: Tile<f32, { [RH] }> = rsqrt(mean + broadcast_scalar(eps, const_shape![RH]), ftz::Disabled);
+        let inv: Tile<f32, { [RH, 1] }> = inv.reshape(const_shape![RH, 1]);
 
-        let n: Tile<f32, { [H, D] }> =
-            (x * inv.broadcast(const_shape![H, D])) * opw.broadcast(const_shape![H, D]);
-        let n: Tile<bf16, { [H, D] }> = convert_tile(n);
-        let n: Tile<f32, { [H, D] }> = convert_tile(n);
-        let n_lo: Tile<f32, { [H, R2] }> =
-            (x_lo * inv.broadcast(const_shape![H, R2])) * opw_lo.broadcast(const_shape![H, R2]);
-        let n_lo: Tile<bf16, { [H, R2] }> = convert_tile(n_lo);
-        let n_lo: Tile<f32, { [H, R2] }> = convert_tile(n_lo);
-        let n_hi: Tile<f32, { [H, R2] }> =
-            (x_hi * inv.broadcast(const_shape![H, R2])) * opw_hi.broadcast(const_shape![H, R2]);
-        let n_hi: Tile<bf16, { [H, R2] }> = convert_tile(n_hi);
-        let n_hi: Tile<f32, { [H, R2] }> = convert_tile(n_hi);
+        let n: Tile<f32, { [RH, D] }> =
+            (x * inv.broadcast(const_shape![RH, D])) * opw.broadcast(const_shape![RH, D]);
+        let n: Tile<bf16, { [RH, D] }> = convert_tile(n);
+        let n: Tile<f32, { [RH, D] }> = convert_tile(n);
+        let n_lo: Tile<f32, { [RH, R2] }> =
+            (x_lo * inv.broadcast(const_shape![RH, R2])) * opw_lo.broadcast(const_shape![RH, R2]);
+        let n_lo: Tile<bf16, { [RH, R2] }> = convert_tile(n_lo);
+        let n_lo: Tile<f32, { [RH, R2] }> = convert_tile(n_lo);
+        let n_hi: Tile<f32, { [RH, R2] }> =
+            (x_hi * inv.broadcast(const_shape![RH, R2])) * opw_hi.broadcast(const_shape![RH, R2]);
+        let n_hi: Tile<bf16, { [RH, R2] }> = convert_tile(n_hi);
+        let n_hi: Tile<f32, { [RH, R2] }> = convert_tile(n_hi);
 
         // View each head as NC chunks of R2 dims. Chunk 0 rotates with -chunk1, chunk 1 with chunk 0, the
         // rest pass through (cos = 1, sin = 0 gives back n exactly).
-        let n3: Tile<f32, { [H, NC, R2] }> = n.reshape(s3);
+        let n3: Tile<f32, { [RH, NC, R2] }> = n.reshape(s3);
         let chunk: Tile<i32, { [NC] }> = iota(const_shape![NC]);
-        let chunk: Tile<i32, { [H, NC, R2] }> = chunk.reshape(const_shape![1, NC, 1]).broadcast(s3);
-        let zero_i: Tile<i32, { [H, NC, R2] }> = constant(0i32, s3);
-        let one_i: Tile<i32, { [H, NC, R2] }> = constant(1i32, s3);
-        let two_i: Tile<i32, { [H, NC, R2] }> = constant(2i32, s3);
-        let is0: Tile<bool, { [H, NC, R2] }> = eq_tile(chunk, zero_i);
-        let is1: Tile<bool, { [H, NC, R2] }> = eq_tile(chunk, one_i);
-        let rot: Tile<bool, { [H, NC, R2] }> = lt_tile(chunk, two_i);
-        let one_f: Tile<f32, { [H, NC, R2] }> = constant(1.0f32, s3);
-        let zero_f: Tile<f32, { [H, NC, R2] }> = constant(0.0f32, s3);
-        let cos3: Tile<f32, { [H, NC, R2] }> = cos_b.reshape(const_shape![1, 1, R2]).broadcast(s3);
-        let sin3: Tile<f32, { [H, NC, R2] }> = sin_b.reshape(const_shape![1, 1, R2]).broadcast(s3);
-        let lo3: Tile<f32, { [H, NC, R2] }> = n_lo.reshape(const_shape![H, 1, R2]).broadcast(s3);
-        let hi3: Tile<f32, { [H, NC, R2] }> = n_hi.reshape(const_shape![H, 1, R2]).broadcast(s3);
-        let c: Tile<f32, { [H, NC, R2] }> = select(rot, cos3, one_f);
-        let s: Tile<f32, { [H, NC, R2] }> = select(rot, sin3, zero_f);
-        let r: Tile<f32, { [H, NC, R2] }> = select(is0, negf(hi3), select(is1, lo3, zero_f));
-        let a: Tile<bf16, { [H, NC, R2] }> = convert_tile(n3 * c);
-        let b: Tile<bf16, { [H, NC, R2] }> = convert_tile(r * s);
-        let a: Tile<f32, { [H, NC, R2] }> = convert_tile(a);
-        let b: Tile<f32, { [H, NC, R2] }> = convert_tile(b);
-        let y: Tile<bf16, { [H, NC, R2] }> = convert_tile(a + b);
-        y.reshape(const_shape![H, D])
+        let chunk: Tile<i32, { [RH, NC, R2] }> = chunk.reshape(const_shape![1, NC, 1]).broadcast(s3);
+        let zero_i: Tile<i32, { [RH, NC, R2] }> = constant(0i32, s3);
+        let one_i: Tile<i32, { [RH, NC, R2] }> = constant(1i32, s3);
+        let two_i: Tile<i32, { [RH, NC, R2] }> = constant(2i32, s3);
+        let is0: Tile<bool, { [RH, NC, R2] }> = eq_tile(chunk, zero_i);
+        let is1: Tile<bool, { [RH, NC, R2] }> = eq_tile(chunk, one_i);
+        let rot: Tile<bool, { [RH, NC, R2] }> = lt_tile(chunk, two_i);
+        let one_f: Tile<f32, { [RH, NC, R2] }> = constant(1.0f32, s3);
+        let zero_f: Tile<f32, { [RH, NC, R2] }> = constant(0.0f32, s3);
+        let cos3: Tile<f32, { [RH, NC, R2] }> = cos_r.reshape(const_shape![RH, 1, R2]).broadcast(s3);
+        let sin3: Tile<f32, { [RH, NC, R2] }> = sin_r.reshape(const_shape![RH, 1, R2]).broadcast(s3);
+        let lo3: Tile<f32, { [RH, NC, R2] }> = n_lo.reshape(const_shape![RH, 1, R2]).broadcast(s3);
+        let hi3: Tile<f32, { [RH, NC, R2] }> = n_hi.reshape(const_shape![RH, 1, R2]).broadcast(s3);
+        let c: Tile<f32, { [RH, NC, R2] }> = select(rot, cos3, one_f);
+        let s: Tile<f32, { [RH, NC, R2] }> = select(rot, sin3, zero_f);
+        let r: Tile<f32, { [RH, NC, R2] }> = select(is0, negf(hi3), select(is1, lo3, zero_f));
+        let a: Tile<bf16, { [RH, NC, R2] }> = convert_tile(n3 * c);
+        let b: Tile<bf16, { [RH, NC, R2] }> = convert_tile(r * s);
+        let a: Tile<f32, { [RH, NC, R2] }> = convert_tile(a);
+        let b: Tile<f32, { [RH, NC, R2] }> = convert_tile(b);
+        let y: Tile<bf16, { [RH, NC, R2] }> = convert_tile(a + b);
+        y.reshape(const_shape![RH, D])
     }
 
-    /// One token per tile block: q heads from `qg[t, :, :D]`, k heads from `kv[t, :HK, :]`.
+    /// `TT` tokens per tile block: q heads from `qg[t, :, :D]`, k heads from `kv[t, :HK, :]`.
+    /// `RQ = TT * HQ`, `RK = TT * HK`, `NC = D / R2`.
     #[cutile::entry()]
-    pub fn qk_norm_rope<const HQ: i32, const HK: i32, const D: i32, const R2: i32, const NC: i32>(
-        q_out: &mut Tensor<bf16, { [1, HQ, D] }>,
-        k_out: &mut Tensor<bf16, { [1, HK, D] }>,
+    pub fn qk_norm_rope<
+        const TT: i32,
+        const HQ: i32,
+        const HK: i32,
+        const RQ: i32,
+        const RK: i32,
+        const D: i32,
+        const R2: i32,
+        const NC: i32,
+    >(
+        q_out: &mut Tensor<bf16, { [TT, HQ, D] }>,
+        k_out: &mut Tensor<bf16, { [TT, HK, D] }>,
         qg: &Tensor<bf16, { [-1, HQ, -1] }>,
         kv: &Tensor<bf16, { [-1, -1, D] }>,
         pos: &Tensor<i32, { [-1] }>,
@@ -144,20 +158,18 @@ pub mod qk_norm_rope_module {
         eps: f32,
     ) {
         let pid: (i32, i32, i32) = get_tile_block_id();
-        let t: i32 = pid.0;
+        let tb: i32 = pid.0;
 
         // cos/sin of the fp32 angle `pos * inv_freq`, rounded to bf16 as `.to(x.dtype)` does.
-        let tp: Tile<i32, { [1] }> = pos.partition(const_shape![1]).load([t]);
-        let p: i32 = tile_to_scalar(tp.reshape(const_shape![]));
-        let pf: f32 = convert_scalar(p);
+        let tp: Tile<i32, { [TT] }> = pos.partition(const_shape![TT]).load([tb]);
+        let pf: Tile<f32, { [TT] }> = convert_tile(tp);
         let invf: Tile<f32, { [R2] }> = inv_freq.partition(const_shape![R2]).load([0i32]);
-        let ang: Tile<f32, { [R2] }> = invf * broadcast_scalar(pf, const_shape![R2]);
-        let cb: Tile<bf16, { [R2] }> = convert_tile(cos(ang));
-        let sb: Tile<bf16, { [R2] }> = convert_tile(sin(ang));
-        let cos_b: Tile<f32, { [R2] }> = convert_tile(cb);
-        let sin_b: Tile<f32, { [R2] }> = convert_tile(sb);
-        let cos_b: Tile<f32, { [1, R2] }> = cos_b.reshape(const_shape![1, R2]);
-        let sin_b: Tile<f32, { [1, R2] }> = sin_b.reshape(const_shape![1, R2]);
+        let ang: Tile<f32, { [TT, R2] }> = pf.reshape(const_shape![TT, 1]).broadcast(const_shape![TT, R2])
+            * invf.reshape(const_shape![1, R2]).broadcast(const_shape![TT, R2]);
+        let cb: Tile<bf16, { [TT, R2] }> = convert_tile(cos(ang));
+        let sb: Tile<bf16, { [TT, R2] }> = convert_tile(sin(ang));
+        let cos_t: Tile<f32, { [TT, R2] }> = convert_tile(cb);
+        let sin_t: Tile<f32, { [TT, R2] }> = convert_tile(sb);
 
         // q heads.
         let qw: Tile<bf16, { [D] }> = q_w.partition(const_shape![D]).load([0i32]);
@@ -168,26 +180,35 @@ pub mod qk_norm_rope_module {
         let qw_hi: Tile<f32, { [R2] }> = convert_tile(qw_part.load([1i32]));
         let qopw_lo: Tile<f32, { [1, R2] }> = constant(1.0f32, const_shape![1, R2]) + qw_lo.reshape(const_shape![1, R2]);
         let qopw_hi: Tile<f32, { [1, R2] }> = constant(1.0f32, const_shape![1, R2]) + qw_hi.reshape(const_shape![1, R2]);
-        let qx: Tile<bf16, { [1, HQ, D] }> = qg.partition(const_shape![1, HQ, D]).load([t, 0i32, 0i32]);
-        let qx: Tile<f32, { [1, HQ, D] }> = convert_tile(qx);
-        let q_lo_part: Partition<bf16, { [1, HQ, R2] }> = qg.partition(const_shape![1, HQ, R2]);
-        let qx_lo: Tile<bf16, { [1, HQ, R2] }> = q_lo_part.load([t, 0i32, 0i32]);
-        let qx_hi: Tile<bf16, { [1, HQ, R2] }> = q_lo_part.load([t, 0i32, 1i32]);
-        let qx_lo: Tile<f32, { [1, HQ, R2] }> = convert_tile(qx_lo);
-        let qx_hi: Tile<f32, { [1, HQ, R2] }> = convert_tile(qx_hi);
-        let qy: Tile<bf16, { [HQ, D] }> = norm_rope(
-            qx.reshape(const_shape![HQ, D]),
-            qx_lo.reshape(const_shape![HQ, R2]),
-            qx_hi.reshape(const_shape![HQ, R2]),
+        let qx: Tile<bf16, { [TT, HQ, D] }> = qg.partition(const_shape![TT, HQ, D]).load([tb, 0i32, 0i32]);
+        let qx: Tile<f32, { [TT, HQ, D] }> = convert_tile(qx);
+        let q_lo_part: Partition<bf16, { [TT, HQ, R2] }> = qg.partition(const_shape![TT, HQ, R2]);
+        let qx_lo: Tile<bf16, { [TT, HQ, R2] }> = q_lo_part.load([tb, 0i32, 0i32]);
+        let qx_hi: Tile<bf16, { [TT, HQ, R2] }> = q_lo_part.load([tb, 0i32, 1i32]);
+        let qx_lo: Tile<f32, { [TT, HQ, R2] }> = convert_tile(qx_lo);
+        let qx_hi: Tile<f32, { [TT, HQ, R2] }> = convert_tile(qx_hi);
+        let qcos: Tile<f32, { [RQ, R2] }> = cos_t
+            .reshape(const_shape![TT, 1, R2])
+            .broadcast(const_shape![TT, HQ, R2])
+            .reshape(const_shape![RQ, R2]);
+        let qsin: Tile<f32, { [RQ, R2] }> = sin_t
+            .reshape(const_shape![TT, 1, R2])
+            .broadcast(const_shape![TT, HQ, R2])
+            .reshape(const_shape![RQ, R2]);
+        let qy: Tile<bf16, { [RQ, D] }> = norm_rope(
+            qx.reshape(const_shape![RQ, D]),
+            qx_lo.reshape(const_shape![RQ, R2]),
+            qx_hi.reshape(const_shape![RQ, R2]),
             qopw,
             qopw_lo,
             qopw_hi,
-            cos_b,
-            sin_b,
+            qcos,
+            qsin,
             eps,
-            const_shape![HQ, NC, R2],
+            const_shape![RQ, NC, R2],
         );
-        q_out.store(qy.reshape(const_shape![1, HQ, D]));
+        let qy: Tile<bf16, { [TT, HQ, D] }> = qy.reshape(const_shape![TT, HQ, D]);
+        q_out.store(qy);
 
         // k heads.
         let kw: Tile<bf16, { [D] }> = k_w.partition(const_shape![D]).load([0i32]);
@@ -198,26 +219,35 @@ pub mod qk_norm_rope_module {
         let kw_hi: Tile<f32, { [R2] }> = convert_tile(kw_part.load([1i32]));
         let kopw_lo: Tile<f32, { [1, R2] }> = constant(1.0f32, const_shape![1, R2]) + kw_lo.reshape(const_shape![1, R2]);
         let kopw_hi: Tile<f32, { [1, R2] }> = constant(1.0f32, const_shape![1, R2]) + kw_hi.reshape(const_shape![1, R2]);
-        let kx: Tile<bf16, { [1, HK, D] }> = kv.partition(const_shape![1, HK, D]).load([t, 0i32, 0i32]);
-        let kx: Tile<f32, { [1, HK, D] }> = convert_tile(kx);
-        let k_lo_part: Partition<bf16, { [1, HK, R2] }> = kv.partition(const_shape![1, HK, R2]);
-        let kx_lo: Tile<bf16, { [1, HK, R2] }> = k_lo_part.load([t, 0i32, 0i32]);
-        let kx_hi: Tile<bf16, { [1, HK, R2] }> = k_lo_part.load([t, 0i32, 1i32]);
-        let kx_lo: Tile<f32, { [1, HK, R2] }> = convert_tile(kx_lo);
-        let kx_hi: Tile<f32, { [1, HK, R2] }> = convert_tile(kx_hi);
-        let ky: Tile<bf16, { [HK, D] }> = norm_rope(
-            kx.reshape(const_shape![HK, D]),
-            kx_lo.reshape(const_shape![HK, R2]),
-            kx_hi.reshape(const_shape![HK, R2]),
+        let kx: Tile<bf16, { [TT, HK, D] }> = kv.partition(const_shape![TT, HK, D]).load([tb, 0i32, 0i32]);
+        let kx: Tile<f32, { [TT, HK, D] }> = convert_tile(kx);
+        let k_lo_part: Partition<bf16, { [TT, HK, R2] }> = kv.partition(const_shape![TT, HK, R2]);
+        let kx_lo: Tile<bf16, { [TT, HK, R2] }> = k_lo_part.load([tb, 0i32, 0i32]);
+        let kx_hi: Tile<bf16, { [TT, HK, R2] }> = k_lo_part.load([tb, 0i32, 1i32]);
+        let kx_lo: Tile<f32, { [TT, HK, R2] }> = convert_tile(kx_lo);
+        let kx_hi: Tile<f32, { [TT, HK, R2] }> = convert_tile(kx_hi);
+        let kcos: Tile<f32, { [RK, R2] }> = cos_t
+            .reshape(const_shape![TT, 1, R2])
+            .broadcast(const_shape![TT, HK, R2])
+            .reshape(const_shape![RK, R2]);
+        let ksin: Tile<f32, { [RK, R2] }> = sin_t
+            .reshape(const_shape![TT, 1, R2])
+            .broadcast(const_shape![TT, HK, R2])
+            .reshape(const_shape![RK, R2]);
+        let ky: Tile<bf16, { [RK, D] }> = norm_rope(
+            kx.reshape(const_shape![RK, D]),
+            kx_lo.reshape(const_shape![RK, R2]),
+            kx_hi.reshape(const_shape![RK, R2]),
             kopw,
             kopw_lo,
             kopw_hi,
-            cos_b,
-            sin_b,
+            kcos,
+            ksin,
             eps,
-            const_shape![HK, NC, R2],
+            const_shape![RK, NC, R2],
         );
-        k_out.store(ky.reshape(const_shape![1, HK, D]));
+        let ky: Tile<bf16, { [TT, HK, D] }> = ky.reshape(const_shape![TT, HK, D]);
+        k_out.store(ky);
     }
 }
 
@@ -245,9 +275,10 @@ pub fn qk_norm_rope<'a>(
     ensure!(q_w.shape() == [d].as_slice() && k_w.shape() == [d].as_slice(), "norm weights must be [256]");
     ensure!(inv_freq.shape() == [ROTARY_DIM as i32 / 2].as_slice(), "inv_freq must be [32]");
     let r2 = ROTARY_DIM / 2;
+    let tt = ROPE_TOKENS;
     Ok(qk_norm_rope_module::qk_norm_rope(
-        q.partition([1, NUM_Q_HEADS, HEAD_DIM]),
-        k.partition([1, NUM_KV_HEADS, HEAD_DIM]),
+        q.partition([tt, NUM_Q_HEADS, HEAD_DIM]),
+        k.partition([tt, NUM_KV_HEADS, HEAD_DIM]),
         qg,
         kv,
         pos,
@@ -256,13 +287,12 @@ pub fn qk_norm_rope<'a>(
         inv_freq,
         eps,
     )
-    .generics(vec![
-        hq.to_string(),
-        hk.to_string(),
-        d.to_string(),
-        r2.to_string(),
-        (HEAD_DIM / r2).to_string(),
-    ]))
+    .generics(
+        [tt, NUM_Q_HEADS, NUM_KV_HEADS, tt * NUM_Q_HEADS, tt * NUM_KV_HEADS, HEAD_DIM, r2, HEAD_DIM / r2]
+            .iter()
+            .map(|v| v.to_string())
+            .collect(),
+    ))
 }
 
 // ------------------------------------------------------------------------------------------------------
@@ -514,11 +544,28 @@ pub struct AttnTiles {
     /// bf16 parts P is split into for `P @ V` (1, 2 or 3). 3 matches the fp32 reference (default); 1 is the
     /// classic flash-attention bf16 P, ~4x outside the reference's error envelope.
     pub p_split: usize,
+    /// Worker warps per tile block (`num_worker_warps_per_cta`); 0 leaves it to the compiler.
+    pub warps: usize,
+    /// Occupancy hint (tile blocks per SM); 0 leaves it to the compiler.
+    pub occupancy: usize,
+}
+
+impl AttnTiles {
+    fn compile_options(&self) -> cutile::tile_kernel::CompileOptions {
+        let mut o = cutile::tile_kernel::CompileOptions::default();
+        if self.warps > 0 {
+            o = o.num_worker_warps_per_cta(self.warps as i32);
+        }
+        if self.occupancy > 0 {
+            o = o.occupancy(self.occupancy as i32);
+        }
+        o
+    }
 }
 
 impl Default for AttnTiles {
     fn default() -> Self {
-        AttnTiles { bm: 16, bn: 64, latency: 2, p_split: 3 }
+        AttnTiles { bm: 16, bn: 64, latency: 2, p_split: 3, warps: 0, occupancy: 0 }
     }
 }
 
@@ -571,6 +618,7 @@ pub unsafe fn seg_attn(args: SegAttnArgs, tiles: AttnTiles) -> impl DeviceOp + G
         )
     }
     .generics(generics)
+    .compile_options(tiles.compile_options())
     .grid((args.num_items as u32, NUM_KV_HEADS as u32, 1))
 }
 
