@@ -120,3 +120,12 @@ chunk_tinv 165). GEMMs run at 93-101 TFLOP/s. JIT warm-up is still ~24 s on firs
    bucket arenas; split_batch assumes push_request batches; score.py subset verdict needs a distinct exit code; more
    interleaved graph-replay cases.
 7. vLLM / reference throughput baselines (needs docker group).
+
+**Review caveat (A3 reviewer).** The same-input, one-layer-at-a-time comparison rules out a local numeric bias in any
+sysone layer; that conclusion is solid. The "unlucky run" explanation for the served run is plausible but weaker: in
+the natural hidden basis sysone has the highest layer31 error of all 9 runs on 4 of 10 requests (about p 0.02 under an
+exchangeable null), while its three permuted runs cluster tightly and below bf16_served. A component of error aimed
+along directions later layers amplify would not show in the local comparison. Also, bf16_perq is nearly identical to
+bf16_served on the long requests, so the "five bf16 realizations" behind the gate are closer to four independent runs.
+Practical rule for future precision changes (NVFP4, faster GDN variants): judge on several runs (hidden-basis
+permutations via `EngineOptions::debug_permute_hidden`) or on the same-input per-layer comparison, not on one run.
