@@ -89,7 +89,7 @@ fn hidden_states_vs_fp32_truth() {
     let cases = goldens::model_corpus(&repo()).unwrap();
     let plans = goldens::plan_corpus(&fe, &cases, |id| ids.iter().any(|x| x == id)).unwrap();
     assert_eq!(plans.len(), ids.len(), "every dumped request plans");
-    let taps = Taps { layers: LAYERS.to_vec(), norm: true };
+    let taps = Taps { layers: LAYERS.to_vec(), norm: true, ..Default::default() };
     let opts = EngineOptions { buckets: EngineOptions::buckets_up_to(32768), warmup: false, cuda_graphs: false, taps,
                                ..Default::default() };
     let mut e = GpuEngine::load(&model_dir(), &fe.slot_ids, opts).unwrap();
@@ -152,6 +152,20 @@ fn hidden_states_vs_fp32_truth() {
                  c.refe.max, c.median_log_ratio, gate.paired_ratio.ln(), gate.sign_ratio, c.n_up, gate.sign_ratio,
                  c.n_down, c.design_effect, c.eff_up, c.eff_down, c.sign_p, gate.sign_alpha,
                  if fails.is_empty() { "PASS".into() } else { fails.join("; ") });
+        // Where the sign test's rows come from, per request (output only; the verdict above is the gate's).
+        let mut per_req: Vec<(&str, usize, usize, usize)> = Vec::new();
+        for (k, l) in labels.iter().enumerate() {
+            let id = l.split(' ').next().unwrap_or_default();
+            if per_req.last().is_none_or(|r| r.0 != id) {
+                per_req.push((id, 0, 0, 0));
+            }
+            let r = per_req.last_mut().unwrap();
+            r.1 += 1;
+            r.2 += usize::from(ours[k] > gate.sign_ratio * refb[k]);
+            r.3 += usize::from(refb[k] > gate.sign_ratio * ours[k]);
+        }
+        let line: Vec<String> = per_req.iter().map(|(id, n, u, d)| format!("{id} {u}/{d} of {n}")).collect();
+        println!("        rows > {}x worse / better per request: {}", gate.sign_ratio, line.join(", "));
         let mut worst: Vec<usize> = (0..ours.len()).collect();
         worst.sort_by(|&a, &b| ours[b].total_cmp(&ours[a]));
         for &k in worst.iter().take(3) {
@@ -278,7 +292,7 @@ fn hidden_state_row_profile() {
     let fe = Frontend::load(&model_dir(), Limits::default()).unwrap();
     let cases = goldens::model_corpus(&repo()).unwrap();
     let plans = goldens::plan_corpus(&fe, &cases, |x| x == id).unwrap();
-    let taps = Taps { layers: LAYERS.to_vec(), norm: true };
+    let taps = Taps { layers: LAYERS.to_vec(), norm: true, ..Default::default() };
     let opts = EngineOptions { buckets: EngineOptions::buckets_up_to(32768), warmup: false, cuda_graphs: false, taps,
                                ..Default::default() };
     let mut e = GpuEngine::load(&model_dir(), &fe.slot_ids, opts).unwrap();
@@ -307,5 +321,115 @@ fn hidden_state_row_profile() {
             println!("    bf16 ref vs fp32 {}; sysone worse than the reference on {worse}/{} rows",
                      Stats::of(&re).unwrap(), rows.len());
         }
+    }
+}
+
+/// A minimal safetensors writer for the diagnostic dump below (f32 and i64 tensors, string metadata).
+fn write_safetensors(path: &std::path::Path, tensors: &[(String, &str, Vec<usize>, Vec<u8>)], meta: &[(&str, String)]) {
+    let mut hdr = serde_json::Map::new();
+    let md: serde_json::Map<String, serde_json::Value> =
+        meta.iter().map(|(k, v)| (k.to_string(), serde_json::Value::String(v.clone()))).collect();
+    hdr.insert("__metadata__".into(), md.into());
+    let mut off = 0usize;
+    for (name, dt, shape, bytes) in tensors {
+        hdr.insert(name.clone(), serde_json::json!({"dtype": dt, "shape": shape, "data_offsets": [off, off + bytes.len()]}));
+        off += bytes.len();
+    }
+    let mut h = serde_json::to_vec(&serde_json::Value::Object(hdr)).unwrap();
+    while h.len() % 8 != 0 {
+        h.push(b' ');
+    }
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let mut f = std::io::BufWriter::new(std::fs::File::create(path).unwrap());
+    use std::io::Write;
+    f.write_all(&(h.len() as u64).to_le_bytes()).unwrap();
+    f.write_all(&h).unwrap();
+    for t in tensors {
+        f.write_all(&t.3).unwrap();
+    }
+}
+
+fn f32_bytes(v: &[f32]) -> Vec<u8> {
+    v.iter().flat_map(|x| x.to_le_bytes()).collect()
+}
+
+fn i64_bytes(v: impl IntoIterator<Item = i64>) -> Vec<u8> {
+    v.into_iter().flat_map(|x| x.to_le_bytes()).collect()
+}
+
+/// Diagnostic (ignored; deep-layer investigation A3): sysone's residual stream after EVERY layer, and the final
+/// norm, on the dense row set of the `hidden_dense` requests, in the layout of `reference/layer_dump.py`
+/// (`layer{i}/prefix`, `layer{i}/answer`, `norm/...`, f32 upcasts of the bf16 values), one file per request in
+/// `SYSONE_TAP_OUT`. `SYSONE_TAP_IDS=a,b` limits the requests. For the ids in `SYSONE_TAP_FULL=a,b` the whole
+/// packed `[T, 4096]` stream of every tap is written too (`full/layer{i}`, `full/norm`), with the token ids and
+/// segment table, for teacher-forced single-layer comparisons (`reference/deep_layer.py`). With
+/// `SYSONE_TAP_PACK_WITH=a,b` each request runs packed first in a batch with those requests (its rows keep their
+/// indices; the step's bucket and GEMM shapes change). `SYSONE_TAP_SUB=1` also keeps each layer's mixer output, post-mixer
+/// residual and MLP output (`mix{i}`, `mid{i}`, `mlp{i}`); `SYSONE_TAP_PERM=seed` runs the model in a permuted hidden
+/// basis (another sysone realization, `EngineOptions::debug_permute_hidden`).
+#[test]
+#[ignore]
+fn hidden_dump_all_layers() {
+    let out = PathBuf::from(std::env::var_os("SYSONE_TAP_OUT").expect("set SYSONE_TAP_OUT"));
+    let list = |k: &str| -> Option<Vec<String>> {
+        std::env::var(k).ok().map(|v| v.split(',').filter(|s| !s.is_empty()).map(str::to_string).collect())
+    };
+    let only = list("SYSONE_TAP_IDS");
+    let full = list("SYSONE_TAP_FULL").unwrap_or_default();
+    let fe = Frontend::load(&model_dir(), Limits::default()).unwrap();
+    let ids = goldens::hidden_dense_ids(&repo(), "fp32_served").unwrap();
+    let cases = goldens::model_corpus(&repo()).unwrap();
+    let mut plans = goldens::plan_corpus(&fe, &cases, |id| {
+        ids.iter().any(|x| x == id) && only.as_ref().is_none_or(|o| o.iter().any(|x| x == id))
+    })
+    .unwrap();
+    plans.sort_by(|a, b| a.case.id.cmp(&b.case.id));
+    let pad_ids = list("SYSONE_TAP_PACK_WITH").unwrap_or_default();
+    let pad = goldens::plan_corpus(&fe, &cases, |id| pad_ids.iter().any(|x| x == id)).unwrap();
+    let layers: Vec<usize> = (0..32).collect();
+    let sublayers = std::env::var_os("SYSONE_TAP_SUB").is_some();
+    let taps = Taps { layers: layers.clone(), norm: true, sublayers };
+    let debug_permute_hidden = std::env::var("SYSONE_TAP_PERM").ok().map(|s| s.parse().unwrap());
+    let opts = EngineOptions { buckets: EngineOptions::buckets_up_to(32768), warmup: false, cuda_graphs: false, taps, debug_permute_hidden,
+                               ..Default::default() };
+    let mut e = GpuEngine::load(&model_dir(), &fe.slot_ids, opts).unwrap();
+    let mut names: Vec<String> = layers.iter().map(|l| format!("layer{l}")).chain(["norm".to_string()]).collect();
+    if sublayers {
+        names.extend(layers.iter().flat_map(|l| ["mix", "mid", "mlp"].map(|k| format!("{k}{l}"))));
+    }
+    for p in &plans {
+        let id = &p.case.id;
+        // Optionally pack the request first in a batch with other requests (another bucket, other GEMM shapes:
+        // another sysone realization of the same rows).
+        let mut batch = vec![&p.plan];
+        batch.extend(pad.iter().map(|q| &q.plan));
+        let (b, _) = goldens::batch_of(&batch).unwrap();
+        use sysone::contract::DecisionEngine;
+        e.run(&b).unwrap();
+        let t = b.num_tokens();
+        let prefix_rows = goldens::dense_prefix_rows(p.plan.prefix_ids.len());
+        let answer_rows: Vec<usize> =
+            b.answer_rows.iter().take(p.plan.branches.len()).map(|&r| r as usize).collect();
+        let with_full = full.iter().any(|x| x == id);
+        let mut tensors = Vec::new();
+        for name in &names {
+            let all = e.read_tap(name, t).unwrap();
+            let pick = |rows: &[usize]| -> Vec<u8> {
+                f32_bytes(&rows.iter().flat_map(|&r| all[r * H..(r + 1) * H].iter().copied()).collect::<Vec<f32>>())
+            };
+            tensors.push((format!("{name}/prefix"), "F32", vec![prefix_rows.len(), H], pick(&prefix_rows)));
+            tensors.push((format!("{name}/answer"), "F32", vec![answer_rows.len(), H], pick(&answer_rows)));
+            if with_full {
+                tensors.push((format!("full/{name}"), "F32", vec![t, H], f32_bytes(&all)));
+            }
+        }
+        tensors.push(("prefix_rows".into(), "I64", vec![prefix_rows.len()], i64_bytes(prefix_rows.iter().map(|&r| r as i64))));
+        tensors.push(("answer_rows".into(), "I64", vec![answer_rows.len()], i64_bytes(answer_rows.iter().map(|&r| r as i64))));
+        tensors.push(("token_ids".into(), "I64", vec![t], i64_bytes(b.token_ids.iter().map(|&x| x as i64))));
+        let segs = b.segments.iter().flat_map(|s| [s.start as i64, s.len as i64, s.parent as i64, s.pos0 as i64]);
+        tensors.push(("segments".into(), "I64", vec![b.segments.len(), 4], i64_bytes(segs)));
+        let path = out.join(format!("hidden_{id}.safetensors"));
+        write_safetensors(&path, &tensors, &[("request", id.clone()), ("run", "sysone".into())]);
+        println!("{id}: T={t}, {} prefix rows, {} answers -> {}", prefix_rows.len(), answer_rows.len(), path.display());
     }
 }

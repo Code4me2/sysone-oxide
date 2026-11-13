@@ -29,6 +29,9 @@ pub struct Taps {
     pub layers: Vec<usize>,
     /// Keep the final norm's output over all rows.
     pub norm: bool,
+    /// Also keep, for every layer in `layers`, the mixer output (`mix{i}`, before the residual add), the residual
+    /// stream after the mixer add (`mid{i}`) and the MLP output (`mlp{i}`, before its residual add).
+    pub sublayers: bool,
 }
 
 /// A built forward and the values a caller reads back.
@@ -157,12 +160,20 @@ pub fn build(cfg: &ModelConfig, weights: &dyn WeightStore, n_slots: usize, taps:
             residual_out: x2,
         });
         x = x2;
+        let sub = taps.sublayers && taps.layers.contains(&i);
+        if sub {
+            tap(&mut g, format!("mix{i}"), mixer);
+            tap(&mut g, format!("mid{i}"), x);
+        }
         let gu = tok(&mut g, 2 * inter);
         g.push(GraphOp::Gemm { x: h2.into(), w: lw(LayerWeight::MlpGateUp), out: gu });
         let m = tok(&mut g, inter);
         g.push(GraphOp::SiluMul { gu: gu.into(), out: m });
         let mo = tok(&mut g, h);
         g.push(GraphOp::Gemm { x: m.into(), w: lw(LayerWeight::MlpDown), out: mo });
+        if sub {
+            tap(&mut g, format!("mlp{i}"), mo);
+        }
         pending = Some(mo);
     }
     let last = t.num_hidden_layers - 1;
