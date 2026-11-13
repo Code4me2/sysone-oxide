@@ -23,6 +23,34 @@ of m019 the per-row sysone/reference error ratio has median 0.94-1.00 with symme
 p99 is the second-largest row. Proposed redefinition (not yet done; needs a decision): dumps over >= 1000 rows, threshold
 and statistic on the same rows, plus a paired per-row criterion (median log ratio <= log 1.5, sign test on > 1.5x rows).
 
+**Gate (a) redefined (A1, branch ws/a1-gate-a).** Dense dumps (`reference/hidden_dense.py`): 3,829 rows per tap
+(every prefix row, every `P // 1024`-th for the 4k/16k requests, every answer row); threshold and statistic on the
+same rows; per tap (i) p99 <= 1.5 x reference p99, (ii) median ln(sysone/ref) <= ln 1.5, (iii) one-sided binomial
+sign test (alpha 0.01) on rows > 1.5x worse vs > 1.5x better. Validated on reference-only data before sysone ran
+(`tests/golden/dev/model/hidden_gate_report.json`): five bf16 realizations (served, per-question, three
+hidden-basis permutations) pass in every pairing, out of sample for the design effect, and leaving out any request;
+every-row error x1.75/x2, 5% of rows x3+ (strided or one block) and 2x-median noise fail; so do x1.1-x1.6 and an
+RMSNorm computed in Llama order or fully in bf16 (reported). One change from the proposal: the plain row binomial
+failed equivalent bf16 realizations at layer31/norm (p 1e-3, 3.6e-4) because rows of a request move together, so
+counts are deflated by a per-tap design effect (1.5 x the largest request-clustered dispersion among the bf16
+realizations: 3.0, 3.1, 2.4, 3.9, 21.3, 18.4).
+
+sysone against it (all taps PASS):
+
+| tap | sysone p99 | limit (1.5 x ref p99) | max (ref) | median ln ratio | rows worse / better | sign p |
+|---|---:|---:|---:|---:|---:|---:|
+| layer0 | 7.52e-3 | 1.12e-2 | 1.21e-2 (1.21e-2) | -0.000 | 23 / 22 | 0.50 |
+| layer3 | 8.99e-3 | 1.31e-2 | 1.44e-2 (1.22e-2) | -0.002 | 207 / 206 | 0.53 |
+| layer4 | 8.19e-3 | 1.22e-2 | 1.47e-2 (1.40e-2) | -0.003 | 208 / 180 | 0.22 |
+| layer15 | 1.84e-2 | 2.45e-2 | 4.73e-2 (4.78e-2) | +0.002 | 122 / 96 | 0.21 |
+| layer31 | 2.47e-2 | 3.56e-2 | 5.25e-1 (6.31e-1) | +0.020 | 326 / 150 | 0.067 |
+| norm | 3.65e-2 | 5.15e-2 | 5.15e-1 (7.52e-1) | +0.021 | 222 / 75 | 0.038 |
+
+Caveat: at layer31 and norm sysone's worse/better asymmetry (row z = 8.1 and 8.5) is larger than any pair of bf16
+reference realizations showed (max 4.1 and 3.2); it passes only because of the design effect, and the median shift
+(+2.0%) is at the edge of the nulls (<= 1.6% on the full row set, up to 2.1% leaving one request out). Small, but
+systematic: worth locating (which requests/rows) before the next precision change.
+
 ## Forward speed (bench_forward, merged main, GPU lock held)
 
 | bucket | replay ms | tok/s | GEMM | GDN | norm + pointwise | attention |
@@ -35,7 +63,7 @@ chunk_tinv 165). GEMMs run at 93-101 TFLOP/s. JIT warm-up is still ~24 s on firs
 
 ## Open items
 
-1. Gate (a) redefinition (above).
+1. Gate (a): redefined and passing (above); locate sysone's deep-layer worse/better asymmetry.
 2. GDN: G1 (cuda-oxide SIMT, tensor-core tf32) in progress; target ~0.25 s at 16k.
 3. Fuse silu_mul and norms (0.34 s at 16k); pin cuBLASLt algorithms per bucket (would also settle the batch-invariance attribution).
 4. JIT disk cache (cuTile has one; enable it).
