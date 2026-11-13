@@ -27,6 +27,9 @@ struct Args {
     tokens: Vec<usize>,
     #[arg(long, default_value_t = 10)]
     iters: usize,
+    /// Interleaved timing rounds per seg_attn config (the minimum and the median are reported).
+    #[arg(long, default_value_t = 3)]
+    rounds: usize,
     /// Also sweep seg_attn tile shapes and P split.
     #[arg(long)]
     sweep: bool,
@@ -38,6 +41,28 @@ struct Args {
     /// `cuobjdump -res-usage`).
     #[arg(long)]
     jit_cache: Option<String>,
+    /// Time these seg_attn configs instead of the default list: `;`-separated, each
+    /// `bm,bn,p_split,warps,occupancy,d_split[,latency[,residual_f16]]` (e.g. `16,32,3,4,2,2`).
+    #[arg(long)]
+    configs: Option<String>,
+    /// Time only seg_attn (skip the norm, RoPE, pointwise and readout kernels).
+    #[arg(long)]
+    attn_only: bool,
+}
+
+fn parse_config(s: &str, dt: AttnTiles) -> Result<AttnTiles> {
+    let v: Vec<usize> = s.split(',').map(|x| x.trim().parse()).collect::<Result<_, _>>()?;
+    anyhow::ensure!((6..=8).contains(&v.len()), "config {s:?}: expected 6 to 8 fields");
+    Ok(AttnTiles {
+        bm: v[0],
+        bn: v[1],
+        p_split: v[2],
+        warps: v[3],
+        occupancy: v[4],
+        d_split: v[5],
+        latency: v.get(6).copied().unwrap_or(dt.latency),
+        residual_f16: v.get(7).is_some_and(|&r| r != 0),
+    })
 }
 
 /// cutile-kernels `fmha_prefill_gqa` on one non-causal sequence: `t` queries x 16 heads over `t` keys.
@@ -94,7 +119,8 @@ impl Rng {
 fn tree(t: usize) -> DecisionBatch {
     let reqs: &[(usize, usize, usize)] = match t {
         ..=1024 => &[(380, 3, 44), (380, 3, 44)],
-        1025..=4096 => &[(2900, 8, 110), (200, 2, 58)],
+        1025..=2048 => &[(1100, 6, 100), (200, 2, 58)],
+        2049..=4096 => &[(2900, 8, 110), (200, 2, 58)],
         _ => &[(12000, 24, 100), (1500, 4, 121)],
     };
     let mut b = DecisionBatch::default();
@@ -132,6 +158,11 @@ where
         best = best.min(start.elapsed().as_secs_f64());
     }
     Ok(best * 1e3 / iters as f64)
+}
+
+fn sorted(mut v: Vec<f64>) -> Vec<f64> {
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    v
 }
 
 fn dev_err(e: anyhow::Error) -> cuda_async::error::DeviceError {
@@ -178,32 +209,59 @@ fn main() -> Result<()> {
         let kn = upload(rng.bf16s(t * hk * d, 1.0), &[t, hk, d], &stream)?;
         let out = api::zeros::<bf16>(&[t, hq, d]).sync_on(&stream)?;
 
-        let mut configs = vec![AttnTiles::default()];
         let dt = AttnTiles::default();
-        // Bf16 P (classic flash attention): faster, outside the reference's error envelope (see tests).
+        // The engine's tiles (the default at every T), the opt-in per-T tiles when they differ (not
+        // bit-identical to the default; see AttnTiles::for_tokens), then the precision knobs (DESIGN.md §1):
+        // P in 2 bf16 parts, in a bf16 + f16 pair, and the classic flash-attention bf16 P (see
+        // tests/kernels_attn.rs for their error).
+        let opt_in = AttnTiles::for_tokens(t);
+        let mut configs = vec![dt];
+        if opt_in != dt {
+            configs.push(opt_in);
+        }
+        configs.push(AttnTiles { p_split: 2, ..dt });
+        configs.push(AttnTiles { p_split: 2, residual_f16: true, ..dt });
         configs.push(AttnTiles { bm: 8, p_split: 1, ..dt });
         if args.sweep {
-            // (bm, bn, p_split, warps, occupancy); warps/occupancy 0 = compiler default.
-            let sweep: &[(usize, usize, usize, usize, usize)] = &[
-                (8, 32, 3, 8, 0),
-                (16, 32, 3, 8, 0),
-                (16, 32, 3, 8, 1),
-                (8, 16, 3, 8, 0),
-                (16, 16, 3, 8, 0),
-                (8, 32, 3, 8, 1),
-                (8, 32, 3, 16, 0),
-                (16, 32, 3, 16, 0),
-                (8, 32, 1, 8, 0),
-                (16, 32, 1, 8, 0),
-                (8, 32, 3, 8, 0),
-                (16, 64, 3, 8, 0),
-                (16, 64, 3, 16, 0),
-                (32, 32, 3, 16, 0),
+            // (bm, bn, p_split, warps, occupancy, d_split, latency); warps/occupancy 0 = compiler default.
+            // warps = 16 is not offered: tileiras rejects `num_worker_warps_per_cta=16` for this kernel.
+            let sweep: &[(usize, usize, usize, usize, usize, usize, usize)] = &[
+                (16, 32, 3, 8, 0, 1, 2),
+                (16, 32, 3, 8, 0, 1, 1),
+                (16, 32, 3, 8, 0, 1, 3),
+                (16, 32, 3, 8, 1, 1, 2),
+                (16, 16, 3, 8, 0, 1, 2),
+                (16, 64, 3, 8, 0, 1, 2),
+                (8, 32, 3, 8, 0, 1, 2),
+                (8, 32, 3, 4, 2, 1, 1),
+                (32, 32, 3, 8, 0, 1, 2),
+                (16, 32, 3, 4, 2, 2, 2),
+                (16, 32, 3, 4, 2, 2, 1),
+                (16, 32, 3, 4, 2, 2, 3),
+                (16, 32, 3, 8, 0, 2, 2),
+                (16, 32, 3, 4, 1, 2, 2),
+                (16, 16, 3, 4, 2, 2, 2),
+                (16, 64, 3, 4, 2, 2, 1),
+                (8, 32, 3, 4, 2, 2, 1),
+                (8, 32, 3, 8, 2, 2, 1),
+                (32, 32, 3, 8, 0, 2, 2),
+                (32, 32, 3, 4, 0, 2, 2),
+                (16, 32, 3, 4, 2, 4, 2),
+                (16, 32, 2, 8, 0, 1, 2),
+                (16, 32, 2, 4, 2, 2, 2),
+                (8, 32, 1, 8, 0, 1, 2),
+                (16, 32, 1, 8, 0, 1, 2),
             ];
-            for &(bm, bn, p_split, warps, occupancy) in sweep {
-                configs.push(AttnTiles { bm, bn, p_split, warps, occupancy, ..dt });
+            for &(bm, bn, p_split, warps, occupancy, d_split, latency) in sweep {
+                configs.push(AttnTiles { bm, bn, p_split, warps, occupancy, d_split, latency, ..dt });
             }
         }
+        if let Some(c) = &args.configs {
+            configs = c.split(';').filter(|x| !x.trim().is_empty()).map(|x| parse_config(x, dt)).collect::<Result<_>>()?;
+        }
+        // Compile and check every config, then time them in `--rounds` interleaved rounds (min and median
+        // per config), so a transient slowdown from other processes on the unified memory hits all configs alike.
+        let mut runs = Vec::new();
         for tiles in configs {
             let mut plan = AttnPlan::new(&b.segments, tiles.bm);
             let items = plan.num_items();
@@ -223,20 +281,37 @@ fn main() -> Result<()> {
                 println!("seg_attn {tiles:?}: {e}");
                 continue;
             }
-            let ms = time_graph(&stream, args.iters, |s| s.record(unsafe { attn::seg_attn(a, tiles) }).map(|_| ()))?;
+            runs.push((tiles, items, a, work, Vec::new()));
+        }
+        for _ in 0..args.rounds {
+            for (tiles, _, a, _, ms) in runs.iter_mut() {
+                let (a, tiles) = (*a, *tiles);
+                ms.push(time_graph(&stream, args.iters, |s| s.record(unsafe { attn::seg_attn(a, tiles) }).map(|_| ()))?);
+            }
+        }
+        for (tiles, items, a, _, ms) in runs {
+            let ms = sorted(ms);
+            let (best, med) = (ms[0], ms[ms.len() / 2]);
             println!(
-                "seg_attn      bm={:<3} bn={:<3} lat={} p_split={} warps={} occ={}  items={items:<5} (grid {}x4)  {ms:>8.3} ms  {:>6.1} useful TFLOP/s",
+                "seg_attn      bm={:<3} bn={:<3} lat={} p_split={} warps={} occ={} d_split={} rf16={}  items={items:<5} (grid {}x4x{})  {best:>8.3} ms  {:>6.1} useful TFLOP/s  (median {med:.3} ms, {:.1})",
                 tiles.bm,
                 tiles.bn,
                 tiles.latency,
                 tiles.p_split,
                 tiles.warps,
                 tiles.occupancy,
-                plan.num_items(),
-                flops / ms / 1e9
+                tiles.d_split,
+                u8::from(tiles.residual_f16),
+                a.num_items,
+                tiles.d_split,
+                flops / best / 1e9,
+                flops / med / 1e9,
             );
         }
 
+        if args.attn_only {
+            continue;
+        }
         // qk_norm_rope.
         let pos = upload(attn::positions(&b.segments), &[t], &stream)?;
         let qw = upload(rng.bf16s(d, 0.5), &[d], &stream)?;
