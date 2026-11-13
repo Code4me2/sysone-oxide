@@ -22,7 +22,7 @@ use sysone::api::query::py_int;
 use sysone::api::server::{self, AppState, ServerInfo, ServerOptions};
 use sysone::contract::{DecisionBatch, DecisionEngine, MassReadout, MockEngine, SlotLogits};
 use sysone::engine::config::ModelConfig;
-use sysone::engine::gpu::{EngineOptions, GpuEngine};
+use sysone::engine::gpu::{EngineOptions, GpuEngine, parse_gdn_backend};
 use sysone::frontend::{Frontend, Limits};
 use sysone::sched::{EngineFactory, SchedConfig};
 
@@ -67,6 +67,12 @@ struct Args {
     /// bf16 engine: most requests (prefix segments) in one step; each needs 2 MiB of GDN state per step.
     #[arg(long, default_value_t = 256)]
     max_prefixes: usize,
+    /// bf16 engine: implementation of the GatedDeltaNet delta rule: `tile` (cuTile), `simt` (cuda-oxide SIMT
+    /// kernels, docs/G1.md; needs a kernel artifact for the GPU's architecture, else the load fails), or `auto`
+    /// (the architecture's validated default, see docs/E2.md). The choice is logged at startup and reported in
+    /// `/metrics` (`sysone_engine_info`).
+    #[arg(long, default_value = "auto", value_parser = ["auto", "tile", "simt"])]
+    gdn_backend: String,
     /// Close a batch once it holds this many packed tokens (a larger request runs alone).
     #[arg(long, default_value_t = 16384)]
     token_budget: usize,
@@ -182,6 +188,7 @@ fn main() -> Result<()> {
                 buckets: EngineOptions::buckets_up_to(max_step),
                 cuda_graphs: !args.no_cuda_graphs,
                 max_prefixes: args.max_prefixes,
+                gdn_backend: parse_gdn_backend(&args.gdn_backend)?,
                 ..Default::default()
             };
             let (model, slot_ids) = (args.model.clone(), frontend.slot_ids.clone());

@@ -24,6 +24,7 @@ use crate::engine::kernels::TileKernels;
 use crate::engine::loader::{Checkpoint, StreamOptions};
 use crate::engine::meta::{MetaShape, MetaUploader};
 use crate::engine::weights::{LoadOptions, LoadReport, ModelWeights, debug_permutation};
+use crate::kernels::gdn::GdnBackend;
 use anyhow::{Context as _, Result, bail, ensure};
 use cuda_core::{Context, PinnedHostBuffer, Stream};
 use std::path::Path;
@@ -50,6 +51,30 @@ pub struct EngineOptions {
     /// Debug (numerics diagnostics only): run the model in a hidden basis permuted with this seed
     /// ([`ModelWeights::permute_hidden`]); [`GpuEngine::read_tap`] returns taps in the original basis.
     pub debug_permute_hidden: Option<u64>,
+    /// Implementation of the GDN delta rule. `None`: [`GdnBackend::default_for_arch`] of the device. Either way
+    /// the choice and its reason are logged at load and reported by [`DecisionEngine::info`]; SIMT without a
+    /// kernel artifact for the device's architecture fails the load.
+    pub gdn_backend: Option<GdnBackend>,
+}
+
+/// Environment variable the engine tests and benchmarks read the GDN backend from (`tile`, `simt` or `auto`).
+pub const GDN_BACKEND_ENV: &str = "SYSONE_GDN_BACKEND";
+
+/// Parse a GDN backend choice: `tile`, `simt`, or `auto` (`None`: the device's default).
+pub fn parse_gdn_backend(s: &str) -> Result<Option<GdnBackend>> {
+    match s {
+        "auto" => Ok(None),
+        other => Ok(Some(other.parse()?)),
+    }
+}
+
+/// The GDN backend choice in `$SYSONE_GDN_BACKEND` (unset: `auto`).
+pub fn gdn_backend_from_env() -> Result<Option<GdnBackend>> {
+    match std::env::var(GDN_BACKEND_ENV) {
+        Ok(v) => parse_gdn_backend(&v).with_context(|| format!("{GDN_BACKEND_ENV}={v:?}")),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(e) => Err(e).context(GDN_BACKEND_ENV),
+    }
 }
 
 impl Default for EngineOptions {
@@ -63,6 +88,7 @@ impl Default for EngineOptions {
             warmup: true,
             taps: Taps::default(),
             debug_permute_hidden: None,
+            gdn_backend: None,
         }
     }
 }
@@ -105,6 +131,8 @@ pub struct GpuEngine {
     pub last: StepInfo,
     /// The debug hidden-basis permutation, when [`EngineOptions::debug_permute_hidden`] is set.
     hidden_perm: Option<Vec<usize>>,
+    /// Device architecture (`sm_121`).
+    pub arch: String,
 }
 
 // SAFETY: every member is either plain data or a device/pinned allocation owned by this engine; the scheduler
@@ -133,7 +161,16 @@ impl GpuEngine {
         let plan = BucketPlan::new(&opts.buckets, opts.max_answers, opts.max_segments)?;
         let largest = plan.largest();
         let graphs = BucketGraphs::new(&fwd.graph, plan, &stream)?;
-        let kernels = TileKernels::new(&stream, cfg.text_config.rms_norm_eps as f32, largest.tokens, opts.max_prefixes)?;
+        let (major, minor) = ctx.compute_capability()?;
+        let arch = format!("sm_{major}{minor}");
+        let (gdn_backend, why) = match opts.gdn_backend {
+            Some(b) => (b, "requested"),
+            None => (GdnBackend::default_for_arch(major, minor), "default for this architecture"),
+        };
+        eprintln!("sysone engine: GDN backend {} ({why}) on {arch}", gdn_backend.name());
+        let kernels = TileKernels::new(&stream, cfg.text_config.rms_norm_eps as f32, largest.tokens, opts.max_prefixes,
+                                       gdn_backend)
+            .with_context(|| format!("GDN backend {} on {arch}", gdn_backend.name()))?;
         let meta = MetaUploader::new(&stream, MetaShape {
             tokens: largest.tokens,
             segments: largest.segments,
@@ -157,6 +194,7 @@ impl GpuEngine {
             ctx,
             last: StepInfo::default(),
             hidden_perm,
+            arch,
         };
         eprintln!(
             "sysone engine: loaded {:.1} GiB of weights in {:.1} s; arena {:.2} GiB (largest bucket {} tokens), GDN scratch \
@@ -177,6 +215,11 @@ impl GpuEngine {
             eprintln!("sysone engine: warm-up step (kernel JIT) {:.1} s", t.elapsed().as_secs_f64());
         }
         Ok(e)
+    }
+
+    /// The GDN delta-rule backend this engine runs.
+    pub fn gdn_backend(&self) -> GdnBackend {
+        self.kernels.gdn_backend()
     }
 
     pub fn stream(&self) -> &Arc<Stream> {
@@ -363,6 +406,10 @@ impl DecisionEngine for GpuEngine {
         self.graphs.plan.largest().tokens
     }
 
+    fn info(&self) -> Vec<(&'static str, String)> {
+        vec![("engine", "bf16".into()), ("gdn_backend", self.gdn_backend().name().into()), ("arch", self.arch.clone())]
+    }
+
     fn run(&mut self, batch: &DecisionBatch) -> Result<SlotLogits> {
         let max = self.max_tokens_per_step();
         ensure!(batch.num_tokens() <= max, "batch of {} tokens over the engine's {max} per step", batch.num_tokens());
@@ -392,6 +439,14 @@ impl DecisionEngine for GpuEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gdn_backend_choice_parses() {
+        assert_eq!(parse_gdn_backend("auto").unwrap(), None);
+        assert_eq!(parse_gdn_backend("tile").unwrap(), Some(GdnBackend::Tile));
+        assert_eq!(parse_gdn_backend("simt").unwrap(), Some(GdnBackend::Simt));
+        assert!(parse_gdn_backend("SIMT").is_err());
+    }
 
     #[test]
     fn split_keeps_answer_order_and_refuses_oversize_requests() {

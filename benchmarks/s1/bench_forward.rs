@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 use sysone::api::schema::SystemOneRequest;
 use sysone::contract::DecisionBatch;
-use sysone::engine::gpu::{EngineOptions, GpuEngine};
+use sysone::engine::gpu::{EngineOptions, GpuEngine, gdn_backend_from_env};
 use sysone::engine::platform::require_idle_gpu;
 use sysone::frontend::{Frontend, Limits};
 
@@ -43,6 +43,9 @@ struct Args {
     no_profile: bool,
     #[arg(long)]
     allow_shared_gpu: bool,
+    /// GDN delta-rule backend: tile, simt or auto (default: $SYSONE_GDN_BACKEND, else auto).
+    #[arg(long)]
+    gdn_backend: Option<String>,
 }
 
 const VOCAB: [&str; 16] = [
@@ -98,8 +101,13 @@ fn main() -> Result<()> {
     println!("# bench_forward: {note}");
     let fe = Frontend::load(&a.model, Limits::default()).context("frontend")?;
     let max = *a.tokens.iter().max().context("no sizes")?;
-    let opts = EngineOptions { buckets: a.tokens.clone(), warmup: false, ..Default::default() };
+    let gdn_backend = match &a.gdn_backend {
+        Some(s) => sysone::engine::gpu::parse_gdn_backend(s)?,
+        None => gdn_backend_from_env()?,
+    };
+    let opts = EngineOptions { buckets: a.tokens.clone(), warmup: false, gdn_backend, ..Default::default() };
     let mut e = GpuEngine::load(&a.model, &fe.slot_ids, opts)?;
+    println!("# GDN backend: {} on {}", e.gdn_backend().name(), e.arch);
     let cfg = e.cfg.text_config.clone();
     println!("# arena {:.2} GiB for buckets {:?} (largest {max})", e.arena_bytes() as f64 / (1u64 << 30) as f64, a.tokens);
     for &target in &a.tokens {
@@ -138,7 +146,7 @@ fn main() -> Result<()> {
             (n_req * 3) as f64 / rm * 1e3,
         );
         let mut rec = serde_json::json!({
-            "tokens": t, "bucket": bucket.tokens, "requests": n_req, "branches": b.num_branches(),
+            "gdn_backend": e.gdn_backend().name(), "tokens": t, "bucket": bucket.tokens, "requests": n_req, "branches": b.num_branches(),
             "replay_ms_median": rm, "eager_ms_median": em, "replay_ms": replay, "eager_ms": eager,
         });
         if !a.no_profile {

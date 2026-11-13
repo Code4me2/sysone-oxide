@@ -16,7 +16,7 @@ use std::sync::{Mutex, OnceLock};
 
 use sysone::contract::{DecisionBatch, DecisionEngine, SlotLogits};
 use sysone::engine::goldens::{self, GoldenResult, Planned};
-use sysone::engine::gpu::{EngineOptions, GpuEngine};
+use sysone::engine::gpu::{EngineOptions, GpuEngine, gdn_backend_from_env};
 use sysone::frontend::{Frontend, Limits};
 use sysone::tolerances::{Stats, Tolerances};
 
@@ -42,8 +42,10 @@ fn env() -> &'static Mutex<Env> {
         let gold = goldens::golden_run(&repo(), "bf16_batched").unwrap();
         let cases = goldens::model_corpus(&repo()).unwrap();
         let plans = goldens::plan_corpus(&fe, &cases, |id| gold[id].status == 200).unwrap();
-        let opts = EngineOptions { buckets: EngineOptions::buckets_up_to(32768), warmup: false, ..Default::default() };
+        let opts = EngineOptions { buckets: EngineOptions::buckets_up_to(32768), warmup: false,
+                                   gdn_backend: gdn_backend_from_env().unwrap(), ..Default::default() };
         let engine = GpuEngine::load(&model_dir(), &fe.slot_ids, opts).unwrap();
+        eprintln!("engine_e2e: GDN backend {}", engine.gdn_backend().name());
         Mutex::new(Env { engine, plans })
     })
 }

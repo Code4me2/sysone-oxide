@@ -21,7 +21,7 @@ use sysone::api::client::Client;
 use sysone::api::server::{self, AppState, ServerInfo};
 use sysone::contract::DecisionEngine;
 use sysone::engine::goldens;
-use sysone::engine::gpu::{EngineOptions, GpuEngine};
+use sysone::engine::gpu::{EngineOptions, GpuEngine, gdn_backend_from_env};
 use sysone::frontend::pyjson::{self, Json};
 use sysone::frontend::{Frontend, Limits};
 use sysone::sched::{EngineFactory, SchedConfig};
@@ -153,8 +153,11 @@ async fn corpus_over_http_matches_qev_bf16() {
             let fe = Arc::new(Frontend::load(&model_dir(), Limits::default()).unwrap());
             let slot_ids = fe.slot_ids.clone();
             let factory: EngineFactory = Box::new(move || {
-                let opts = EngineOptions { buckets: EngineOptions::buckets_up_to(65536), ..Default::default() };
-                Ok(Box::new(GpuEngine::load(&model_dir(), &slot_ids, opts)?) as Box<dyn DecisionEngine>)
+                let opts = EngineOptions { buckets: EngineOptions::buckets_up_to(65536), gdn_backend: gdn_backend_from_env()?,
+                                           ..Default::default() };
+                let e = GpuEngine::load(&model_dir(), &slot_ids, opts)?;
+                eprintln!("engine_server: GDN backend {}", e.gdn_backend().name());
+                Ok(Box::new(e) as Box<dyn DecisionEngine>)
             });
             let state = AppState::start(fe, ServerInfo::new("elephant-1", "qwen3_5"), SchedConfig::default(), factory, 4)
                 .unwrap();

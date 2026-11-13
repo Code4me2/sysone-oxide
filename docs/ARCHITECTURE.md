@@ -3,7 +3,7 @@
 This document explains how the code is put together: what each module does, how one request moves through the
 system, what the main types and data layouts mean, which library runs each GPU op, and how correctness is checked.
 It describes the code as it is. For *why* it is built this way, read [DESIGN.md](DESIGN.md); for measured numbers,
-read the phase reports ([PHASE0.md](PHASE0.md), [PHASE1.md](PHASE1.md), [PHASE2A.md](PHASE2A.md)).
+read the phase reports ([PHASE0.md](PHASE0.md), [PHASE1.md](PHASE1.md), [PHASE2A.md](PHASE2A.md), [G1.md](G1.md), [E2.md](E2.md)).
 
 Code references name files, types and functions (`src/engine/gpu.rs`, `GpuEngine::step`). Line numbers are avoided
 on purpose. `cargo doc --no-deps --open` renders the per-module docs that this file points into.
@@ -44,11 +44,11 @@ cuBLAS (through `cudarc`) for the bf16 GEMMs.
 |---|---|
 | HTTP API, frontend, scheduler | Complete for text requests. Matches qev on the render golden corpus and on qev's error bodies. |
 | bf16 GPU engine (`--engine bf16`) | Full 32-layer packed forward with T-bucket CUDA graphs. The end-to-end gate (b) and the batch-invariance gate pass. |
-| Hidden-state gate (a) | Fails on layer 31 and the final norm; a redefinition of the gate is proposed but not decided (PHASE2A.md). |
+| Hidden-state gate (a) | Redefined by A1 (dense rows, paired criteria; PHASE2A.md) and passing with both GDN backends (E2.md). |
 | NVFP4 | Kernels exist and are tested (`src/kernels/nvfp4`), the loader reads NVFP4 checkpoints, but `forward::build` refuses NVFP4 projections: there is no NVFP4 forward yet. |
 | `allowed_token_mass` (`?debug=1`) | Computed by `MockEngine` only. `GpuEngine` does not override `DecisionEngine::run_with_mass`, so the field is absent with the GPU engine. |
 | Prefix cache across requests (DESIGN §8), images, `head` readout | Not implemented. |
-| GDN on cuda-oxide SIMT kernels (workstream G1) | Implemented (`kernels-simt/`, `src/kernels/gdn/simt.rs`, docs/G1.md) and selected with `GdnOptions::backend = GdnBackend::Simt`; the default and the engine still use the cuTile path until the end-to-end gate has run with it. |
+| GDN on cuda-oxide SIMT kernels (G1, E2) | Implemented (`kernels-simt/`, `src/kernels/gdn/simt.rs`, docs/G1.md) and wired into the engine (E2, docs/E2.md): `--gdn-backend auto\|tile\|simt`, `EngineOptions::gdn_backend`. Default on sm_121 (`auto`), where every engine gate and the eval gate pass with it; cuTile on every other architecture until validated there. |
 
 ## 2. Request lifecycle
 
@@ -336,10 +336,10 @@ Gotchas:
 | `graph.rs` | The StepGraph IR, arena planning, executor, profiler, the `Kernels` trait, bucket graphs | `StepGraph`, `GraphOp`, `ValueId`, `TensorRef`, `Dim`, `Bucket`, `BucketPlan`, `PoolPlan`, `Executor`, `BucketGraphs`, `Kernels`, `WeightStore`, `Profiler` |
 | `graph/tensor.rs` | Device allocations and typed, strided views | `DevBuf`, `DevTensor`, `GraphDType` |
 | `forward.rs` | Builds the 32-layer forward as a `StepGraph` | `build`, `check_dims`, `Forward`, `Taps` |
-| `kernels.rs` | `Kernels` implementation over the cuTile kernels in `crate::kernels` | `TileKernels::{new, prepare, update}` |
+| `kernels.rs` | `Kernels` implementation over the cuTile kernels in `crate::kernels`, with the GDN delta rule on the cuTile or the SIMT backend | `TileKernels::{new, prepare, update, gdn_backend}` |
 | `gemm.rs` | cuBLAS bf16 GEMM, fp32 compute, fixed workspace (graph-safe) | `Blas::gemm_bf16` |
 | `meta.rs` | Per-step batch metadata, double-buffered upload | `MetaUploader::{pack, upload}`, `DeviceMeta`, `MetaShape`, `PAD_PARENT` |
-| `gpu.rs` | The GPU `DecisionEngine` | `GpuEngine::{load, run, step, profile, read_tap}`, `EngineOptions`, `split_batch`, `StepInfo` |
+| `gpu.rs` | The GPU `DecisionEngine` | `GpuEngine::{load, run, step, profile, read_tap, gdn_backend}`, `EngineOptions`, `split_batch`, `StepInfo`, `parse_gdn_backend`, `gdn_backend_from_env` |
 | `goldens.rs` | Readers for the model goldens (corpus, runs, hidden dumps) used by tests and `bench_forward` | `model_corpus`, `golden_run`, `hidden_dump`, `plan_corpus`, `batch_of` |
 | `platform.rs` | Platform profile written by `hwprobe`; the idle-GPU guard for benchmarks | `PlatformProfile`, `require_idle_gpu`, `gpu_contention` |
 | `cpu_ref/` | f32 CPU reference forward over packed trees (tests only; slow) | `CpuRefEngine`, `Layout::{from_batch, flat}`, `check` |
@@ -353,9 +353,17 @@ Gotchas:
   (`[T, 2048]`). `seg_attn` reads the gate from `qg` and v from `kv` in place.
 - The residual add is fused into the next norm (`GraphOp::AddZcRmsNorm`) and done **in place**: `residual_out`
   aliases `residual`'s storage, and `StepGraph::plan` enforces that nothing reads the old value afterwards.
-- GDN intermediates (f32 q, k, g, beta, chunk inverse, prefix states) are not graph values: they live in the
-  `GdnScratch` owned by `TileKernels`. That is why `GraphOp::GdnPrep` has no outputs and `GdnChunkScan` reads the
-  scratch implicitly.
+- GDN intermediates (g, beta, chunk inverse, prefix states; f32 q, k and the intra-chunk scores on the cuTile
+  backend) are not graph values: they live in the `GdnScratch` owned by `TileKernels` (`GdnScratch::for_engine`,
+  which leaves out the buffers the chosen backend never reads). That is why `GraphOp::GdnPrep` has no outputs and
+  `GdnChunkScan` reads the scratch implicitly. `GdnChunkScan` takes the whole `[T, 8192]` conv output: the SIMT
+  scan reads q, k and v from it, the cuTile scan only its v columns.
+- **GDN backend** (`EngineOptions::gdn_backend`, `--gdn-backend auto|tile|simt`, `$SYSONE_GDN_BACKEND` in the
+  engine tests and `bench_forward`): fixed per engine. `None`/`auto` resolves to `GdnBackend::default_for_arch` of
+  the device; the resolved backend and the reason are logged at load and exported as
+  `sysone_engine_info{engine,gdn_backend,arch}` in `/metrics` (`DecisionEngine::info`; `/health` keeps qev's
+  body). With SIMT, `TileKernels::new` loads the SIMT module for the device, so a missing or stale artifact for
+  the device's architecture fails the load; nothing falls back to cuTile.
 
 Gotchas (from code comments and the Phase 2a review):
 - **`GdnPlan` and the attention work list are rewritten in place** by `TileKernels::update` before each step (the
@@ -370,9 +378,13 @@ Gotchas (from code comments and the Phase 2a review):
   itself does not check the scratch, and a replayed scan would write past the state buffer.
 - The engine uses `AttnTiles::default()` at every T on purpose: `AttnTiles::for_tokens` is faster at small T but not
   bit-identical, which would make a request's result depend on how it was batched.
-- `TileKernels` calls the unfused GDN path (`gdn::tree_conv1d_silu`, `gdn::gdn_prep`, `gdn::gdn_chunk_scan`,
-  `gdn::gated_rmsnorm`). The fused `gdn::gdn_mixer` (conv that also writes inverse q/k norms, scan that rebuilds q/k
-  from the bf16 conv output) is exercised by `tests/kernels_gdn.rs` and `bench_gdn` but is not the engine path.
+- `TileKernels` calls the GDN kernels one by one, not `gdn::gdn_mixer`. Tile backend: `gdn::tree_conv1d_silu`,
+  `gdn::gdn_prep` (stores f32 q, k), `gdn::gdn_chunk_scan`, `gdn::gated_rmsnorm`. SIMT backend:
+  `gdn::tree_conv1d_silu`, `gdn::simt::gates`, `gdn::simt::chunk_scan`, `gdn::gated_rmsnorm` (the same launches as
+  `gdn_mixer_with(.., Simt)`). P1's fused cuTile conv (`tree_conv1d_silu_inv` + `gdn_chunk_scan_conv`, no stored
+  f32 q/k) is not the engine's Tile path: it is not bit-identical to the stored-q/k path (fp32-noise level,
+  `kernels_gdn::scan_from_bf16_conv_matches_stored_f32_qk`), and the SIMT backend does not need it (it normalises
+  q and k inside its own scan). See docs/E2.md.
 - `forward::build` bails on NVFP4 projections, and `TileKernels` does not implement the `Kernels` NVFP4 methods
   (their defaults return an error).
 - `GpuEngine`'s field order is its drop order: graphs and buffers must drop before the CUDA context.
@@ -413,8 +425,10 @@ tests check that the file is internally consistent and that the Rust gate agrees
 
 ## 5. GPU ops of one forward
 
-The ops below are the classes `bench_forward`'s per-op profile reports (`GraphOp::profile_label`; the four GDN scan
-stages are sub-marks added by `TileKernels::gdn_chunk_scan`). "Count" is per forward of elephant-1 (24 GDN layers,
+The ops below are the classes `bench_forward`'s per-op profile reports (`Kernels::profile_label`, by default
+`GraphOp::profile_label`; the four GDN scan stages are sub-marks added by `TileKernels::gdn_chunk_scan`, and the
+`gdn.scan` mark before them holds ~0 ms). The GDN rows depend on the engine's GDN backend: `gdn.prep` and
+`gdn.chunk_*`/`gdn.scan_*` on the cuTile backend, `gdn.simt_*` on the SIMT backend. "Count" is per forward of elephant-1 (24 GDN layers,
 8 attention layers). All activations are bf16 unless stated.
 
 | Profile label | Count | Implementation | Precision | Test |
@@ -435,6 +449,11 @@ stages are sub-marks added by `TileKernels::gdn_chunk_scan`). "Count" is per for
 | `gdn.chunk_wy` | 24 | empty slot: the Phase 1 WY launch is now fused into the scans | — | — |
 | `gdn.scan_prefix` | 24 | inter-chunk scan over prefix segments; writes each prefix's final state | fp32 state, split TF32 products | `tests/kernels_gdn.rs` |
 | `gdn.scan_suffix` | 24 | inter-chunk scan over suffix segments, starting from the parent's state | as above, bf16 out | `tests/kernels_gdn.rs` |
+| `gdn.simt_gates` | 24 | SIMT backend: `kernels::gdn::simt::gates` (cuda-oxide), g and beta only (q, k are normalised in the scan) | f32 out | `tests/kernels_gdn.rs` (`GDN_BACKENDS=simt`) |
+| `gdn.simt_tinv` | 24 | SIMT backend, first op of `kernels::gdn::simt::chunk_scan`: blocked 16x16 forward substitution after an exact bf16 Gram `k kᵀ` | fp32 SIMT | `tests/kernels_gdn.rs` (`simt_tinv_matches_f64_reference`) |
+| `gdn.simt_slot_guard` | 24 | SIMT backend: writes NaN over segments whose state slot is past the scratch (a replay that missed the host check); ~2 us | — | `simt_replay_past_slot_capacity_is_nan` |
+| `gdn.simt_scan_prefix` | 24 | SIMT backend: `gdn_simt_scan` phase 0, prefix segments, register-resident state, `mma.sync` with split-bf16 operands | fp32-grade state products (three-way splits), two-way for output-only products | `tests/kernels_gdn.rs` |
+| `gdn.simt_scan_suffix` | 24 | SIMT backend: `gdn_simt_scan` phase 1, suffixes from the parent's state | as above, bf16 out | `tests/kernels_gdn.rs` |
 | `gdn.gated_rmsnorm` | 24 | `kernels::gdn::gated_rmsnorm` (cuTile), per 128-wide v head, `· w · silu(z)` | fp32 statistics, bf16 out | `tests/kernels_gdn.rs` |
 | `attn.qk_norm_rope` | 8 | `kernels::attention::qk_norm_rope` (cuTile) | reference rounding points (module docs) | `tests/kernels_attn.rs` |
 | `attn.seg_attn` | 8 | `kernels::attention::seg_attn` (cuTile), `AttnTiles::default()` | fp32 scores and softmax, P in 3 bf16 parts (`p_split = 3`), sigmoid gate, bf16 out | `tests/kernels_attn.rs` |
@@ -477,7 +496,7 @@ Where the time goes at each bucket is in PHASE2A.md ("Forward speed").
 | Per kernel | Each GPU kernel vs a CPU f64 reference transcribed from transformers 5.19 `modeling_qwen3_5.py`, with the reference's bf16 rounding points | `tests/kernels_norm.rs`, `tests/kernels_attn.rs`, `tests/kernels_gdn.rs`, `tests/kernels_nvfp4.rs` (bit-exact vs compressed-tensors), `tests/engine_gemm.rs` |
 | Engine plumbing | StepGraph arena, eager vs captured graphs, metadata upload | `tests/engine_graph.rs`, `tests/engine_loader.rs` |
 | Tree semantics (CPU) | Packed tree forward = flat forward with explicit mask; packed vs alone; vs qev fp32 | `src/engine/cpu_ref/tests.rs` (lib, tiny random model), `tests/cpu_ref.rs` (ignored; real weights) |
-| (a) Hidden states | Per-row relative error at layers 0, 3, 4, 15, 31 and the final norm vs qev fp32, within 1.5× the bf16 reference's own error (`[model.hidden.*]`) | `tests/engine_layers.rs::hidden_states_vs_fp32_truth` (currently failing, see PHASE2A.md) |
+| (a) Hidden states | Per-row relative error at layers 0, 3, 4, 15, 31 and the final norm vs qev fp32, within 1.5× the bf16 reference's own error (`[model.hidden.*]`) | `tests/engine_layers.rs::hidden_states_vs_fp32_truth` (A1's definition, PHASE2A.md; passes with both GDN backends, E2.md) |
 | (b) End to end | Per-option probability \|dp\| vs qev bf16 (`[e2e.bf16]`), also reported and gated vs fp32 (`[e2e.fp32_truth]`); top-1 agreement where the reference margin is large enough | `tests/engine_e2e.rs::slot_probabilities_match_bf16_goldens`; over HTTP: `tests/engine_server.rs` |
 | Batch invariance | Each request alone vs packed with the others vs alone in a larger bucket (`[batch_invariance]`) | `tests/engine_e2e.rs::batch_invariance`; kernel level: `kernels_attn::seg_attn_branch_alone_is_bit_identical`, `kernels_gdn::tree_batched_matches_each_branch_alone` |
 | Graph replay | Replay with new metadata = eager, bit for bit | `tests/engine_e2e.rs::graph_replay_equals_eager`, `tests/engine_graph.rs` |
@@ -626,9 +645,11 @@ Things that look inconsistent or unclear in the current tree. They are recorded 
    come from CLI flags.
 3. **Images.** DESIGN §1 says requests containing images get a 422. The schema has no image field and ignores extra
    keys, so an image key would be dropped silently. Is the 422 still intended?
-4. **GDN path in the engine.** `TileKernels` uses the unfused conv + `gdn_prep` path that stores f32 q/k in
-   `GdnScratch`, while P1's fused `gdn_mixer` (no stored f32 q/k) exists only in tests and `bench_gdn`. Is that
-   deliberate (e.g. pending G1) or an integration gap?
+4. **GDN path in the engine.** Answered by E2 (docs/E2.md): the engine runs the SIMT backend's launches
+   (`tree_conv1d_silu`, `simt::gates`, `simt::chunk_scan`, `gated_rmsnorm`) or the cuTile unfused path
+   (`gdn_prep` stores f32 q/k). P1's fused cuTile conv is still not the engine's Tile path: it is not bit-identical
+   to the stored-q/k path, so adopting it would be a numerics change of the fallback needing its own gate runs,
+   and on sm_121 the SIMT backend is the faster path anyway. Open only for architectures that stay on Tile.
 5. **Slot readout kernel.** `kernels::readout::slot_logits` is tested but unused; the engine runs the readout on
    cuBLAS. Keep both?
 6. **`gdn.chunk_wy` profile row** is an empty operation kept for launch-order compatibility; profiles will show it

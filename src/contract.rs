@@ -143,6 +143,12 @@ pub trait DecisionEngine: Send {
     fn run_with_mass(&mut self, batch: &DecisionBatch) -> Result<MassReadout> {
         Ok(MassReadout { logits: self.run(batch)?, allowed_mass: None })
     }
+
+    /// Static facts about the engine reported as labels of `sysone_engine_info` in `/metrics` (e.g. the GDN
+    /// backend and the device architecture). Default: none.
+    fn info(&self) -> Vec<(&'static str, String)> {
+        Vec::new()
+    }
 }
 
 /// What [`DecisionEngine::run_with_mass`] returns.

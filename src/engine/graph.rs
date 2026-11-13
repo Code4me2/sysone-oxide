@@ -270,9 +270,10 @@ pub enum GraphOp {
     /// and the gates `g = -exp(A_log)·softplus(a + dt_bias)`, `beta = sigmoid(b)`, all f32, into the GDN scratch.
     GdnPrep { layer: usize, conv: TensorRef, a: TensorRef, b: TensorRef },
     /// Chunked gated delta rule over segments: chunk inverse, WY transform, prefix scan (writing each prefix's
-    /// final state), suffix scan (from the parent's state). Reads q/k/g/beta from the scratch and `v`
-    /// (`[T, 4096]`, the conv output's v columns); `out [T, 4096]` bf16.
-    GdnChunkScan { layer: usize, v: TensorRef, out: ValueId },
+    /// final state), suffix scan (from the parent's state). Reads the gates (and, on the cuTile backend, the f32
+    /// q/k) from the scratch and `conv` (the whole `[T, 8192]` conv output: the SIMT backend reads q, k and v from
+    /// it, the cuTile one only its v columns); `out [T, 4096]` bf16.
+    GdnChunkScan { layer: usize, conv: TensorRef, out: ValueId },
     /// Gated RMSNorm per v-head: `bf16(norm(o)) · w · silu(z)`.
     GatedRmsNorm { layer: usize, o: TensorRef, z: TensorRef, out: ValueId },
     /// q/k zero-centred norm and partial RoPE: `q [T, 16·256]` from the query halves of `qg [T, 16·512]`,
@@ -317,7 +318,7 @@ impl GraphOp {
             GemmNvfp4 { q, s, .. } => vec![v(q), v(s)],
             SiluMul { gu, .. } | SiluMulNvfp4 { gu, .. } => vec![v(gu)],
             GdnPrep { conv, a, b, .. } => vec![v(conv), v(a), v(b)],
-            GdnChunkScan { v: vv, .. } => vec![v(vv)],
+            GdnChunkScan { conv, .. } => vec![v(conv)],
             GatedRmsNorm { o, z, .. } => vec![v(o), v(z)],
             QkNormRope { qg, kv, .. } => vec![v(qg), v(kv)],
             SegAttn { q, k, kv, qg, .. } => vec![v(q), v(k), v(kv), v(qg)],
@@ -692,7 +693,8 @@ pub trait Kernels: Sync {
                 dt_bias: &DevTensor) -> Result<()> {
         missing("gdn_prep")
     }
-    fn gdn_chunk_scan(&self, cx: &Launch, layer: usize, v: &DevTensor, out: &DevTensor) -> Result<()> {
+    /// `conv`: the whole `[T, 8192]` conv output (q | k | v).
+    fn gdn_chunk_scan(&self, cx: &Launch, layer: usize, conv: &DevTensor, out: &DevTensor) -> Result<()> {
         missing("gdn_chunk_scan")
     }
     fn gated_rmsnorm(&self, cx: &Launch, layer: usize, o: &DevTensor, z: &DevTensor, w: &DevTensor, out: &DevTensor)
@@ -712,6 +714,11 @@ pub trait Kernels: Sync {
     /// `out[i] = src[answer_rows[i]]` (answer rows from `cx.meta`).
     fn gather_rows(&self, cx: &Launch, src: &DevTensor, out: &DevTensor) -> Result<()> {
         missing("gather_rows")
+    }
+    /// Profile class of `op` as these kernels run it (default [`GraphOp::profile_label`]); lets an implementation
+    /// name the kernels it really launches (e.g. the SIMT GDN gates in place of `gdn.prep`).
+    fn profile_label(&self, op: &GraphOp) -> String {
+        op.profile_label()
     }
 }
 
@@ -770,7 +777,7 @@ impl<'a> Executor<'a> {
             if matches!(op, GraphOp::View { .. }) {
                 continue;
             }
-            cx.mark(&op.profile_label())?;
+            cx.mark(&self.kernels.profile_label(op))?;
             self.run_op(&cx, op).with_context(|| format!("op {i} ({})", op.name()))?;
         }
         cx.mark("end")
@@ -823,7 +830,7 @@ impl<'a> Executor<'a> {
             GdnPrep { layer, conv, a, b } => k.gdn_prep(cx, layer, &r(conv)?, &r(a)?, &r(b)?,
                                                        lw(layer, LayerWeight::GdnALog)?,
                                                        lw(layer, LayerWeight::GdnDtBias)?),
-            GdnChunkScan { layer, v: vv, out } => k.gdn_chunk_scan(cx, layer, &r(vv)?, &v(out)?),
+            GdnChunkScan { layer, conv, out } => k.gdn_chunk_scan(cx, layer, &r(conv)?, &v(out)?),
             GatedRmsNorm { layer, o, z, out } => {
                 k.gated_rmsnorm(cx, layer, &r(o)?, &r(z)?, lw(layer, LayerWeight::GdnNorm)?, &v(out)?)
             }

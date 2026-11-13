@@ -5,7 +5,8 @@
 //! per layer i:
 //!   h      = zc_rmsnorm(x, ln1)                      (layer 0; later layers fuse the residual add, in place)
 //!   GDN:   proj = h · [Wqkv; Wz; Wa; Wb]ᵀ             one [T, 12352] GEMM
-//!          conv = tree_conv1d_silu(proj[:, :8192]); gdn_prep(conv, a, b); core = gdn_chunk_scan(conv[:, 4096:])
+//!          conv = tree_conv1d_silu(proj[:, :8192]); gdn_prep(conv, a, b); core = gdn_chunk_scan(conv)
+//!          (cuTile: gdn_prep stores f32 q, k, the scan reads conv[:, 4096:]; SIMT: gates only, the scan reads all of conv)
 //!          o = gated_rmsnorm(core, z) · Woutᵀ
 //!   full:  qg = h · Wqᵀ; kv = h · [Wk; Wv]ᵀ; q, k = qk_norm_rope(qg, kv); o = seg_attn(q, k, kv, qg) · Woᵀ
 //!   h2     = add_zc_rmsnorm(x += o, ln2)
@@ -77,7 +78,6 @@ pub fn build(cfg: &ModelConfig, weights: &dyn WeightStore, n_slots: usize, taps:
     let conv_dim = cfg.linear_conv_dim();
     let v_dim = t.linear_num_value_heads * t.linear_value_head_dim;
     let vh = t.linear_num_value_heads;
-    let key_dim = t.linear_num_key_heads * t.linear_key_head_dim;
     let q_dim = t.num_attention_heads * t.head_dim;
     let kv_dim = t.num_key_value_heads * t.head_dim;
     for i in 0..t.num_hidden_layers {
@@ -132,7 +132,7 @@ pub fn build(cfg: &ModelConfig, weights: &dyn WeightStore, n_slots: usize, taps:
                     b: cols(proj, conv_dim + v_dim + vh, vh),
                 });
                 let core = tok(&mut g, v_dim);
-                g.push(GraphOp::GdnChunkScan { layer: i, v: cols(conv, 2 * key_dim, v_dim), out: core });
+                g.push(GraphOp::GdnChunkScan { layer: i, conv: conv.into(), out: core });
                 let gated = tok(&mut g, v_dim);
                 g.push(GraphOp::GatedRmsNorm { layer: i, o: core.into(), z: cols(proj, conv_dim, v_dim), out: gated });
                 g.push(GraphOp::Gemm { x: gated.into(), w: lw(LayerWeight::GdnOutProj), out: mixer });
