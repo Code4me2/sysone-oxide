@@ -68,8 +68,34 @@ Rerun with `cargo run --release --bin hwprobe`.
    existing W4A4-MLP checkpoint. The MLP is ≈ 70% of GEMM FLOPs, so the end-to-end gain depends on the measured
    FP4/bf16 GEMM ratio on sm_121.
 
+## cuTile GEMM rates: bf16 vs NVFP4 (`tile_gemm_probe`)
+
+Plain, untuned tile kernels (`benchmarks/s1/tile_gemm_probe.rs`): weights `[N, K]` row-major, fp32 accumulate,
+bf16 out. NVFP4 uses the checkpoint's layout (packed e2m1 `[N, K/2]`, e4m3 group-16 scales). Best of a 4-tile sweep.
+The NVFP4 path is native on sm_121 (`mmaf_scaled`); cutile's `nvfp4` example passes.
+
+| shape (T × N × K) | cuBLAS bf16 | Tile bf16 | Tile NVFP4 | NVFP4 / cuBLAS bf16 |
+|---|---:|---:|---:|---:|
+| 4096 × 24576 × 4096 (gate/up) | 94.7 | 70.2 (256×128×64) | **254.9** (128×128×128) | 2.7× |
+| 4096 × 4096 × 12288 (down) | 87.8 | 71.4 (256×128×64) | **155.5** (128×128×128) | 1.8× |
+| 16384 × 24576 × 4096 | 101.3 | 52.0 | 132.0 | 1.3× |
+| 16384 × 4096 × 12288 | 92.1 | 52.2 | 118.7 | 1.3× |
+
+TFLOP/s; ms values are in the probe output.
+
+- **The T = 16384 drop is not thermal.** A cool-GPU rerun gives the same numbers, with SM clocks at 2.4–2.5 GHz,
+  no throttle reasons, and ≤ 56 W. These kernels walk the output grid without swizzling, so at large M the operand
+  working set thrashes L2. W3's GEMMs need grouped rasterization or a persistent schedule; the T = 4096 rows show
+  what each tile shape sustains.
+- **Measured FP4 gain, naive kernels:** the MLP gets about 2.2× faster (time-weighted over gate/up and down vs
+  cuBLAS bf16). With the other 30% of GEMM FLOPs on cuBLAS bf16, GEMM time per forward is ≈ 0.30 + 0.70/2.2 ≈
+  0.62× of bf16, so about **1.6×** faster. At a tuned ~3.5× MLP rate this reaches ≈ 2×. The NVFP4 activation
+  quantization is extra (fused into norm and SiLU epilogues, DESIGN §6.6) and is not counted here.
+- Tile bf16 trails cuBLAS by ~25% untuned, so cuBLAS stays the bf16 baseline (DESIGN §6.4) until autotuned cutile
+  GEMMs beat it.
+- The probe measures rates only; its outputs are not checked at these shapes. W3's kernels carry the correctness
+  tests.
+
 ## Remaining Phase 0 items
 
-- After the clang install: run a cutile bf16 GEMM bench and the NVFP4 example on sm_121, and add Tile bf16 and
-  FP4 rates to `hwprobe`. That gives the Tile-vs-cuBLAS baseline and the measured FP4 speedup `r` (DESIGN §13 Q8).
 - After re-login: W6 checks that the NGC vLLM image serves Qwen3.5.

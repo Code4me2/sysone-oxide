@@ -24,6 +24,13 @@ the cutile-examples requirement table (`cutile-examples/src/requirements.rs`).
 | P9 | **Driver R580** (CUDA 13.0 driver API) on DGX OS with toolkit 13.4. Tile IR emits native sm_121 code, so no newer driver is needed. | Varies; usually newer. | R580 is the minimum supported driver. Driver-API bindings (cudarc `cuda-13000`) target 13.0; the engine uses cuda-core for contexts and streams. |
 | P10 | **Single GPU,** no MIG, no NVLink peers. | Possibly several GPUs. | v1 is one engine per GPU. Multi-GPU means one process per GPU behind a router; no tensor parallelism. |
 
+## Toolkit upgrades
+
+cuda-bindings' and cutile-compiler's build scripts detect the toolkit once and re-run only when an environment
+variable changes, not when `/usr/local/cuda-13` is repointed to a new version. After a toolkit upgrade, run
+`cargo clean -p cutile-compiler -p cuda-bindings`; otherwise cutile keeps the old version's capabilities (seen
+here: "toolkit is CUDA 13.0" warnings after installing 13.4).
+
 ## NVFP4 per platform
 
 | Target | Path |
