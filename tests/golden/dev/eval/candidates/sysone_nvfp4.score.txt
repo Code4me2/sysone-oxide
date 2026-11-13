@@ -1,0 +1,37 @@
+
+== sysone_nvfp4: 278/278 records, 0 errors
+run                               overall          banking77             ledgar       longbench_v2   brier    ece
+sysone_nvfp4               230/278  82.7%     116/128  90.6%     105/128  82.0%        9/22  40.9%  0.2509 0.0511
+                       overall 95% CI [78.4, 87.1]%
+nvfp4_perq                 225/278  80.9%     114/128  89.1%     103/128  80.5%        8/22  36.4%  0.2651 0.0858
+nvfp4_perq_bN              227/278  81.7%     115/128  89.8%     104/128  81.2%        8/22  36.4%  0.2554 0.0794
+nvfp4_batched              227/278  81.7%     116/128  90.6%     102/128  79.7%        9/22  40.9%  0.2579 0.0770
+nvfp4_sequential           227/278  81.7%     115/128  89.8%     103/128  80.5%        9/22  40.9%  0.2586 0.0703
+
+-- gate [nvfp4] vs ['nvfp4_perq', 'nvfp4_perq_bN', 'nvfp4_batched', 'nvfp4_sequential'] (limits from tests/tolerances.toml [eval.nvfp4]): PASS
+   nvfp4_perq         disagree    +0.02158 <= +0.04137  ok
+   nvfp4_perq         dp_mean     +0.001906 <= +0.00281  ok
+   nvfp4_perq         dp_p99      +0.05141 <= +0.07857  ok
+   nvfp4_perq         acc_ci_lo   -0.003597 >= -0.04317  ok
+   nvfp4_perq         brier_ci_hi +0.0003099 <= +0.03181  ok
+   nvfp4_perq         info: labeled agreement 95.68%, top-1 changes 18 (any margin), max|dp| 0.509, dAcc +1.80pp [-0.36,+3.96], gains 7 losses 2
+   nvfp4_perq_bN      disagree    +0.02518 <= +0.04137  ok
+   nvfp4_perq_bN      dp_mean     +0.001881 <= +0.00281  ok
+   nvfp4_perq_bN      dp_p99      +0.05124 <= +0.07857  ok
+   nvfp4_perq_bN      acc_ci_lo   -0.01079 >= -0.04317  ok
+   nvfp4_perq_bN      brier_ci_hi +0.01041 <= +0.03181  ok
+   nvfp4_perq_bN      info: labeled agreement 94.96%, top-1 changes 21 (any margin), max|dp| 0.509, dAcc +1.08pp [-1.08,+3.60], gains 7 losses 4
+   nvfp4_batched      disagree    +0.02398 <= +0.04137  ok
+   nvfp4_batched      dp_mean     +0.001899 <= +0.00281  ok
+   nvfp4_batched      dp_p99      +0.05014 <= +0.07857  ok
+   nvfp4_batched      acc_ci_lo   -0.01079 >= -0.04317  ok
+   nvfp4_batched      brier_ci_hi +0.006128 <= +0.03181  ok
+   nvfp4_batched      info: labeled agreement 96.40%, top-1 changes 20 (any margin), max|dp| 0.370, dAcc +1.08pp [-1.08,+3.24], gains 6 losses 3
+   nvfp4_sequential   disagree    +0.02638 <= +0.04137  ok
+   nvfp4_sequential   dp_mean     +0.001904 <= +0.00281  ok
+   nvfp4_sequential   dp_p99      +0.04878 <= +0.07857  ok
+   nvfp4_sequential   acc_ci_lo   -0.01079 >= -0.04317  ok
+   nvfp4_sequential   brier_ci_hi +0.007995 <= +0.03181  ok
+   nvfp4_sequential   info: labeled agreement 95.32%, top-1 changes 22 (any margin), max|dp| 0.452, dAcc +1.08pp [-1.08,+3.60], gains 7 losses 4
+
+GATE PASS
