@@ -2,3 +2,9 @@
 //! graphs, readout. Owner: W4.
 
 pub mod config;
+pub mod gemm;
+pub mod graph;
+pub mod loader;
+pub mod meta;
+pub mod platform;
+pub mod weights;
