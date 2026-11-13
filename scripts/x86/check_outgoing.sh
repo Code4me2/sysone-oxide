@@ -24,7 +24,7 @@
 set -uo pipefail
 
 RESULT_PATHS='^(benchmarks/results/x86/|profiles/|kernels-simt/artifacts/)'
-CODE_PATHS='^(src/|benchmarks/s1/|benchmarks/vllm/|tests/[^/]+\.rs$|docs/|kernels-simt/src/|kernels-simt/Cargo\.(toml|lock)$|Cargo\.(toml|lock)$|build\.rs$|README\.md$|scripts/x86/(run_tests|run_bench|setup)\.sh$)'
+CODE_PATHS='^(src/|benchmarks/s1/|benchmarks/vllm/|tests/[^/]+\.rs$|docs/|kernels-simt/src/|kernels-simt/README\.md$|kernels-simt/Cargo\.(toml|lock)$|Cargo\.(toml|lock)$|build\.rs$|README\.md$|scripts/x86/(run_tests|run_bench|setup)\.sh$)'
 SAFETY_PATHS='^(scripts/gpu\.sh$|scripts/doctor\.sh$|scripts/x86/check_outgoing\.sh$|scripts/x86/lib\.sh$|scripts/tests/|CUDA_RUST_REV$|\.gitignore$)'
 # Never from the x86 host, under any flag: gates and tolerances (INTEGRITY), model weights, traces, secrets.
 DENY_PATHS='(^tests/tolerances\.toml$|^src/tolerances\.rs$|\.(safetensors|gguf|pt|pth|bin|npy|npz|nsys-rep|ncu-rep|sqlite|qdrep|pem|key|p12)$|(^|/)\.env$|(^|/)id_[a-z0-9]+$)'
