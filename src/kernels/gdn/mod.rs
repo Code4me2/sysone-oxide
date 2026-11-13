@@ -232,7 +232,9 @@ pub struct GdnScratch {
     pub slots: usize,
     /// conv1d+SiLU output, bf16 `[T, 8192]` (q | k | v).
     pub conv: Tensor<bf16>,
-    /// L2-normalised (q also scaled) queries and keys, f32 `[T, 16 * 128]`.
+    /// L2-normalised (q also scaled) queries and keys, f32 `[T, 16 * 128]`, written by [`gdn_prep`] or
+    /// [`tree_conv1d_silu_qk`]. [`gdn_mixer`] neither writes nor reads them (its scan rebuilds q and k from the
+    /// bf16 conv output).
     pub q: Tensor<f32>,
     pub k: Tensor<f32>,
     /// f32 `[T, 32]`.
@@ -785,7 +787,8 @@ pub unsafe fn gated_rmsnorm(
 }
 
 /// The whole GDN mixer between the fused input projection and `out_proj`: `proj` is the `[T, 12352]` bf16 GEMM
-/// output (`qkv | z | a | b`), `out` the `[T, 4096]` bf16 input of `out_proj`.
+/// output (`qkv | z | a | b`), `out` the `[T, 4096]` bf16 input of `out_proj`. Launches
+/// [`tree_conv1d_silu_inv`], [`gdn_gates`], [`gdn_chunk_scan_conv`] and [`gated_rmsnorm`].
 ///
 /// # Safety
 /// As for [`tree_conv1d_silu`].
