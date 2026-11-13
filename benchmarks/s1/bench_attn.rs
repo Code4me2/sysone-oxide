@@ -210,14 +210,16 @@ fn main() -> Result<()> {
         let out = api::zeros::<bf16>(&[t, hq, d]).sync_on(&stream)?;
 
         let dt = AttnTiles::default();
-        // The tiles the engine uses at this T, then the precision knobs (DESIGN.md §1): P in 2 bf16 parts, in
-        // a bf16 + f16 pair, and the classic flash-attention bf16 P (see tests/kernels_attn.rs for their error).
-        let best = AttnTiles::for_tokens(t);
-        let mut configs = vec![best];
-        if best != dt {
-            configs.push(dt);
+        // The engine's tiles (the default at every T), the opt-in per-T tiles when they differ (not
+        // bit-identical to the default; see AttnTiles::for_tokens), then the precision knobs (DESIGN.md §1):
+        // P in 2 bf16 parts, in a bf16 + f16 pair, and the classic flash-attention bf16 P (see
+        // tests/kernels_attn.rs for their error).
+        let opt_in = AttnTiles::for_tokens(t);
+        let mut configs = vec![dt];
+        if opt_in != dt {
+            configs.push(opt_in);
         }
-        configs.push(AttnTiles { p_split: 2, ..best });
+        configs.push(AttnTiles { p_split: 2, ..dt });
         configs.push(AttnTiles { p_split: 2, residual_f16: true, ..dt });
         configs.push(AttnTiles { bm: 8, p_split: 1, ..dt });
         if args.sweep {

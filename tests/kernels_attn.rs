@@ -412,7 +412,8 @@ fn seg_attn_matches_reference() {
     let d = AttnTiles::default();
     let small = AttnTiles::for_tokens(1024);
     assert_eq!(small.d_split, 2, "for_tokens(1024) is expected to pick the column-split tiles");
-    // Gated: every shape the engine may pick at fp32-grade P, and the bf16 + f16 split, which measures
+    // Gated: the engine's default, the opt-in for_tokens tiles and other fp32-grade-P shapes (they differ
+    // from the default only in a few low bits; seg_attn_tiles_match_default_bits), and the bf16 + f16 split, which measures
     // inside the envelope. Reported only: P in 2 or 1 bf16 parts (precision knobs for the end-to-end gate,
     // DESIGN.md §1).
     for (tiles, gate) in [
@@ -478,9 +479,9 @@ fn branch_alone_is_bit_identical(tiles: AttnTiles) {
         }
     }
     println!(
-        "seg_attn branch invariance (bm={} d_split={}): {checked} branches bit-identical alone vs packed \
-         (tolerance: exact)",
-        tiles.bm, tiles.d_split
+        "seg_attn branch invariance (bm={} warps={} d_split={}): {checked} branches bit-identical alone vs \
+         packed with the same tiles (tolerance: exact)",
+        tiles.bm, tiles.warps, tiles.d_split
     );
 }
 
@@ -510,5 +511,72 @@ fn writes_only_its_rows(tiles: AttnTiles) {
     println!(
         "seg_attn store clipping (bm={} d_split={}): rows outside the tile's segment untouched (tolerance: exact)",
         tiles.bm, tiles.d_split
+    );
+}
+
+/// Elements of `b` that differ from `a`, and the largest difference in bf16 ulps of the larger value.
+fn bit_diff(a: &[bf16], b: &[bf16]) -> (usize, f64) {
+    let (mut n, mut max_ulp) = (0usize, 0f64);
+    for (x, y) in a.iter().zip(b) {
+        if x.to_bits() != y.to_bits() {
+            n += 1;
+            let (fx, fy) = (f(*x), f(*y));
+            let ulp = 2f64.powi(fx.abs().max(fy.abs()).max(1e-30).log2().floor() as i32 - 7);
+            max_ulp = max_ulp.max((fx - fy).abs() / ulp);
+        }
+    }
+    (n, max_ulp)
+}
+
+/// Cross-tile bit identity on the full test batch (T = 6131). The engine runs [`AttnTiles::default`] at
+/// every T, so a request gives the same bits alone and packed. Asserted exact: `for_tokens` above
+/// `SMALL_BATCH_TOKENS` (the default) and `d_split` 2 and 4 at the default's warps. Reported with the
+/// measured difference: the opt-in `for_tokens` tiles at small T (4 warps) and other shapes, which reduce
+/// in a different order.
+#[test]
+fn seg_attn_tiles_match_default_bits() {
+    let stream = setup();
+    let reqs = requests();
+    let all: Vec<(&Req, Vec<usize>)> = reqs.iter().map(|r| (r, (0..r.suffixes.len()).collect())).collect();
+    let p = pack(&all);
+    let dev = device_inputs(&p, &stream);
+    let d = AttnTiles::default();
+    let base = run_attn(&dev, &AttnPlan::new(&p.batch.segments, d.bm), d, bf16::NAN, &stream);
+    let mut cases: Vec<(String, AttnTiles, bool)> = [256, 1024, 2048, 4096, 16384]
+        .iter()
+        .map(|&t| (format!("for_tokens({t})"), AttnTiles::for_tokens(t), t > attn::SMALL_BATCH_TOKENS))
+        .collect();
+    cases.extend([
+        ("d_split=2".to_string(), AttnTiles { d_split: 2, ..d }, true),
+        ("d_split=4".to_string(), AttnTiles { d_split: 4, ..d }, true),
+        ("warps=4 occ=2".to_string(), AttnTiles { warps: 4, occupancy: 2, ..d }, false),
+        ("warps=4 occ=2 d_split=4".to_string(), AttnTiles { warps: 4, occupancy: 2, d_split: 4, ..d }, false),
+        ("bm=8".to_string(), AttnTiles { bm: 8, ..d }, false),
+        ("latency=1".to_string(), AttnTiles { latency: 1, ..d }, false),
+    ]);
+    let mut differing = 0;
+    for (label, tiles, must_match) in cases {
+        let got = run_attn(&dev, &AttnPlan::new(&p.batch.segments, tiles.bm), tiles, bf16::NAN, &stream);
+        let (n, max_ulp) = bit_diff(&base, &got);
+        println!(
+            "seg_attn bits vs default, {label} (bm={} warps={} occ={} d_split={} lat={}): {n}/{} elements differ, \
+             max {max_ulp:.2} bf16 ulp{}",
+            tiles.bm,
+            tiles.warps,
+            tiles.occupancy,
+            tiles.d_split,
+            tiles.latency,
+            base.len(),
+            if must_match { " (tolerance: exact)" } else { " (reported only)" }
+        );
+        if must_match {
+            assert_eq!(n, 0, "seg_attn {label}: {n} elements differ from the default tiles");
+        } else if label.starts_with("for_tokens") && n > 0 {
+            differing += 1;
+        }
+    }
+    println!(
+        "seg_attn: {differing} opt-in for_tokens choices differ from the default bits; the engine must use one tile \
+         set for every T to keep batch invariance"
     );
 }

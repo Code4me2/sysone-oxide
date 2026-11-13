@@ -579,8 +579,10 @@ pub struct AttnTiles {
     /// Output column blocks per work item (1, 2 or 4): the grid's z axis. Each tile block recomputes
     /// `Q K^T` and the softmax for its rows and keeps a `[bm * 4, 256 / d_split]` fp32 accumulator, so
     /// `d_split = 2` with 4 warps fits two tile blocks per SM (128 registers, 42 KB shared memory) at the
-    /// cost of computing `Q K^T` twice. The arithmetic of every output element is the same for any
-    /// `d_split`; a row's result still depends only on its own segment's work item.
+    /// cost of computing `Q K^T` twice. At fixed `bm`, `bn`, `latency`, `warps` and P split, every `d_split`
+    /// gives the same bits (asserted against the default in tests/kernels_attn.rs); a row's result still
+    /// depends only on its own segment's work item. `latency` also keeps the bits (measured);
+    /// changing `warps` or `bm` changes the softmax reduction order and so the low bits of a few outputs.
     pub d_split: usize,
     /// Precision knob, only with `p_split == 2`: the second part of P is `f16(P - bf16(P))` multiplied by
     /// `f16(V)` (V clamped to the f16 range), ~20 bits of P instead of ~17 for the same two MMAs.
@@ -588,9 +590,19 @@ pub struct AttnTiles {
 }
 
 impl AttnTiles {
-    /// The fastest measured tiles at the fp32-P numerics (`p_split = 3`) for a packed batch of `t` tokens
-    /// (bench_attn on GB10, idle GPU; see the table on [`Default`]). Build the [`AttnPlan`] with the
-    /// returned `bm`.
+    /// OPT-IN, NOT the engine path: the fastest measured tiles at the fp32-P numerics (`p_split = 3`) for a
+    /// packed batch of `t` tokens (bench_attn on GB10, idle GPU; see the table on [`Default`]). Build the
+    /// [`AttnPlan`] with the returned `bm`.
+    ///
+    /// For `t <= SMALL_BATCH_TOKENS` this returns 4-warp tiles, which are **not bit-identical** to
+    /// [`AttnTiles::default`] (8 warps reduce the softmax row max and sum across warps in a different
+    /// order): on the 6131-token test batch 130 of 25.1M outputs differ, by at most 2 bf16 ulp
+    /// (`seg_attn_tiles_match_default_bits` in tests/kernels_attn.rs prints the measured difference). An
+    /// engine that picks tiles by `t` therefore gives a request different bits alone (small `t`) and packed
+    /// (large `t`), which breaks the bit-exact batch invariance of DESIGN.md §3.1; the difference stays
+    /// inside the kernel's error envelope, and the model-level gate (DESIGN.md §9.2) would have to absorb
+    /// it. The engine uses [`AttnTiles::default`] at every `t`. Within one tile set, branch invariance (alone
+    /// vs packed) is exact for these tiles too. Above `SMALL_BATCH_TOKENS` this returns the default.
     pub fn for_tokens(t: usize) -> Self {
         if t <= SMALL_BATCH_TOKENS {
             // Few work items: two tile blocks per SM keep the GPU busy.
@@ -623,22 +635,28 @@ impl AttnTiles {
     }
 }
 
-/// Batches up to this many tokens use the `d_split = 2` tiles in [`AttnTiles::for_tokens`].
-pub const SMALL_BATCH_TOKENS: usize = 2048;
+/// Batches up to this many tokens get the opt-in `d_split = 2`, 4-warp tiles from [`AttnTiles::for_tokens`]
+/// (1024: at 2048 the two shapes tie on the median).
+pub const SMALL_BATCH_TOKENS: usize = 1024;
 
-/// Default: the fastest spill-free shape at T >= 4096 on GB10: 168 registers per thread, no stack, 80 KB
+/// Default: the engine's tiles at every T (one tile set keeps a request's bits the same alone and packed),
+/// and the fastest spill-free shape at T >= 4096 on GB10: 168 registers per thread, no stack, 80 KB
 /// shared memory, 8 warps, 1 tile block per SM. The compiler's default (4 warps) at bm 16 / bn 64 needs 255
 /// registers and spills 248 bytes per thread, and runs ~1.5x slower.
 ///
 /// Measured with bench_attn under scripts/gpu.sh (idle GPU, minimum of 5 interleaved rounds; p_split 3;
 /// useful TFLOP/s count `Q K^T` and `P V` once over the attended pairs):
 ///
-/// | T | default (d_split 1, 8 warps) | d_split 2, 4 warps, 2 blocks/SM | chosen |
+/// | T | default (d_split 1, 8 warps) | d_split 2, 4 warps, 2 blocks/SM | opt-in `for_tokens` |
 /// |---|---|---|---|
 /// | 1024 | 0.249 ms, 26.4 | 0.226 ms, 29.1 | d_split 2 |
-/// | 2048 | 1.026 ms, 32.2 | 0.986 ms, 33.5 | d_split 2 |
+/// | 2048 | 1.026 ms, 32.2 (median 1.033) | 0.986 ms, 33.5 (median 1.039) | default (tie) |
 /// | 4096 | 4.859 ms, 37.5 | 4.972 ms, 36.7 | default |
 /// | 16384 | 76.14 ms, 37.9 | 78.49 ms, 36.8 | default |
+///
+/// No faster shape keeps the default's bits at small T: `d_split = 2` at 8 warps is bit-identical but
+/// ~3x slower (0.78 ms at 1024), and bm 8 (0.229 ms at 1024) differs from the default in 112 of 25.1M
+/// outputs on the test batch.
 ///
 /// Phase 1 (same shape, separate multiply and add for the running sum): 5.03 ms at 4096, 78.4 ms at 16384.
 ///
