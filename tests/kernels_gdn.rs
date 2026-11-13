@@ -369,6 +369,18 @@ struct Run {
 
 /// Run the whole mixer on `proj` with the given plan capacities and download every intermediate.
 fn run_gpu(proj: &[f64], segs: &[Segment], w: &GpuWeights, caps: Option<(usize, usize)>, s: &Arc<Stream>) -> Run {
+    run_gpu_with(proj, segs, w, caps, &GdnOptions::default(), s)
+}
+
+/// [`run_gpu`] with explicit scan options.
+fn run_gpu_with(
+    proj: &[f64],
+    segs: &[Segment],
+    w: &GpuWeights,
+    caps: Option<(usize, usize)>,
+    opts: &GdnOptions,
+    s: &Arc<Stream>,
+) -> Run {
     let t = proj.len() / PROJ_COLS;
     let plan = match caps {
         None => GdnPlan::new(segs, t, s).unwrap(),
@@ -378,9 +390,18 @@ fn run_gpu(proj: &[f64], segs: &[Segment], w: &GpuWeights, caps: Option<(usize, 
     let scratch = GdnScratch::new(t, plan.num_prefixes, s).unwrap();
     let out = api::zeros::<bf16>(&[t, VALUE_DIM]).sync_on(s).unwrap();
     let ops = unsafe {
-        gdn_mixer(&plan, DView::of(&proj_t).unwrap(), &w.view(), EPS, &scratch, DView::of(&out).unwrap()).unwrap()
+        gdn_mixer_with(&plan, DView::of(&proj_t).unwrap(), &w.view(), EPS, &scratch, DView::of(&out).unwrap(), opts).unwrap()
     };
     ops.sync_on(s).unwrap();
+    // The mixer's scan rebuilds the normalised f32 q and k from the bf16 conv output and stores neither; write
+    // them with `tree_conv1d_silu_qk` (the same arithmetic as the scan's rebuild) so the checks below can inspect
+    // them and feed them to the oracle. It rewrites the same conv output.
+    unsafe {
+        let pv = DView::of(&proj_t).unwrap();
+        tree_conv1d_silu_qk(&plan, pv.columns(0, CONV_DIM).unwrap(), &w.conv_w, scratch.conv_view().unwrap(), &scratch).unwrap()
+    }
+    .sync_on(s)
+    .unwrap();
     Run {
         conv: bf16_to_f64(&download(&scratch.conv, s)),
         q: to_f64(&download(&scratch.q, s)),
@@ -609,5 +630,199 @@ fn plan_update_and_batch_invariance() {
             println!("plan step {step}: request rows bit-identical to a fresh single-request plan: {same}");
             assert!(same, "step {step}: request output depends on the rest of the batch or on plan reuse");
         }
+    });
+}
+
+/// The scan's tuning options (block sizes, warps, inverse blocking) must not change its accuracy: each variant
+/// is held to the default's tolerances against the f64 recurrence. The precision variants (DESIGN §1 "Precision
+/// knobs") are measured against the same oracle and reported; only the default precision must meet the
+/// fp32-grade tolerance, the faster ones are judged by the end-to-end gate.
+#[test]
+fn scan_options_and_precision_variants_vs_f64() {
+    on_test_thread(|| {
+        let ctx = Context::new(0).unwrap();
+        let s = ctx.new_stream().unwrap();
+        let mut rng = Rng(0x2545f4914f6cdd1d);
+        let batch = tree_batch();
+        let segs = &batch.segments;
+        let t = batch.num_tokens();
+        let w = weights(&mut rng);
+        let gw = GpuWeights::new(&w, &s);
+        let proj = projection(t, &mut rng);
+        let base = run_gpu(&proj, segs, &gw, None, &s);
+        // The oracle from the GPU's own scan inputs (conv and prep do not depend on the options).
+        let prep = Prep { q: base.q.clone(), k: base.k.clone(), g: base.g.clone(), beta: base.beta.clone() };
+        let v: Vec<f64> = (0..t).flat_map(|r| base.conv[r * CONV_DIM + 2 * KEY_DIM..][..VALUE_DIM].to_vec()).collect();
+        let (core, states) = scan_ref(&prep, &v, VALUE_DIM, segs, t);
+        let seg_head_rms = segment_head_rms(&core, segs, t);
+        let core_b: Vec<f64> = core.iter().map(|&x| r16(x)).collect();
+        let d = GdnOptions::default();
+        let variants: Vec<(&str, GdnOptions, bool)> = vec![
+            ("default", d, true),
+            ("prefix_bv 16, suffix_bv 128", GdnOptions { prefix_bv: 16, suffix_bv: 128, ..d }, true),
+            ("prefix_bv 64, suffix_bv 32", GdnOptions { prefix_bv: 64, suffix_bv: 32, ..d }, true),
+            ("tp_fsb 2 (doubling only)", GdnOptions { tp_fsb: 2, ..d }, true),
+            ("tp_fsb 64 (substitution only)", GdnOptions { tp_fsb: 64, ..d }, true),
+            ("4 / 8 / 4 warps", GdnOptions { prefix_warps: 4, suffix_warps: 8, tp_warps: 4, ..d }, true),
+            ("precision Tf32", GdnOptions { precision: GdnPrecision::Tf32, ..d }, false),
+            ("precision Bf16Operands", GdnOptions { precision: GdnPrecision::Bf16Operands, ..d }, false),
+            ("precision Fp32StateTf32Output", GdnOptions { precision: GdnPrecision::Fp32StateTf32Output, ..d }, false),
+        ];
+        let mut fails = Vec::new();
+        for (name, opts, gated) in variants {
+            let run = run_gpu_with(&proj, segs, &gw, None, &opts, &s);
+            assert!(run.core.iter().all(|x| x.is_finite()), "{name}: non-finite scan output");
+            // Error beyond one bf16 rounding flip, in units of the (segment, head) rms (the scan tolerance is 5e-4).
+            let worst = run
+                .core
+                .iter()
+                .zip(&core_b)
+                .enumerate()
+                .map(|(i, (g, r))| ((g - r).abs() - ulp16(*r)).max(0.0) / seg_head_rms[i / 128].max(1e-30))
+                .fold(0f64, f64::max);
+            let mut state_worst = 0f64;
+            for (slot, st) in states.iter().enumerate() {
+                let rms = (st.iter().map(|x| x * x).sum::<f64>() / st.len() as f64).sqrt();
+                let got = &run.state[slot * STATE_ELEMS..][..STATE_ELEMS];
+                let e = got.iter().zip(st).map(|(g, r)| (g - r).abs()).fold(0f64, f64::max) / rms;
+                state_worst = state_worst.max(e);
+            }
+            let over = report(&format!("scan out [{name}]"), &run.core, &core_b, "1 bf16 ulp + 5e-4 * seg-head rms", |i, r| {
+                ulp16(r) + 5e-4 * seg_head_rms[i / 128]
+            });
+            println!(
+                "  {name}: max scan error {worst:.2e} x seg-head rms (tol 5e-4), max prefix-state error {state_worst:.2e} x state rms (tol 3e-4){}",
+                if gated { "" } else { " [reported only]" }
+            );
+            if gated && (over > 0 || state_worst > 3e-4) {
+                fails.push(format!("{name}: {over} scan elements over tolerance, state error {state_worst:.2e} x rms"));
+            }
+        }
+        assert!(fails.is_empty(), "failures: {fails:#?}");
+    });
+}
+
+/// The mixer's fused conv (`tree_conv1d_silu_qk`, which also writes normalised q and k) plus `gdn_gates` must
+/// produce bit-identical conv, g and beta to the standalone `tree_conv1d_silu` + `gdn_prep`. q and k use the same
+/// arithmetic, but the per-head sum of squares is reduced over a `[4, 128]` tile in the conv and a `[16, 128]`
+/// tile in `gdn_prep`, and cuTile does not promise the same summation order for both, so they are held to the
+/// f32 level of the f64 prep check (1e-6 relative) instead.
+#[test]
+fn fused_conv_qk_matches_standalone_conv_and_prep() {
+    on_test_thread(|| {
+        let ctx = Context::new(0).unwrap();
+        let s = ctx.new_stream().unwrap();
+        let mut rng = Rng(0x0123456789abcdef);
+        let batch = tree_batch();
+        let segs = &batch.segments;
+        let t = batch.num_tokens();
+        let w = weights(&mut rng);
+        let gw = GpuWeights::new(&w, &s);
+        let proj = projection(t, &mut rng);
+        let fused = run_gpu(&proj, segs, &gw, None, &s);
+        let plan = GdnPlan::new(segs, t, &s).unwrap();
+        let proj_t = upload(to_bf16(&proj), &[t, PROJ_COLS], &s);
+        let pv = DView::of(&proj_t).unwrap();
+        let scratch = GdnScratch::new(t, plan.num_prefixes, &s).unwrap();
+        let conv = scratch.conv_view().unwrap();
+        let a = pv.columns(CONV_DIM + VALUE_DIM, NUM_V_HEADS).unwrap();
+        let b = pv.columns(CONV_DIM + VALUE_DIM + NUM_V_HEADS, NUM_V_HEADS).unwrap();
+        let wv = gw.view();
+        let mut ops = DeviceOpVec::with_capacity(2);
+        unsafe {
+            ops.push(tree_conv1d_silu(&plan, pv.columns(0, CONV_DIM).unwrap(), &gw.conv_w, conv).unwrap());
+            ops.push(gdn_prep(&plan, conv, a, b, &wv, &scratch).unwrap());
+        }
+        ops.sync_on(&s).unwrap();
+        // The engine (I1) labels and replays the scan as four operations (inverse, WY, prefix scan, suffix scan).
+        let mut scan = unsafe {
+            gdn_chunk_scan(&plan, conv.columns(2 * KEY_DIM, VALUE_DIM).unwrap(), &scratch, DView::of(&scratch.core).unwrap()).unwrap()
+        };
+        for i in 0..4 {
+            let _ = scan.remove(0);
+            assert_eq!(scan.last().is_some(), i < 3, "gdn_chunk_scan must return exactly four operations");
+        }
+        // (name, fused, standalone, relative tolerance; 0 = bit-identical)
+        let pairs: [(&str, &[f64], Vec<f64>, f64); 5] = [
+            ("conv", &fused.conv, bf16_to_f64(&download(&scratch.conv, &s)), 0.0),
+            ("q", &fused.q, to_f64(&download(&scratch.q, &s)), 1e-6),
+            ("k", &fused.k, to_f64(&download(&scratch.k, &s)), 1e-6),
+            ("g", &fused.g, to_f64(&download(&scratch.g, &s)), 0.0),
+            ("beta", &fused.beta, to_f64(&download(&scratch.beta, &s)), 0.0),
+        ];
+        for (name, got, want, rel) in pairs {
+            let diff = got.iter().zip(&want).filter(|(a, b)| a != b).count();
+            let over = got.iter().zip(&want).filter(|(a, b)| (*a - *b).abs() > rel * b.abs()).count();
+            let max_rel = got.iter().zip(&want).map(|(a, b)| (a - b).abs() / b.abs().max(1e-30)).fold(0f64, f64::max);
+            println!("fused vs standalone {name}: {diff} of {} elements differ, max rel {max_rel:.2e} (tol {rel:e})", want.len());
+            assert_eq!(over, 0, "{name}: fused conv/prep differs from the standalone kernels beyond {rel:e} relative");
+        }
+    });
+}
+
+/// The mixer's scan (`tree_conv1d_silu_inv` + `gdn_chunk_scan_conv`, q and k rebuilt in the kernels from the bf16
+/// conv output and inverse norms) against the scan over stored f32 q and k (`tree_conv1d_silu_qk` +
+/// `gdn_chunk_scan_with`). The q, k arithmetic is the same, but the two scan kernels are compiled separately and
+/// the compiler is free to contract products into FMAs differently, so they agree at fp32 noise level, not
+/// bitwise (measured on this batch: 329 of 12.5M bf16 outputs and 3% of the f32 state elements differ, states by
+/// at most 1e-5 x rms). Both are checked against the f64 oracle elsewhere; here they are held to the same
+/// tolerances relative to each other.
+#[test]
+fn scan_from_bf16_conv_matches_stored_f32_qk() {
+    on_test_thread(|| {
+        let ctx = Context::new(0).unwrap();
+        let s = ctx.new_stream().unwrap();
+        let mut rng = Rng(0x5eed5eed5eed5eed);
+        let batch = tree_batch();
+        let segs = &batch.segments;
+        let t = batch.num_tokens();
+        let w = weights(&mut rng);
+        let gw = GpuWeights::new(&w, &s);
+        let proj = projection(t, &mut rng);
+        let mixer = run_gpu(&proj, segs, &gw, None, &s);
+        let plan = GdnPlan::new(segs, t, &s).unwrap();
+        let proj_t = upload(to_bf16(&proj), &[t, PROJ_COLS], &s);
+        let pv = DView::of(&proj_t).unwrap();
+        let scratch = GdnScratch::new(t, plan.num_prefixes, &s).unwrap();
+        let conv = scratch.conv_view().unwrap();
+        let core = DView::of(&scratch.core).unwrap();
+        let out = api::zeros::<bf16>(&[t, VALUE_DIM]).sync_on(&s).unwrap();
+        let wv = gw.view();
+        let mut ops = DeviceOpVec::with_capacity(4);
+        unsafe {
+            ops.push(tree_conv1d_silu_qk(&plan, pv.columns(0, CONV_DIM).unwrap(), &gw.conv_w, conv, &scratch).unwrap());
+            let (a, b) = (pv.columns(CONV_DIM + VALUE_DIM, 32).unwrap(), pv.columns(CONV_DIM + VALUE_DIM + 32, 32).unwrap());
+            ops.push(gdn_gates(&plan, conv, a, b, &wv, &scratch).unwrap());
+            let v = conv.columns(2 * KEY_DIM, VALUE_DIM).unwrap();
+            ops.push(gdn_chunk_scan_with(&plan, v, &scratch, core, &GdnOptions::default()).unwrap().map(|_| ()));
+            let z = pv.columns(CONV_DIM, VALUE_DIM).unwrap();
+            ops.push(gated_rmsnorm(&plan, core, z, &gw.norm_w, EPS, DView::of(&out).unwrap()).unwrap());
+        }
+        ops.sync_on(&s).unwrap();
+        let ref_core = bf16_to_f64(&download(&scratch.core, &s));
+        let ref_state = to_f64(&download(&scratch.state, &s));
+        let ref_out = bf16_to_f64(&download(&out, &s));
+        let diff = |a: &[f64], b: &[f64]| a.iter().zip(b).filter(|(x, y)| x != y).count();
+        println!(
+            "bf16-conv scan vs stored f32 q, k: {} scan outputs, {} state elements, {} mixer outputs differ",
+            diff(&mixer.core, &ref_core),
+            diff(&mixer.state, &ref_state),
+            diff(&mixer.out, &ref_out)
+        );
+        let seg_head_rms = segment_head_rms(&ref_core, segs, t);
+        let mut over = report("scan out: bf16 conv vs f32 q, k", &mixer.core, &ref_core, "1 bf16 ulp + 5e-4 * seg-head rms", |i, r| {
+            ulp16(r) + 5e-4 * seg_head_rms[i / 128]
+        });
+        for slot in 0..plan.num_prefixes {
+            let st = &ref_state[slot * STATE_ELEMS..][..STATE_ELEMS];
+            let rms = (st.iter().map(|x| x * x).sum::<f64>() / st.len() as f64).sqrt();
+            let name = format!("prefix {slot} state: bf16 conv vs f32 q, k");
+            over += report(&name, &mixer.state[slot * STATE_ELEMS..][..STATE_ELEMS], st, "3e-4 * state rms", |_, _| 3e-4 * rms);
+        }
+        let out_rms = (ref_out.iter().map(|x| x * x).sum::<f64>() / ref_out.len() as f64).sqrt();
+        over += report("mixer out: bf16 conv vs f32 q, k", &mixer.out, &ref_out, "4 bf16 ulp + 1e-2 * out rms", |_, r| {
+            4.0 * ulp16(r) + 1e-2 * out_rms
+        });
+        assert_eq!(over, 0, "the scan from the bf16 conv differs from the scan over stored f32 q, k beyond fp32 noise");
     });
 }

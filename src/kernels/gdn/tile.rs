@@ -42,6 +42,23 @@ pub mod gdn_tile {
         mma(a_hi, b_hi, acc)
     }
 
+    /// `a @ b + acc` at the precision selected by `SPLIT` / `E`: `SPLIT == 3` is [`mma_f32x3`] (fp32-grade);
+    /// otherwise both operands are rounded once to `E` (tf32 or bf16) and multiplied on the tensor cores with
+    /// fp32 accumulation.
+    fn mma_p<E: ElementType, const SPLIT: i32, const M: i32, const N: i32, const K: i32>(
+        a: Tile<f32, { [M, K] }>,
+        b: Tile<f32, { [K, N] }>,
+        acc: Tile<f32, { [M, N] }>,
+    ) -> Tile<f32, { [M, N] }> {
+        if SPLIT == 3i32 {
+            mma_f32x3(a, b, acc)
+        } else {
+            let ae: Tile<E, { [M, K] }> = convert_tile(a);
+            let be: Tile<E, { [K, N] }> = convert_tile(b);
+            mma(ae, be, acc)
+        }
+    }
+
     fn silu_f32<const S: [i32; 2]>(x: Tile<f32, S>) -> Tile<f32, S> {
         let one: Tile<f32, S> = constant(1.0f32, x.shape());
         true_div(x, one + exp(negf(x)))
@@ -54,12 +71,15 @@ pub mod gdn_tile {
     /// out: `[T, C]` bf16 with row stride `out_stride`. Rounding follows the reference's torch fallback
     /// (`causal_conv1d_fn`): fp32 accumulate, round to bf16, SiLU in fp32, round to bf16.
     #[cutile::entry(unchecked_accesses = true)]
-    pub unsafe fn tree_conv1d_silu<const C: i32, const BC: i32>(
+    pub unsafe fn tree_conv1d_silu<const C: i32, const BC: i32, const HB: i32, const QK: i32>(
         x_ptr: *mut bf16,
         x_stride: i32,
         w_ptr: *mut bf16,
         out_ptr: *mut bf16,
         out_stride: i32,
+        q_ptr: *mut f32,
+        k_ptr: *mut f32,
+        inv_ptr: *mut f32,
         chunks_ptr: *mut i32,
         max_chunks: i32,
         tokens: i32,
@@ -98,6 +118,29 @@ pub mod gdn_tile {
             let out: Tensor<bf16, { [-1, -1] }> = unsafe { make_tensor_view(out_base, out_shape, out_strides, tok) };
             let mut out_part: PartitionMut<bf16, { [1, BC] }> =
                 unsafe { out.partition_full_mut(const_shape![1, BC]) };
+            // QK == 1: channel blocks of q (0..2048) or k (2048..4096) also write the L2-normalised f32 rows that
+            // `gdn_prep` would compute (same arithmetic), so the mixer does not read them back.
+            // q and k viewed as [T * 16, 128] (row = token * 16 + head), stored [HB, 128] at a time.
+            // QK == 2: they write only the inverse norms, `inv [T, 32]` (q heads, then k heads): the scan rebuilds
+            // the same f32 rows from the bf16 conv output (`qk_rows`).
+            let is_q: bool = QK >= 1i32 && cb * BC < 2048i32;
+            let is_k: bool = QK >= 1i32 && cb * BC >= 2048i32 && cb * BC < 4096i32;
+            let inv_shape: Shape<{ [-1, -1] }> = Shape::<{ [-1, -1] }> { dims: &[tokens, 32i32] };
+            let inv_strides: Array<{ [-1, 1] }> = Array::<{ [-1, 1] }> { dims: &[32i32] };
+            let inv_out: Tensor<f32, { [-1, -1] }> = unsafe { make_tensor_view(pointer_to_tile(inv_ptr), inv_shape, inv_strides, tok) };
+            let mut inv_part: PartitionMut<f32, { [1, HB] }> = unsafe { inv_out.partition_full_mut(const_shape![1, HB]) };
+            let hd_shape: Shape<{ [-1, -1] }> = Shape::<{ [-1, -1] }> { dims: &[tokens * 16i32, 128i32] };
+            let hd_strides: Array<{ [-1, 1] }> = Array::<{ [-1, 1] }> { dims: &[128i32] };
+            let q_out: Tensor<f32, { [-1, -1] }> = unsafe { make_tensor_view(pointer_to_tile(q_ptr), hd_shape, hd_strides, tok) };
+            let hd_shape2: Shape<{ [-1, -1] }> = Shape::<{ [-1, -1] }> { dims: &[tokens * 16i32, 128i32] };
+            let hd_strides2: Array<{ [-1, 1] }> = Array::<{ [-1, 1] }> { dims: &[128i32] };
+            let k_out: Tensor<f32, { [-1, -1] }> = unsafe { make_tensor_view(pointer_to_tile(k_ptr), hd_shape2, hd_strides2, tok) };
+            let mut q_part: PartitionMut<f32, { [HB, 128] }> =
+                unsafe { q_out.partition_full_mut(const_shape![HB, 128]) };
+            let mut k_part: PartitionMut<f32, { [HB, 128] }> =
+                unsafe { k_out.partition_full_mut(const_shape![HB, 128]) };
+            // First head of this channel block within q (or k).
+            let head0: i32 = (cb * BC) / 128i32 - if is_k { 16i32 } else { 0i32 };
             let zero: Tile<f32, { [1, BC] }> = constant(0.0f32, const_shape![1, BC]);
             // Sliding window of the three causal predecessors, oldest first.
             let mut h0: Tile<f32, { [1, BC] }> = if prev_avail >= 3i32 {
@@ -128,6 +171,27 @@ pub mod gdn_tile {
                 let conv_f: Tile<f32, { [1, BC] }> = convert_tile(conv);
                 let act: Tile<bf16, { [1, BC] }> = convert_tile(silu_f32(conv_f));
                 out_part.store(act, [start + i, cb]);
+                if is_q || is_k {
+                    let a: Tile<f32, { [1, BC] }> = convert_tile(act);
+                    let a: Tile<f32, { [HB, 128] }> = a.reshape(const_shape![HB, 128]);
+                    let ss: Tile<f32, { [HB] }> = reduce_sum(a * a, 1i32);
+                    let eps: Tile<f32, { [HB, 1] }> = constant(1e-6f32, const_shape![HB, 1]);
+                    let inv: Tile<f32, { [HB, 1] }> =
+                        rsqrt(ss.reshape(const_shape![HB, 1]) + eps, ftz::Disabled);
+                    if QK == 2i32 {
+                        // Column block cb of inv: q heads 4cb.. for cb < 4, k heads 16 + 4(cb - 4).. after.
+                        inv_part.store(inv.reshape(const_shape![1, HB]), [start + i, cb]);
+                    } else {
+                        let n: Tile<f32, { [HB, 128] }> = a * inv.broadcast(const_shape![HB, 128]);
+                        let idx: i32 = ((start + i) * 16i32 + head0) / HB;
+                        if is_q {
+                            let sc: Tile<f32, { [HB, 128] }> = constant(0.08838834764831845f32, const_shape![HB, 128]);
+                            q_part.store(n * sc, [idx, 0i32]);
+                        } else {
+                            k_part.store(n, [idx, 0i32]);
+                        }
+                    }
+                }
                 h0 = h1;
                 h1 = h2;
                 h2 = xi;
@@ -141,7 +205,7 @@ pub mod gdn_tile {
     /// Grid `(ceil(T / BR), 16, 1)`. qkv: conv output `[T, 8192]` bf16 (q at column 0, k at 2048), row stride
     /// `qkv_stride`. a, b: `[T, 32]` bf16 column views with row strides `a_stride`, `b_stride`.
     #[cutile::entry(unchecked_accesses = true)]
-    pub unsafe fn gdn_prep<const BR: i32>(
+    pub unsafe fn gdn_prep<const BR: i32, const QK: i32>(
         qkv_ptr: *mut bf16,
         qkv_stride: i32,
         a_ptr: *mut bf16,
@@ -165,29 +229,32 @@ pub mod gdn_tile {
         let qkv_strides: Array<{ [-1, 1] }> = Array::<{ [-1, 1] }> { dims: &[qkv_stride] };
         let qkv: Tensor<bf16, { [-1, -1] }> = unsafe { make_tensor_view(qkv_base, qkv_shape, qkv_strides, tok) };
         let qkv_part: Partition<bf16, { [BR, 128] }> = qkv.partition(const_shape![BR, 128]);
-        let q_out_base: PointerTile<*mut f32, { [] }> = pointer_to_tile(q_ptr);
-        let q_out_shape: Shape<{ [-1, -1] }> = Shape::<{ [-1, -1] }> { dims: &[tokens, 2048i32] };
-        let q_out_strides: Array<{ [-1, 1] }> = Array::<{ [-1, 1] }> { dims: &[2048i32] };
-        let q_out: Tensor<f32, { [-1, -1] }> = unsafe { make_tensor_view(q_out_base, q_out_shape, q_out_strides, tok) };
-        let k_out_base: PointerTile<*mut f32, { [] }> = pointer_to_tile(k_ptr);
-        let k_out_shape: Shape<{ [-1, -1] }> = Shape::<{ [-1, -1] }> { dims: &[tokens, 2048i32] };
-        let k_out_strides: Array<{ [-1, 1] }> = Array::<{ [-1, 1] }> { dims: &[2048i32] };
-        let k_out: Tensor<f32, { [-1, -1] }> = unsafe { make_tensor_view(k_out_base, k_out_shape, k_out_strides, tok) };
-        let mut q_part: PartitionMut<f32, { [BR, 128] }> = unsafe { q_out.partition_full_mut(const_shape![BR, 128]) };
-        let mut k_part: PartitionMut<f32, { [BR, 128] }> = unsafe { k_out.partition_full_mut(const_shape![BR, 128]) };
-        let eps: Tile<f32, { [BR, 1] }> = constant(1e-6f32, const_shape![BR, 1]);
-        let scale: Tile<f32, { [BR, 128] }> = constant(0.08838834764831845f32, const_shape![BR, 128]);
+        // QK == 0: q and k come from the fused conv (`tree_conv1d_silu` with QK); only the gates are computed.
+        if QK == 1i32 {
+            let q_out_base: PointerTile<*mut f32, { [] }> = pointer_to_tile(q_ptr);
+            let q_out_shape: Shape<{ [-1, -1] }> = Shape::<{ [-1, -1] }> { dims: &[tokens, 2048i32] };
+            let q_out_strides: Array<{ [-1, 1] }> = Array::<{ [-1, 1] }> { dims: &[2048i32] };
+            let q_out: Tensor<f32, { [-1, -1] }> = unsafe { make_tensor_view(q_out_base, q_out_shape, q_out_strides, tok) };
+            let k_out_base: PointerTile<*mut f32, { [] }> = pointer_to_tile(k_ptr);
+            let k_out_shape: Shape<{ [-1, -1] }> = Shape::<{ [-1, -1] }> { dims: &[tokens, 2048i32] };
+            let k_out_strides: Array<{ [-1, 1] }> = Array::<{ [-1, 1] }> { dims: &[2048i32] };
+            let k_out: Tensor<f32, { [-1, -1] }> = unsafe { make_tensor_view(k_out_base, k_out_shape, k_out_strides, tok) };
+            let mut q_part: PartitionMut<f32, { [BR, 128] }> = unsafe { q_out.partition_full_mut(const_shape![BR, 128]) };
+            let mut k_part: PartitionMut<f32, { [BR, 128] }> = unsafe { k_out.partition_full_mut(const_shape![BR, 128]) };
+            let eps: Tile<f32, { [BR, 1] }> = constant(1e-6f32, const_shape![BR, 1]);
+            let scale: Tile<f32, { [BR, 128] }> = constant(0.08838834764831845f32, const_shape![BR, 128]);
 
-        let q: Tile<f32, { [BR, 128] }> = convert_tile(qkv_part.load([rb, hk]));
-        let q_ss: Tile<f32, { [BR] }> = reduce_sum(q * q, 1i32);
-        let q_inv: Tile<f32, { [BR, 1] }> = rsqrt(q_ss.reshape(const_shape![BR, 1]) + eps, ftz::Disabled);
-        let q_n: Tile<f32, { [BR, 128] }> = q * q_inv.broadcast(const_shape![BR, 128]);
-        q_part.store(q_n * scale, [rb, hk]);
+            let q: Tile<f32, { [BR, 128] }> = convert_tile(qkv_part.load([rb, hk]));
+            let q_ss: Tile<f32, { [BR] }> = reduce_sum(q * q, 1i32);
+            let q_inv: Tile<f32, { [BR, 1] }> = rsqrt(q_ss.reshape(const_shape![BR, 1]) + eps, ftz::Disabled);
+            let q_n: Tile<f32, { [BR, 128] }> = q * q_inv.broadcast(const_shape![BR, 128]);
+            q_part.store(q_n * scale, [rb, hk]);
 
-        let k: Tile<f32, { [BR, 128] }> = convert_tile(qkv_part.load([rb, hk + 16i32]));
-        let k_ss: Tile<f32, { [BR] }> = reduce_sum(k * k, 1i32);
-        let k_inv: Tile<f32, { [BR, 1] }> = rsqrt(k_ss.reshape(const_shape![BR, 1]) + eps, ftz::Disabled);
-        k_part.store(k * k_inv.broadcast(const_shape![BR, 128]), [rb, hk]);
+            let k: Tile<f32, { [BR, 128] }> = convert_tile(qkv_part.load([rb, hk + 16i32]));
+            let k_ss: Tile<f32, { [BR] }> = reduce_sum(k * k, 1i32);
+            let k_inv: Tile<f32, { [BR, 1] }> = rsqrt(k_ss.reshape(const_shape![BR, 1]) + eps, ftz::Disabled);
+            k_part.store(k * k_inv.broadcast(const_shape![BR, 128]), [rb, hk]);
+        }
 
         if hk == 0i32 {
             let a_base: PointerTile<*mut bf16, { [] }> = pointer_to_tile(a_ptr);
@@ -263,6 +330,36 @@ pub mod gdn_tile {
         let tab: Tensor<i32, { [-1] }> = unsafe { make_tensor_view(base, shape, strides, tok) };
         let part: Partition<i32, { [1] }> = tab.partition(const_shape![1]);
         (table_at(&part, c * 4i32), table_at(&part, c * 4i32 + 1i32))
+    }
+
+    /// A `[rows, cols]` bf16 view starting at row `r0` of a row-major buffer with row stride `stride`.
+    fn rows_bf16(ptr: *mut bf16, r0: i32, rows: i32, cols: i32, stride: i32, tok: Token) -> Tensor<bf16, { [-1, -1] }> {
+        let base: PointerTile<*mut bf16, { [] }> = addptr(pointer_to_tile(ptr), r0 * stride);
+        let shape: Shape<{ [-1, -1] }> = Shape::<{ [-1, -1] }> { dims: &[rows, cols] };
+        let strides: Array<{ [-1, 1] }> = Array::<{ [-1, 1] }> { dims: &[stride] };
+        unsafe { make_tensor_view(base, shape, strides, tok) }
+    }
+
+    /// One `[64, 32]` block of normalised q or k rows. `QKB == 0`: read from the f32 buffer (`f32_part` at
+    /// `[r, col]`, `gdn_prep` layout). `QKB == 1`: rebuilt from the bf16 conv output (`bf_part` at `[r, col_bf]`)
+    /// with the conv's arithmetic, `(x * inv) * scale` (`inv`: the row's inverse norm from `tree_conv1d_silu`
+    /// with QK == 2; `scale`: 128^-0.5 for q, 1 for k), so the f32 values are bit-identical to the stored ones.
+    fn qk_block<const QKB: i32>(
+        f32_part: &Partition<f32, { [64, 32] }>,
+        bf_part: &Partition<bf16, { [64, 32] }>,
+        r: i32,
+        col: i32,
+        col_bf: i32,
+        inv: Tile<f32, { [64, 32] }>,
+        scale: Tile<f32, { [64, 32] }>,
+    ) -> Tile<f32, { [64, 32] }> {
+        if QKB == 1i32 {
+            let x: Tile<bf16, { [64, 32] }> = bf_part.load([r, col_bf]);
+            let x: Tile<f32, { [64, 32] }> = convert_tile(x);
+            (x * inv) * scale
+        } else {
+            f32_part.load([r, col])
+        }
     }
 
     /// Phase A1 of the chunked gated delta rule, parallel over (chunk, v-head): the UT system's inverse.
@@ -518,6 +615,299 @@ pub mod gdn_tile {
                 s2 = mma_f32x3(k2.transpose(), v_new, s2 * cdb);
                 let k3: Tile<f32, { [64, 32] }> = kd_part.load([c, kc + 3i32]);
                 s3 = mma_f32x3(k3.transpose(), v_new, s3 * cdb);
+            }
+            if phase == 0i32 {
+                let mut sp: PartitionMut<f32, { [32, BV] }> = unsafe { state.partition_full_mut(const_shape![32, BV]) };
+                sp.store(s0, [srow, vb]);
+                sp.store(s1, [srow + 1i32, vb]);
+                sp.store(s2, [srow + 2i32, vb]);
+                sp.store(s3, [srow + 3i32, vb]);
+            }
+        }
+    }
+
+    /// Phase A of the chunked gated delta rule (P1), parallel over (chunk, v-head): the two `[64, 64]` operands
+    /// that need the whole chunk, with `cum` the in-chunk cumulative sum of g and `D[i, j] = exp(cum_i - cum_j)`:
+    /// - `Tinv = (I + A)^-1` for `A = strict_lower((k*beta) k^T ⊙ D)`, the reference's unit lower-triangular
+    ///   solve, by block doubling (fla's `solve_tril` merges 16x16 blocks the same way): with `T_b` the inverse
+    ///   of the `b`-block-diagonal part of `I + A` and `E_b` the part of `A` inside the `2b`-blocks but outside
+    ///   the `b`-blocks, `T_2b = T_b - T_b (E_b T_b)`. From `T_2 = I - E_1`, five doublings (ten `[64, 64]`
+    ///   MMAs) reach `T_64`, with no sequential row loop.
+    /// - `p = lower_incl((q k^T) ⊙ D)`, the masked intra-chunk attention.
+    ///
+    /// Grid `(32, max_chunks, 1)` (heads fastest). q, k: `[T, 2048]` f32; g, beta: `[T, 32]` f32; tinv, p out: `[T, 32 * 64]` f32
+    /// (row i of the chunk at row start + i, columns h*64..).
+    #[cutile::entry(unchecked_accesses = true)]
+    pub unsafe fn gdn_chunk_tp<
+        E: ElementType,
+        const SPLIT: i32,
+        EO: ElementType,
+        const SPLIT_O: i32,
+        const FSB: i32,
+        const QKB: i32,
+    >(
+        q_ptr: *mut f32,
+        k_ptr: *mut f32,
+        conv_ptr: *mut bf16,
+        conv_stride: i32,
+        inv_ptr: *mut f32,
+        g_ptr: *mut f32,
+        beta_ptr: *mut f32,
+        tinv_ptr: *mut f32,
+        p_ptr: *mut f32,
+        chunks_ptr: *mut i32,
+        max_chunks: i32,
+    ) {
+        let pid: (i32, i32, i32) = get_tile_block_id();
+        let h = pid.0;
+        let tok: Token = new_token_unordered();
+        let (start, len): (i32, i32) = chunk_at(chunks_ptr, max_chunks, pid.1, tok);
+        if len > 0i32 {
+            let g: Tensor<f32, { [-1, -1] }> = rows_f32(g_ptr, start, len, 32i32, 32i32, tok);
+            let beta: Tensor<f32, { [-1, -1] }> = rows_f32(beta_ptr, start, len, 32i32, 32i32, tok);
+            let gt: Tile<f32, { [64, 1] }> = g.partition(const_shape![64, 1]).load([0i32, h]);
+            let bt: Tile<f32, { [64, 1] }> = beta.partition(const_shape![64, 1]).load([0i32, h]);
+            let cum: Tile<f32, { [64, 1] }> = scan_sum(gt, 0i32, reverse::Forward, 0.0f32);
+            let idx: Tile<i32, { [64] }> = iota(const_shape![64]);
+            let rows: Tile<i32, { [64, 64] }> = idx.reshape(const_shape![64, 1]).broadcast(const_shape![64, 64]);
+            let cols: Tile<i32, { [64, 64] }> = idx.reshape(const_shape![1, 64]).broadcast(const_shape![64, 64]);
+            let zero: Tile<f32, { [64, 64] }> = constant(0.0f32, const_shape![64, 64]);
+            let one: Tile<f32, { [64, 64] }> = constant(1.0f32, const_shape![64, 64]);
+            let cum_i: Tile<f32, { [64, 64] }> = cum.broadcast(const_shape![64, 64]);
+            let cum_j: Tile<f32, { [64, 64] }> = cum.reshape(const_shape![1, 64]).broadcast(const_shape![64, 64]);
+            let d: Tile<f32, { [64, 64] }> = exp(cum_i - cum_j);
+            // (k*beta) k^T and q k^T over four [64, 32] column blocks of the k-head (keeps operands small).
+            let k: Tensor<f32, { [-1, -1] }> = rows_f32(k_ptr, start, len, 2048i32, 2048i32, tok);
+            let q: Tensor<f32, { [-1, -1] }> = rows_f32(q_ptr, start, len, 2048i32, 2048i32, tok);
+            let k_part: Partition<f32, { [64, 32] }> = k.partition(const_shape![64, 32]);
+            let q_part: Partition<f32, { [64, 32] }> = q.partition(const_shape![64, 32]);
+            let conv: Tensor<bf16, { [-1, -1] }> = rows_bf16(conv_ptr, start, len, 4096i32, conv_stride, tok);
+            let conv_part: Partition<bf16, { [64, 32] }> = conv.partition(const_shape![64, 32]);
+            let inv: Tensor<f32, { [-1, -1] }> = rows_f32(inv_ptr, start, len, 32i32, 32i32, tok);
+            let inv_part: Partition<f32, { [64, 1] }> = inv.partition(const_shape![64, 1]);
+            let hk = h / 2i32;
+            let q_sc: Tile<f32, { [64, 32] }> = constant(0.08838834764831845f32, const_shape![64, 32]);
+            let k_sc: Tile<f32, { [64, 32] }> = constant(1.0f32, const_shape![64, 32]);
+            let (q_inv, k_inv): (Tile<f32, { [64, 32] }>, Tile<f32, { [64, 32] }>) = if QKB == 1i32 {
+                let qi: Tile<f32, { [64, 1] }> = inv_part.load([0i32, hk]);
+                let ki: Tile<f32, { [64, 1] }> = inv_part.load([0i32, hk + 16i32]);
+                (qi.broadcast(const_shape![64, 32]), ki.broadcast(const_shape![64, 32]))
+            } else {
+                (k_sc, k_sc)
+            };
+            let kc = hk * 4i32;
+            let bs: Tile<f32, { [64, 32] }> = bt.broadcast(const_shape![64, 32]);
+            let mut kk: Tile<f32, { [64, 64] }> = zero;
+            let mut qk: Tile<f32, { [64, 64] }> = zero;
+            for j in 0i32..4i32 {
+                let kj: Tile<f32, { [64, 32] }> = qk_block::<QKB>(&k_part, &conv_part, 0i32, kc + j, 64i32 + kc + j, k_inv, k_sc);
+                let kjt: Tile<f32, { [32, 64] }> = kj.transpose();
+                kk = mma_p::<E, SPLIT, 64, 64, 32>(kj * bs, kjt, kk);
+                let qj: Tile<f32, { [64, 32] }> = qk_block::<QKB>(&q_part, &conv_part, 0i32, kc + j, kc + j, q_inv, q_sc);
+                qk = mma_p::<EO, SPLIT_O, 64, 64, 32>(qj, kjt, qk);
+            }
+            let p: Tile<f32, { [64, 64] }> = select(ge_tile(rows, cols), qk * d, zero);
+            let p_out: Tensor<f32, { [-1, -1] }> = rows_f32(p_ptr, start, len, 2048i32, 2048i32, tok);
+            let mut p_part: PartitionMut<f32, { [64, 64] }> = unsafe { p_out.partition_full_mut(const_shape![64, 64]) };
+            p_part.store(p, [0i32, h]);
+            let a: Tile<f32, { [64, 64] }> = select(gt_tile(rows, cols), kk * d, zero);
+
+            // With x = row ^ col, (i, j) share a b-block iff x < b (b a power of two).
+            let x: Tile<i32, { [64, 64] }> = xori(rows, cols);
+            let ident: Tile<f32, { [64, 64] }> = select(eq_tile(rows, cols), one, zero);
+            // 1. Inverse of the FSB-block-diagonal part by forward substitution, all 64 / FSB blocks at once: step
+            //    i updates row i of every block, T[r, :] -= sum_j A[r, j] T[j, :]. Within a block at most one
+            //    row is selected and T is block-diagonal, so one column reduction serves every block.
+            let fsb: Tile<i32, { [64, 64] }> = broadcast_scalar(FSB, const_shape![64, 64]);
+            let same: Tile<bool, { [64, 64] }> = lt_tile(x, fsb);
+            let a_blk: Tile<f32, { [64, 64] }> = select(same, a, zero);
+            let in_blk: Tile<i32, { [64, 64] }> = andi(rows, broadcast_scalar(FSB - 1i32, const_shape![64, 64]));
+            let mut tinv: Tile<f32, { [64, 64] }> = ident;
+            for i in 1i32..FSB {
+                let sel: Tile<bool, { [64, 64] }> = eq_tile(in_blk, broadcast_scalar(i, const_shape![64, 64]));
+                let a_sel: Tile<f32, { [64] }> = reduce_sum(select(sel, a_blk, zero), 0i32);
+                let contrib: Tile<f32, { [64] }> =
+                    reduce_sum(a_sel.reshape(const_shape![64, 1]).broadcast(const_shape![64, 64]) * tinv, 0i32);
+                let cb: Tile<f32, { [64, 64] }> = contrib.reshape(const_shape![1, 64]).broadcast(const_shape![64, 64]);
+                tinv = select(sel, select(same, tinv - cb, tinv), tinv);
+            }
+            // 2. Block doubling (fla's `solve_tril` merges blocks the same way): with E_b the part of A inside the
+            //    2b-blocks but outside the b-blocks (b <= x < 2b, i.e. (x & -b) == b), T_2b = T_b - T_b (E_b T_b).
+            let mut b: i32 = FSB;
+            for _step in 0i32..6i32 {
+                if b < 64i32 {
+                    let bt_: Tile<i32, { [64, 64] }> = broadcast_scalar(b, const_shape![64, 64]);
+                    let nb: Tile<i32, { [64, 64] }> = broadcast_scalar(0i32 - b, const_shape![64, 64]);
+                    let e: Tile<f32, { [64, 64] }> = select(eq_tile(andi(x, nb), bt_), a, zero);
+                    let m: Tile<f32, { [64, 64] }> = mma_p::<E, SPLIT, 64, 64, 64>(e, tinv, zero);
+                    tinv = mma_p::<E, SPLIT, 64, 64, 64>(negf(tinv), m, tinv);
+                }
+                b = b * 2i32;
+            }
+            let out: Tensor<f32, { [-1, -1] }> = rows_f32(tinv_ptr, start, len, 2048i32, 2048i32, tok);
+            let mut part: PartitionMut<f32, { [64, 64] }> = unsafe { out.partition_full_mut(const_shape![64, 64]) };
+            part.store(tinv, [0i32, h]);
+        }
+    }
+
+    /// Phase B of the chunked gated delta rule (P1): the sequential inter-chunk scan of one segment, one v-head
+    /// and one block of BV value columns. It recomputes every per-chunk operand from q, k, v, g, beta and phase
+    /// A's `Tinv` and `p` instead of reading stored WY intermediates. Per chunk, with `cum` the in-chunk
+    /// cumulative sum of g:
+    /// ```text
+    /// v_new = Tinv ((v*beta) - (k*beta*exp(cum)) S)        (= u - w S of the reference, re-associated)
+    /// o     = (q*exp(cum)) S + p v_new
+    /// S     = exp(sum g) S + (k*exp(sum_{j>i} g_j))^T v_new
+    /// ```
+    /// Only segments whose table `phase` equals `phase` run. Prefixes (phase 0) start from zero and write their
+    /// final state to `state[slot]`; suffixes (phase 1) start from `state[slot]` and write nothing.
+    /// Grid `(128 / BV, 32, max_segs)` (value blocks fastest). q, k: `[T, 2048]` f32; v: `[T, 4096]` bf16 view (row stride
+    /// `v_stride`); g, beta: `[T, 32]` f32; tinv, p: `[T, 32 * 64]` f32; state: `[slots, 32, 128, 128]` f32;
+    /// out: `[T, 4096]` bf16 with row stride `out_stride`.
+    #[cutile::entry(unchecked_accesses = true)]
+    pub unsafe fn gdn_chunk_scan_fused<
+        E: ElementType,
+        const SPLIT: i32,
+        EO: ElementType,
+        const SPLIT_O: i32,
+        const BV: i32,
+        const QKB: i32,
+    >(
+        q_ptr: *mut f32,
+        k_ptr: *mut f32,
+        conv_ptr: *mut bf16,
+        conv_stride: i32,
+        inv_ptr: *mut f32,
+        v_ptr: *mut bf16,
+        v_stride: i32,
+        g_ptr: *mut f32,
+        beta_ptr: *mut f32,
+        tinv_ptr: *mut f32,
+        p_ptr: *mut f32,
+        state_ptr: *mut f32,
+        out_ptr: *mut bf16,
+        out_stride: i32,
+        segs_ptr: *mut i32,
+        max_segs: i32,
+        num_slots: i32,
+        phase: i32,
+    ) {
+        let pid: (i32, i32, i32) = get_tile_block_id();
+        let h = pid.1;
+        let hk = h / 2i32;
+        let vb = pid.0;
+        let vcol = h * (128i32 / BV) + vb;
+        let tok: Token = new_token_unordered();
+        let tab_base: PointerTile<*mut i32, { [] }> = pointer_to_tile(segs_ptr);
+        let tab_shape: Shape<{ [-1] }> = Shape::<{ [-1] }> { dims: &[max_segs * 4i32] };
+        let tab_strides: Array<{ [1] }> = Array::<{ [1] }> { dims: &[] };
+        let tab: Tensor<i32, { [-1] }> = unsafe { make_tensor_view(tab_base, tab_shape, tab_strides, tok) };
+        let tab_part: Partition<i32, { [1] }> = tab.partition(const_shape![1]);
+        let seg_start: i32 = table_at(&tab_part, pid.2 * 4i32);
+        let seg_len: i32 = table_at(&tab_part, pid.2 * 4i32 + 1i32);
+        let seg_phase: i32 = table_at(&tab_part, pid.2 * 4i32 + 2i32);
+        let slot: i32 = table_at(&tab_part, pid.2 * 4i32 + 3i32);
+        if seg_phase == phase {
+            // state viewed as [slots * 32 * 128, 128] in [32, BV] tiles, held as four row blocks (k rows
+            // 32j..32j+32); (slot, h) rows start at tile row (slot * 32 + h) * 4. The [64, 128] operands are
+            // streamed as [64, 32] column blocks, so no MMA operand (with its TF32 hi/lo split) is larger than
+            // [64, 64] and the kernel stays in registers.
+            let state: Tensor<f32, { [-1, -1] }> = rows_f32(state_ptr, 0i32, num_slots * 4096i32, 128i32, 128i32, tok);
+            let srow: i32 = (slot * 32i32 + h) * 4i32;
+            let state_part: Partition<f32, { [32, BV] }> = state.partition(const_shape![32, BV]);
+            let zero_s: Tile<f32, { [32, BV] }> = constant(0.0f32, const_shape![32, BV]);
+            let mut s0: Tile<f32, { [32, BV] }> = if phase == 0i32 { zero_s } else { state_part.load([srow, vb]) };
+            let mut s1: Tile<f32, { [32, BV] }> = if phase == 0i32 { zero_s } else { state_part.load([srow + 1i32, vb]) };
+            let mut s2: Tile<f32, { [32, BV] }> = if phase == 0i32 { zero_s } else { state_part.load([srow + 2i32, vb]) };
+            let mut s3: Tile<f32, { [32, BV] }> = if phase == 0i32 { zero_s } else { state_part.load([srow + 3i32, vb]) };
+            let zero_o: Tile<f32, { [64, BV] }> = constant(0.0f32, const_shape![64, BV]);
+            let q: Tensor<f32, { [-1, -1] }> = rows_f32(q_ptr, seg_start, seg_len, 2048i32, 2048i32, tok);
+            let k: Tensor<f32, { [-1, -1] }> = rows_f32(k_ptr, seg_start, seg_len, 2048i32, 2048i32, tok);
+            let tinv: Tensor<f32, { [-1, -1] }> = rows_f32(tinv_ptr, seg_start, seg_len, 2048i32, 2048i32, tok);
+            let p: Tensor<f32, { [-1, -1] }> = rows_f32(p_ptr, seg_start, seg_len, 2048i32, 2048i32, tok);
+            let g: Tensor<f32, { [-1, -1] }> = rows_f32(g_ptr, seg_start, seg_len, 32i32, 32i32, tok);
+            let beta: Tensor<f32, { [-1, -1] }> = rows_f32(beta_ptr, seg_start, seg_len, 32i32, 32i32, tok);
+            let v_base: PointerTile<*mut bf16, { [] }> = addptr(pointer_to_tile(v_ptr), seg_start * v_stride);
+            let v_shape: Shape<{ [-1, -1] }> = Shape::<{ [-1, -1] }> { dims: &[seg_len, 4096i32] };
+            let v_strides: Array<{ [-1, 1] }> = Array::<{ [-1, 1] }> { dims: &[v_stride] };
+            let v: Tensor<bf16, { [-1, -1] }> = unsafe { make_tensor_view(v_base, v_shape, v_strides, tok) };
+            let out_base: PointerTile<*mut bf16, { [] }> = addptr(pointer_to_tile(out_ptr), seg_start * out_stride);
+            let out_shape: Shape<{ [-1, -1] }> = Shape::<{ [-1, -1] }> { dims: &[seg_len, 4096i32] };
+            let out_strides: Array<{ [-1, 1] }> = Array::<{ [-1, 1] }> { dims: &[out_stride] };
+            let out: Tensor<bf16, { [-1, -1] }> = unsafe { make_tensor_view(out_base, out_shape, out_strides, tok) };
+            let q_part: Partition<f32, { [64, 32] }> = q.partition(const_shape![64, 32]);
+            let k_part: Partition<f32, { [64, 32] }> = k.partition(const_shape![64, 32]);
+            let conv: Tensor<bf16, { [-1, -1] }> = rows_bf16(conv_ptr, seg_start, seg_len, 4096i32, conv_stride, tok);
+            let conv_part: Partition<bf16, { [64, 32] }> = conv.partition(const_shape![64, 32]);
+            let inv: Tensor<f32, { [-1, -1] }> = rows_f32(inv_ptr, seg_start, seg_len, 32i32, 32i32, tok);
+            let inv_part: Partition<f32, { [64, 1] }> = inv.partition(const_shape![64, 1]);
+            let q_sc: Tile<f32, { [64, 32] }> = constant(0.08838834764831845f32, const_shape![64, 32]);
+            let k_sc: Tile<f32, { [64, 32] }> = constant(1.0f32, const_shape![64, 32]);
+            let tinv_part: Partition<f32, { [64, 64] }> = tinv.partition(const_shape![64, 64]);
+            let p_part: Partition<f32, { [64, 64] }> = p.partition(const_shape![64, 64]);
+            let g_part: Partition<f32, { [64, 1] }> = g.partition(const_shape![64, 1]);
+            let beta_part: Partition<f32, { [64, 1] }> = beta.partition(const_shape![64, 1]);
+            let v_part: Partition<bf16, { [64, BV] }> = v.partition(const_shape![64, BV]);
+            let mut out_part: PartitionMut<bf16, { [64, BV] }> = unsafe { out.partition_full_mut(const_shape![64, BV]) };
+            let kc = hk * 4i32; // first [*, 32] column block of k-head hk in a [T, 2048] buffer
+            let num_chunks: i32 = (seg_len + 63i32) / 64i32;
+            for c in 0i32..num_chunks {
+                // Views end at the segment end, so rows past it load as zeros (g = 0: no decay).
+                let gt: Tile<f32, { [64, 1] }> = g_part.load([c, h]);
+                let bt: Tile<f32, { [64, 1] }> = beta_part.load([c, h]);
+                let cum: Tile<f32, { [64, 1] }> = scan_sum(gt, 0i32, reverse::Forward, 0.0f32);
+                let ecum: Tile<f32, { [64, 1] }> = exp(cum);
+                let kbe_s: Tile<f32, { [64, 32] }> = (bt * ecum).broadcast(const_shape![64, 32]);
+                let qd_s: Tile<f32, { [64, 32] }> = ecum.broadcast(const_shape![64, 32]);
+                let (q_inv, k_inv): (Tile<f32, { [64, 32] }>, Tile<f32, { [64, 32] }>) = if QKB == 1i32 {
+                    let qi: Tile<f32, { [64, 1] }> = inv_part.load([c, hk]);
+                    let ki: Tile<f32, { [64, 1] }> = inv_part.load([c, hk + 16i32]);
+                    (qi.broadcast(const_shape![64, 32]), ki.broadcast(const_shape![64, 32]))
+                } else {
+                    (k_sc, k_sc)
+                };
+
+                // x = (k*beta*exp(cum)) S, then v_new, then o = (q*exp(cum)) S + p v_new (x first: fewer live tiles).
+                let k0: Tile<f32, { [64, 32] }> = qk_block::<QKB>(&k_part, &conv_part, c, kc, 64i32 + kc, k_inv, k_sc);
+                let x: Tile<f32, { [64, BV] }> = mma_p::<E, SPLIT, 64, BV, 32>(k0 * kbe_s, s0, zero_o);
+                let k1: Tile<f32, { [64, 32] }> = qk_block::<QKB>(&k_part, &conv_part, c, kc + 1i32, 64i32 + kc + 1i32, k_inv, k_sc);
+                let x: Tile<f32, { [64, BV] }> = mma_p::<E, SPLIT, 64, BV, 32>(k1 * kbe_s, s1, x);
+                let k2: Tile<f32, { [64, 32] }> = qk_block::<QKB>(&k_part, &conv_part, c, kc + 2i32, 64i32 + kc + 2i32, k_inv, k_sc);
+                let x: Tile<f32, { [64, BV] }> = mma_p::<E, SPLIT, 64, BV, 32>(k2 * kbe_s, s2, x);
+                let k3: Tile<f32, { [64, 32] }> = qk_block::<QKB>(&k_part, &conv_part, c, kc + 3i32, 64i32 + kc + 3i32, k_inv, k_sc);
+                let x: Tile<f32, { [64, BV] }> = mma_p::<E, SPLIT, 64, BV, 32>(k3 * kbe_s, s3, x);
+                let vt: Tile<bf16, { [64, BV] }> = v_part.load([c, vcol]);
+                let vt: Tile<f32, { [64, BV] }> = convert_tile(vt);
+                let y: Tile<f32, { [64, BV] }> = vt * bt.broadcast(const_shape![64, BV]) - x;
+                let tt: Tile<f32, { [64, 64] }> = tinv_part.load([c, h]);
+                let v_new: Tile<f32, { [64, BV] }> = mma_p::<E, SPLIT, 64, BV, 64>(tt, y, zero_o);
+                let pt: Tile<f32, { [64, 64] }> = p_part.load([c, h]);
+                let o: Tile<f32, { [64, BV] }> = mma_p::<EO, SPLIT_O, 64, BV, 64>(pt, v_new, zero_o);
+                let q0: Tile<f32, { [64, 32] }> = qk_block::<QKB>(&q_part, &conv_part, c, kc, kc, q_inv, q_sc);
+                let o: Tile<f32, { [64, BV] }> = mma_p::<EO, SPLIT_O, 64, BV, 32>(q0 * qd_s, s0, o);
+                let q1: Tile<f32, { [64, 32] }> = qk_block::<QKB>(&q_part, &conv_part, c, kc + 1i32, kc + 1i32, q_inv, q_sc);
+                let o: Tile<f32, { [64, BV] }> = mma_p::<EO, SPLIT_O, 64, BV, 32>(q1 * qd_s, s1, o);
+                let q2: Tile<f32, { [64, 32] }> = qk_block::<QKB>(&q_part, &conv_part, c, kc + 2i32, kc + 2i32, q_inv, q_sc);
+                let o: Tile<f32, { [64, BV] }> = mma_p::<EO, SPLIT_O, 64, BV, 32>(q2 * qd_s, s2, o);
+                let q3: Tile<f32, { [64, 32] }> = qk_block::<QKB>(&q_part, &conv_part, c, kc + 3i32, kc + 3i32, q_inv, q_sc);
+                let o: Tile<f32, { [64, BV] }> = mma_p::<EO, SPLIT_O, 64, BV, 32>(q3 * qd_s, s3, o);
+                let o_bf: Tile<bf16, { [64, BV] }> = convert_tile(o);
+                out_part.store(o_bf, [c, vcol]);
+
+                // S = exp(sum g) S + (k*exp(sum_{j>i} g_j))^T v_new. The suffix sum comes from a reverse scan:
+                // cum_last - cum_i cancels catastrophically for strongly decaying heads.
+                let rcum: Tile<f32, { [64, 1] }> = scan_sum(gt, 0i32, reverse::Reverse, 0.0f32);
+                let kd_s: Tile<f32, { [64, 32] }> = exp(rcum - gt).broadcast(const_shape![64, 32]);
+                let total: Tile<f32, { [1] }> = reduce_sum(gt, 0i32);
+                let decay: Tile<f32, { [32, BV] }> = exp(total).reshape(const_shape![1, 1]).broadcast(const_shape![32, BV]);
+                let kd0: Tile<f32, { [64, 32] }> = qk_block::<QKB>(&k_part, &conv_part, c, kc, 64i32 + kc, k_inv, k_sc);
+                s0 = mma_p::<E, SPLIT, 32, BV, 64>((kd0 * kd_s).transpose(), v_new, s0 * decay);
+                let kd1: Tile<f32, { [64, 32] }> = qk_block::<QKB>(&k_part, &conv_part, c, kc + 1i32, 64i32 + kc + 1i32, k_inv, k_sc);
+                s1 = mma_p::<E, SPLIT, 32, BV, 64>((kd1 * kd_s).transpose(), v_new, s1 * decay);
+                let kd2: Tile<f32, { [64, 32] }> = qk_block::<QKB>(&k_part, &conv_part, c, kc + 2i32, 64i32 + kc + 2i32, k_inv, k_sc);
+                s2 = mma_p::<E, SPLIT, 32, BV, 64>((kd2 * kd_s).transpose(), v_new, s2 * decay);
+                let kd3: Tile<f32, { [64, 32] }> = qk_block::<QKB>(&k_part, &conv_part, c, kc + 3i32, 64i32 + kc + 3i32, k_inv, k_sc);
+                s3 = mma_p::<E, SPLIT, 32, BV, 64>((kd3 * kd_s).transpose(), v_new, s3 * decay);
             }
             if phase == 0i32 {
                 let mut sp: PartitionMut<f32, { [32, BV] }> = unsafe { state.partition_full_mut(const_shape![32, BV]) };
