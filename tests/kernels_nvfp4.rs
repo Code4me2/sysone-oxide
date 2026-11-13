@@ -5,7 +5,8 @@
 //!    port of the compressed-tensors math on further shapes (partial row tiles, K = 4096 and 12288).
 //! 2. `gemm_nvfp4` vs a CPU f64 dequant-matmul on small shapes, with per-half alpha.
 //! 3. Real layer-0 MLP weights of elephant-1-nvfp4-mlp with random activations vs the compressed-tensors QDQ path in
-//!    torch (`reference/nvfp4/gen_layer0.py`); skipped with a message when its data file is absent.
+//!    torch (`reference/nvfp4/gen_layer0.py`); fails (with how to generate it) when its data file is
+//!    absent, rather than passing vacuously.
 //!
 //! Run: `cargo test --release --test kernels_nvfp4 -- --nocapture --test-threads 1`
 

@@ -6,6 +6,9 @@ OneJev's `qev` server (`POST /v1/systemone`). Its goal is many more decisions pe
 vLLM-based setup, while matching the reference's probabilities.
 
 Status: **accepted (v1 baseline), 2026-11-13**. Section 13 records the resolved decisions and the remaining risks.
+This document is the design rationale; for how the code is actually organised today, see
+[ARCHITECTURE.md](ARCHITECTURE.md). Notes marked *Update* below correct statements that the implementation has
+since overtaken.
 
 ## 1. Decisions taken
 
@@ -186,6 +189,10 @@ pub struct DecisionBatch {
 }
 ```
 
+*Update:* the implemented types are in `src/contract.rs` (all fields public, `Segment` is `#[repr(C)]`). The
+per-branch owners are not stored in the batch: they live in the frontend's `Plan`/`Branch`, and the scheduler maps
+logit rows back to requests by each request's first answer row (ARCHITECTURE.md §3.1).
+
 Every layer is computed for the whole stream. The prefix never depends on suffixes, so one pass gives exactly the
 reference's two-forward result:
 
@@ -242,6 +249,10 @@ Readout: `hs = gather(x, answer_rows)` → `zc_rmsnorm(hs, final_norm)` → `log
 `W_slot = lm_head[slot_ids]` (256×4096, f32 accumulate) → copied to the host as `[Q, 256]` f32. An opt-in
 `allowed_token_mass` runs the full `lm_head` on the `Q` rows only when `debug` is set.
 
+*Update:* the engine applies the final norm over all `T` rows and then gathers (`forward::build`), and the slot
+GEMM runs on cuBLAS with f32 output. `allowed_token_mass` is not implemented in the GPU engine yet
+(`DecisionEngine::run_with_mass` has a default that reports none).
+
 ### 6.4 Kernels (ownership: Tile = cutile-rs, SIMT = cuda-oxide)
 
 | Kernel | Model | Notes |
@@ -252,12 +263,18 @@ Readout: `hs = gather(x, answer_rows)` → `zc_rmsnorm(hs, final_norm)` → `log
 | `seg_attn_gqa_d256` | Tile | Adapt `fmha_prefill_gqa`: non-causal, segment table, D=256 (check smem; may need BN=32/64), gate epilogue. |
 | `tree_conv1d_silu` | SIMT | Gather via the parent table; 8192 channels, kernel 4. |
 | `gdn_prep` | Tile | split/repeat/l2norm/softplus/sigmoid, f32 out. |
-| `gdn_chunk_scan` | Tile, or SIMT (`GdnBackend`) | WY/UT form as in `torch_chunk_gated_delta_rule`: per 64-chunk, `A = (k_β kᵀ)⊙decay`, unit-lower-triangular solve, then the inter-chunk scan. Varlen over segments, initial state from the parent. Tile: 3xTF32 matmuls, WY operands stored in fp32. SIMT (G1, cuda-oxide, `kernels-simt/`, docs/G1.md): `gdn_simt_tinv` (exact bf16 Gram + blocked 16×16 fp32 solve, only Tinv stored) and `gdn_simt_scan` (recomputes every WY operand per chunk; `mma.sync` bf16 with raw bf16 q/k rows as the exact operand and fp32 operands split hi+lo; state transposed in registers), plus `gdn_simt_gates` replacing `gdn_prep` (q, k normalised in the scan). ~5× faster; Tile stays the default until the end-to-end gate (§9.2) has run with SIMT. |
+| `gdn_chunk_scan` | Tile, or SIMT (`GdnOptions::backend`) | WY/UT form as in `torch_chunk_gated_delta_rule`: per 64-chunk, `A = (k_β kᵀ)⊙decay`, unit-lower-triangular solve, then the inter-chunk scan. Varlen over segments, initial state from the parent. Tile (P1): 3xTF32 matmuls, blocked chunk inverse, scan recomputing the WY operands (Tinv and P stored). SIMT (G1, cuda-oxide, `kernels-simt/`, docs/G1.md): `gdn_simt_tinv` (exact bf16 Gram + blocked 16×16 fp32 solve, only Tinv stored) and `gdn_simt_scan` (recomputes every WY operand and P per chunk; `mma.sync` bf16 with raw bf16 q/k rows as the exact operand, fp32 operands split hi+lo; state transposed in registers), plus `gdn_simt_gates` (g, beta; q, k normalised in the scan). Tile stays the default until the end-to-end gate (§9.2) has run with SIMT. |
 | `gated_rmsnorm` | Tile | Per 128-head; plain `w`; silu(z). |
 | `gather_rows`, slot readout GEMM | Tile | Small. |
 
 Every kernel gets a standalone test against a PyTorch reference implementation (§9.2), at tolerances stated in the
 test.
+
+*Update (Phase 2a):* every kernel above is implemented in cuTile (`src/kernels/`), including `tree_conv1d_silu` and
+the GDN scan; there are no SIMT kernels in the tree yet (the cuda-oxide GDN scan, G1, is in progress). The
+projection GEMMs and the slot readout run on cuBLAS (`src/engine/gemm.rs`). The kernel tests compare against CPU f64
+references transcribed from transformers' `modeling_qwen3_5.py` rather than against PyTorch at run time. The op-by-op
+mapping is in ARCHITECTURE.md §5.
 
 ### 6.5 Memory plan (GB10, T = 16k tokens per step)
 
@@ -303,7 +320,9 @@ HTTP (axum/hyper, tokio)
 ```
 
 - A request is never split across batches in v1. A request larger than the budget runs alone, using the largest
-  bucket or an uncaptured graph.
+  bucket or an uncaptured graph. *Update:* there is no uncaptured fallback; the server requires the largest bucket
+  (`--max-step-tokens`) to cover `--max-request-tokens` and `--token-budget`. The engine may still split a batch by
+  request into several steps when it exceeds a bucket's answer or segment capacity or the GDN state slots.
 - Double-buffer the host-to-device metadata so CPU packing of batch n+1 overlaps the GPU run of batch n.
 - Backpressure: a bounded queue; return 503 when it is full. Metrics are exposed at `/metrics` (queue depth, batch
   tokens, step ms, decisions/s).
@@ -359,6 +378,9 @@ Every test always reports the measured distribution (p50/p99/max), not just pass
 | NVFP4 | Kernels: activation quantization bit-exact vs compressed-tensors; FP4 GEMMs within 1 ulp of the exact f64 dequant-matmul. Model: **statistical**, because the QDQ reference itself moves by up to 0.2 per option under a batch-shape change (§3.1). On a labeled eval set rebuilt from the checkpoint card's public sources (BANKING77, LEDGAR, LongBench-v2): sysone NVFP4's accuracy, top-1 agreement with the QDQ reference, and mean/p99 \|Δp\| must lie inside the envelope the QDQ reference shows against itself across batch shapes and paths (paired bootstrap). Report vs bf16 as quality information. |
 | Batch invariance | The same request alone vs packed with 63 others: max |Δp| ≤ 0.01. |
 
+*Update:* the thresholds actually applied are those in `tests/tolerances.toml` (derived from measured noise), and
+ARCHITECTURE.md §6.2 lists which test implements each gate.
+
 ## 10. Benchmarks
 
 Harness at `benchmarks/s1/`. It sweeps state length {256, 1k, 4k, 12k}, questions per request {1, 3, 8, 24}, and
@@ -389,6 +411,8 @@ pub trait DecisionEngine: Send {
     fn run(&mut self, batch: &DecisionBatch) -> anyhow::Result<SlotLogits>;  // [Q, 256] f32, row i = answer_rows[i]
 }
 ```
+*Update:* the trait also has `run_with_mass` (for debug `allowed_token_mass`), with a default implementation; see
+`src/contract.rs`.
 
 **Phase 0: foundations (serial, small)**
 - W0. **Done except items blocked on the user** (CUDA 13.4 + tileiras install, docker group); see
@@ -427,8 +451,9 @@ pub trait DecisionEngine: Send {
   - E1 **eval set:** the labeled set and statistical NVFP4 gate (§9.2), plus a scorer for any `/v1/systemone`
     server.
   - S1 **server fixes** from the W5 review.
-  - G1 **GDN in cuda-oxide** (done 2026-11-13, docs/G1.md): SIMT WY/solve and chunk scan, `GdnBackend::{Tile, Simt}`;
-    mixer 3.9/14.9/58 ms -> 0.76/2.96/11.2 ms per layer at 1k/4k/16k.
+  - *Update:* Phase 2a is done; see `docs/PHASE2A.md`.
+  - G1 **GDN in cuda-oxide** (docs/G1.md, after Phase 2a): SIMT WY/solve and chunk scan, `GdnBackend::{Tile, Simt}`;
+    opt-in until the end-to-end gate (numbers after the merge with P1: docs/G1.md).
 - Phase 2b: NVFP4 end to end; fuse the GDN conv into the SIMT kernels (G1's next step); precision choices from the end-to-end
   gate; GEMM autotune and fusions guided by I1's profile.
 - Prefix cache (§8).
@@ -440,6 +465,11 @@ pub trait DecisionEngine: Send {
 - sm_100 tuning.
 
 ## 12. Repository layout (target)
+
+*Update:* this was the planned layout. The actual layout differs (for example `sched/` also has `pool.rs`,
+`metrics.rs` and `affinity.rs`; the engine has no `readout.rs` or `buckets.rs`; kernels live in per-family modules
+under `src/kernels/`; the integration tests are `tests/engine_*.rs`, `tests/kernels_*.rs`, ...). See the module map in
+ARCHITECTURE.md §4.
 
 ```
 src/

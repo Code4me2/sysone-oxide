@@ -397,24 +397,47 @@ struct Run {
 
 /// Run the whole mixer on `proj` with the given plan capacities and download every intermediate.
 fn run_gpu(backend: GdnBackend, proj: &[f64], segs: &[Segment], w: &GpuWeights, caps: Option<(usize, usize)>, s: &Arc<Stream>) -> Run {
+    run_gpu_with(proj, segs, w, caps, &backend.options(), s)
+}
+
+/// [`run_gpu`] with explicit options (backend and scan options).
+fn run_gpu_with(
+    proj: &[f64],
+    segs: &[Segment],
+    w: &GpuWeights,
+    caps: Option<(usize, usize)>,
+    opts: &GdnOptions,
+    s: &Arc<Stream>,
+) -> Run {
     let t = proj.len() / PROJ_COLS;
     let plan = match caps {
         None => GdnPlan::new(segs, t, s).unwrap(),
         Some((mc, ms)) => GdnPlan::with_capacity(segs, t, mc, ms, s).unwrap(),
     };
     let proj_t = upload(to_bf16(proj), &[t, PROJ_COLS], s);
-    let scratch = GdnScratch::for_backend(backend, t, plan.num_prefixes, s).unwrap();
+    let scratch = GdnScratch::for_backend(opts.backend, t, plan.num_prefixes, s).unwrap();
     let out = api::zeros::<bf16>(&[t, VALUE_DIM]).sync_on(s).unwrap();
     let ops = unsafe {
-        gdn_mixer_with(backend, &plan, DView::of(&proj_t).unwrap(), &w.view(), EPS, &scratch, DView::of(&out).unwrap()).unwrap()
+        gdn_mixer_with(&plan, DView::of(&proj_t).unwrap(), &w.view(), EPS, &scratch, DView::of(&out).unwrap(), opts).unwrap()
     };
     ops.sync_on(s).unwrap();
     let conv = bf16_to_f64(&download(&scratch.conv, s));
-    let (q, k) = match backend {
-        GdnBackend::Tile => (to_f64(&download(&scratch.q, s)), to_f64(&download(&scratch.k, s))),
-        // The SIMT scan normalises q and k from the conv output inside the kernel and never stores them: feed the
-        // checks the exact f64 normalisation of the GPU's conv output (so the prep q/k check is vacuous for it,
-        // and its normalisation is checked through the scan output).
+    let (q, k) = match opts.backend {
+        // The mixer's scan rebuilds the normalised f32 q and k from the bf16 conv output and stores neither; write
+        // them with `tree_conv1d_silu_qk` (the same arithmetic as the scan's rebuild) so the checks below can
+        // inspect them and feed them to the oracle. It rewrites the same conv output.
+        GdnBackend::Tile => {
+            unsafe {
+                let pv = DView::of(&proj_t).unwrap();
+                tree_conv1d_silu_qk(&plan, pv.columns(0, CONV_DIM).unwrap(), &w.conv_w, scratch.conv_view().unwrap(), &scratch).unwrap()
+            }
+            .sync_on(s)
+            .unwrap();
+            (to_f64(&download(&scratch.q, s)), to_f64(&download(&scratch.k, s)))
+        }
+        // The SIMT kernels normalise q and k from the bf16 conv output in registers (in fp32) and never store them.
+        // Feed the oracle the exact f64 normalisation of the GPU's conv output, so the scan and state checks
+        // measure the SIMT normalisation error together with the delta rule's; the q/k stage check is skipped.
         GdnBackend::Simt => qk_ref(&conv, t),
     };
     Run {
@@ -491,8 +514,12 @@ fn kernels_match_f64_references(backend: GdnBackend) {
         let a: Vec<f64> = (0..t).flat_map(|r| proj[r * PROJ_COLS + CONV_DIM + VALUE_DIM..][..32].to_vec()).collect();
         let b: Vec<f64> = (0..t).flat_map(|r| proj[r * PROJ_COLS + CONV_DIM + VALUE_DIM + 32..][..32].to_vec()).collect();
         let prep = prep_ref(&run.conv, &a, &b, 32, &w, t);
-        check("q", report("gdn_prep q", &run.q, &prep.q, "1e-6 rel + 1e-9", |_, r| 1e-6 * r.abs() + 1e-9));
-        check("k", report("gdn_prep k", &run.k, &prep.k, "1e-6 rel + 1e-8", |_, r| 1e-6 * r.abs() + 1e-8));
+        if backend == GdnBackend::Tile {
+            check("q", report("gdn_prep q", &run.q, &prep.q, "1e-6 rel + 1e-9", |_, r| 1e-6 * r.abs() + 1e-9));
+            check("k", report("gdn_prep k", &run.k, &prep.k, "1e-6 rel + 1e-8", |_, r| 1e-6 * r.abs() + 1e-8));
+        } else {
+            println!("[{}] q, k are normalised inside the scan kernels (never stored): checked through the scan", backend.name());
+        }
         check("g", report("gdn_prep g", &run.g, &prep.g, "1e-5 rel + 1e-12", |_, r| 1e-5 * r.abs() + 1e-12));
         check("beta", report("gdn_prep beta", &run.beta, &prep.beta, "1 bf16 ulp", |_, r| ulp16(r)));
 
@@ -654,7 +681,7 @@ fn plan_update_invariance(backend: GdnBackend) {
                 plan.update(&b.segments, &s).unwrap();
             }
             let pt = upload(to_bf16(p), &[t, PROJ_COLS], &s);
-            unsafe { gdn_mixer_with(backend, &plan, DView::of(&pt).unwrap(), &wv, EPS, &scratch, DView::of(&out).unwrap()).unwrap() }
+            unsafe { gdn_mixer_with(&plan, DView::of(&pt).unwrap(), &wv, EPS, &scratch, DView::of(&out).unwrap(), &backend.options()).unwrap() }
                 .sync_on(&s)
                 .unwrap();
             let got = bf16_to_f64(&download(&out, &s));
@@ -670,7 +697,7 @@ fn plan_update_invariance(backend: GdnBackend) {
 // ---------------------------------------------------------------------------------------------------------------
 // SIMT (cuda-oxide) backend, stage by stage
 
-/// `(I + A)^-1` per (chunk, v-head) in f64 from the GPU's k, g, beta: the reference for both backends' `tinv`.
+/// `(I + A)^-1` per (chunk, v-head) in f64 from k (normalised), g, beta: the reference for both backends' `tinv`.
 fn tinv_ref(k: &[f64], g: &[f64], beta: &[f64], chunks: &[(usize, usize)], t: usize) -> Vec<f64> {
     let mut out = vec![0f64; t * NUM_V_HEADS * CHUNK];
     for &(start, len) in chunks {
@@ -730,7 +757,8 @@ fn simt_tinv_matches_f64_reference() {
             .unwrap();
         let simt_tinv = api::zeros::<f32>(&[t, NUM_V_HEADS * CHUNK]).sync_on(&s).unwrap();
         unsafe { simt::chunk_tinv(&plan, scratch.conv_view().unwrap(), &scratch, &simt_tinv).unwrap() }.sync_on(&s).unwrap();
-        let k = to_f64(&download(&scratch.k, &s));
+        // Neither mixer stores the normalised k: the reference takes the exact normalisation of the GPU conv output.
+        let (_, k) = qk_ref(&bf16_to_f64(&download(&scratch.conv, &s)), t);
         let g = to_f64(&download(&scratch.g, &s));
         let beta = to_f64(&download(&scratch.beta, &s));
         let tables = GdnTables::build(segs, t, GdnTables::num_chunks(segs), segs.len()).unwrap();
@@ -738,14 +766,29 @@ fn simt_tinv_matches_f64_reference() {
         let want = tinv_ref(&k, &g, &beta, &chunks, t);
         // Scale: the largest entry of each (chunk-row, head) row of the reference inverse.
         let row_max: Vec<f64> = want.chunks(CHUNK).map(|r| r.iter().fold(0f64, |m, x| m.max(x.abs()))).collect();
-        let tile = to_f64(&download(&scratch.tinv, &s));
-        let simt = to_f64(&download(&simt_tinv, &s));
+        // Compare the entries the scans read: rows inside their chunk, 16x16 blocks on and below the diagonal (the
+        // SIMT kernel writes only those).
+        let mut read = vec![false; t * NUM_V_HEADS * CHUNK];
+        for &(start, len) in &chunks {
+            for i in 0..len {
+                for h in 0..NUM_V_HEADS {
+                    for j in 0..CHUNK {
+                        read[(start + i) * NUM_V_HEADS * CHUNK + h * CHUNK + j] = j / 16 <= i / 16;
+                    }
+                }
+            }
+        }
+        let keep = |v: Vec<f64>| -> Vec<f64> { v.into_iter().zip(&read).filter(|(_, r)| **r).map(|(x, _)| x).collect() };
+        let row_max = keep(row_max.iter().flat_map(|&m| std::iter::repeat_n(m, CHUNK)).collect());
+        let want = keep(want);
+        let tile = keep(to_f64(&download(&scratch.tinv, &s)));
+        let simt = keep(to_f64(&download(&simt_tinv, &s)));
         // Both are fp32 evaluations of an inverse whose conditioning amplifies rounding (measured: tile max 4.4e-5,
         // SIMT 3.4e-5 x row max); the gate is that the SIMT error is no worse than the cuTile one.
-        let tol = |i: usize, _: f64| 1e-4 * row_max[i / CHUNK];
+        let tol = |i: usize, _: f64| 1e-4 * row_max[i];
         let a = report("tile tinv vs f64", &tile, &want, "1e-4 * row max", tol);
         let b = report("simt tinv vs f64", &simt, &want, "1e-4 * row max", tol);
-        let max_rel = |got: &[f64]| got.iter().zip(&want).enumerate().map(|(i, (g, w))| (g - w).abs() / row_max[i / CHUNK]).fold(0f64, f64::max);
+        let max_rel = |got: &[f64]| got.iter().zip(&want).enumerate().map(|(i, (g, w))| (g - w).abs() / row_max[i]).fold(0f64, f64::max);
         let (mt, ms) = (max_rel(&tile), max_rel(&simt));
         println!("max |err| / row max: tile {mt:.2e}, simt {ms:.2e}");
         assert_eq!(a + b, 0);
@@ -783,7 +826,7 @@ fn graph_replay(backend: GdnBackend) {
     let wv = gw.view();
     // SAFETY: input, out, the plan tables and the scratch outlive the graph and are only rewritten between replays.
     let ops = unsafe {
-        gdn_mixer_with(backend, &plan, DView::of(&input).unwrap(), &wv, EPS, &scratch, DView::of(&out).unwrap()).unwrap()
+        gdn_mixer_with(&plan, DView::of(&input).unwrap(), &wv, EPS, &scratch, DView::of(&out).unwrap(), &backend.options()).unwrap()
     };
     let graph = CudaGraph::capture(s.clone(), ops).unwrap();
     for (step, b) in [&small, &big, &small].into_iter().enumerate() {
@@ -800,4 +843,198 @@ fn graph_replay(backend: GdnBackend) {
         println!("[{}] graph replay {step} ({n} tokens): bit-identical to eager: {same}", backend.name());
         assert!(same, "[{}] graph replay {step} differs from the eager run", backend.name());
     }
+}
+
+/// The scan's tuning options (block sizes, warps, inverse blocking) must not change its accuracy: each variant
+/// is held to the default's tolerances against the f64 recurrence. The precision variants (DESIGN §1 "Precision
+/// knobs") are measured against the same oracle and reported; only the default precision must meet the
+/// fp32-grade tolerance, the faster ones are judged by the end-to-end gate.
+#[test]
+fn scan_options_and_precision_variants_vs_f64() {
+    on_test_thread(|| {
+        let ctx = Context::new(0).unwrap();
+        let s = ctx.new_stream().unwrap();
+        let mut rng = Rng(0x2545f4914f6cdd1d);
+        let batch = tree_batch();
+        let segs = &batch.segments;
+        let t = batch.num_tokens();
+        let w = weights(&mut rng);
+        let gw = GpuWeights::new(&w, &s);
+        let proj = projection(t, &mut rng);
+        let base = run_gpu(GdnBackend::Tile, &proj, segs, &gw, None, &s);
+        // The oracle from the GPU's own scan inputs (conv and prep do not depend on the options).
+        let prep = Prep { q: base.q.clone(), k: base.k.clone(), g: base.g.clone(), beta: base.beta.clone() };
+        let v: Vec<f64> = (0..t).flat_map(|r| base.conv[r * CONV_DIM + 2 * KEY_DIM..][..VALUE_DIM].to_vec()).collect();
+        let (core, states) = scan_ref(&prep, &v, VALUE_DIM, segs, t);
+        let seg_head_rms = segment_head_rms(&core, segs, t);
+        let core_b: Vec<f64> = core.iter().map(|&x| r16(x)).collect();
+        let d = GdnOptions::default();
+        let variants: Vec<(&str, GdnOptions, bool)> = vec![
+            ("default", d, true),
+            ("prefix_bv 16, suffix_bv 128", GdnOptions { prefix_bv: 16, suffix_bv: 128, ..d }, true),
+            ("prefix_bv 64, suffix_bv 32", GdnOptions { prefix_bv: 64, suffix_bv: 32, ..d }, true),
+            ("tp_fsb 2 (doubling only)", GdnOptions { tp_fsb: 2, ..d }, true),
+            ("tp_fsb 64 (substitution only)", GdnOptions { tp_fsb: 64, ..d }, true),
+            ("4 / 8 / 4 warps", GdnOptions { prefix_warps: 4, suffix_warps: 8, tp_warps: 4, ..d }, true),
+            ("precision Tf32", GdnOptions { precision: GdnPrecision::Tf32, ..d }, false),
+            ("precision Bf16Operands", GdnOptions { precision: GdnPrecision::Bf16Operands, ..d }, false),
+            ("precision Fp32StateTf32Output", GdnOptions { precision: GdnPrecision::Fp32StateTf32Output, ..d }, false),
+        ];
+        let mut fails = Vec::new();
+        for (name, opts, gated) in variants {
+            let run = run_gpu_with(&proj, segs, &gw, None, &opts, &s);
+            assert!(run.core.iter().all(|x| x.is_finite()), "{name}: non-finite scan output");
+            // Error beyond one bf16 rounding flip, in units of the (segment, head) rms (the scan tolerance is 5e-4).
+            let worst = run
+                .core
+                .iter()
+                .zip(&core_b)
+                .enumerate()
+                .map(|(i, (g, r))| ((g - r).abs() - ulp16(*r)).max(0.0) / seg_head_rms[i / 128].max(1e-30))
+                .fold(0f64, f64::max);
+            let mut state_worst = 0f64;
+            for (slot, st) in states.iter().enumerate() {
+                let rms = (st.iter().map(|x| x * x).sum::<f64>() / st.len() as f64).sqrt();
+                let got = &run.state[slot * STATE_ELEMS..][..STATE_ELEMS];
+                let e = got.iter().zip(st).map(|(g, r)| (g - r).abs()).fold(0f64, f64::max) / rms;
+                state_worst = state_worst.max(e);
+            }
+            let over = report(&format!("scan out [{name}]"), &run.core, &core_b, "1 bf16 ulp + 5e-4 * seg-head rms", |i, r| {
+                ulp16(r) + 5e-4 * seg_head_rms[i / 128]
+            });
+            println!(
+                "  {name}: max scan error {worst:.2e} x seg-head rms (tol 5e-4), max prefix-state error {state_worst:.2e} x state rms (tol 3e-4){}",
+                if gated { "" } else { " [reported only]" }
+            );
+            if gated && (over > 0 || state_worst > 3e-4) {
+                fails.push(format!("{name}: {over} scan elements over tolerance, state error {state_worst:.2e} x rms"));
+            }
+        }
+        assert!(fails.is_empty(), "failures: {fails:#?}");
+    });
+}
+
+/// The mixer's fused conv (`tree_conv1d_silu_qk`, which also writes normalised q and k) plus `gdn_gates` must
+/// produce bit-identical conv, g and beta to the standalone `tree_conv1d_silu` + `gdn_prep`. q and k use the same
+/// arithmetic, but the per-head sum of squares is reduced over a `[4, 128]` tile in the conv and a `[16, 128]`
+/// tile in `gdn_prep`, and cuTile does not promise the same summation order for both, so they are held to the
+/// f32 level of the f64 prep check (1e-6 relative) instead.
+#[test]
+fn fused_conv_qk_matches_standalone_conv_and_prep() {
+    on_test_thread(|| {
+        let ctx = Context::new(0).unwrap();
+        let s = ctx.new_stream().unwrap();
+        let mut rng = Rng(0x0123456789abcdef);
+        let batch = tree_batch();
+        let segs = &batch.segments;
+        let t = batch.num_tokens();
+        let w = weights(&mut rng);
+        let gw = GpuWeights::new(&w, &s);
+        let proj = projection(t, &mut rng);
+        let fused = run_gpu(GdnBackend::Tile, &proj, segs, &gw, None, &s);
+        let plan = GdnPlan::new(segs, t, &s).unwrap();
+        let proj_t = upload(to_bf16(&proj), &[t, PROJ_COLS], &s);
+        let pv = DView::of(&proj_t).unwrap();
+        let scratch = GdnScratch::new(t, plan.num_prefixes, &s).unwrap();
+        let conv = scratch.conv_view().unwrap();
+        let a = pv.columns(CONV_DIM + VALUE_DIM, NUM_V_HEADS).unwrap();
+        let b = pv.columns(CONV_DIM + VALUE_DIM + NUM_V_HEADS, NUM_V_HEADS).unwrap();
+        let wv = gw.view();
+        let mut ops = DeviceOpVec::with_capacity(2);
+        unsafe {
+            ops.push(tree_conv1d_silu(&plan, pv.columns(0, CONV_DIM).unwrap(), &gw.conv_w, conv).unwrap());
+            ops.push(gdn_prep(&plan, conv, a, b, &wv, &scratch).unwrap());
+        }
+        ops.sync_on(&s).unwrap();
+        // The engine (I1) labels and replays the scan as four operations (inverse, WY, prefix scan, suffix scan).
+        let mut scan = unsafe {
+            gdn_chunk_scan(&plan, conv.columns(2 * KEY_DIM, VALUE_DIM).unwrap(), &scratch, DView::of(&scratch.core).unwrap()).unwrap()
+        };
+        for i in 0..4 {
+            let _ = scan.remove(0);
+            assert_eq!(scan.last().is_some(), i < 3, "gdn_chunk_scan must return exactly four operations");
+        }
+        // (name, fused, standalone, relative tolerance; 0 = bit-identical)
+        let pairs: [(&str, &[f64], Vec<f64>, f64); 5] = [
+            ("conv", &fused.conv, bf16_to_f64(&download(&scratch.conv, &s)), 0.0),
+            ("q", &fused.q, to_f64(&download(&scratch.q, &s)), 1e-6),
+            ("k", &fused.k, to_f64(&download(&scratch.k, &s)), 1e-6),
+            ("g", &fused.g, to_f64(&download(&scratch.g, &s)), 0.0),
+            ("beta", &fused.beta, to_f64(&download(&scratch.beta, &s)), 0.0),
+        ];
+        for (name, got, want, rel) in pairs {
+            let diff = got.iter().zip(&want).filter(|(a, b)| a != b).count();
+            let over = got.iter().zip(&want).filter(|(a, b)| (*a - *b).abs() > rel * b.abs()).count();
+            let max_rel = got.iter().zip(&want).map(|(a, b)| (a - b).abs() / b.abs().max(1e-30)).fold(0f64, f64::max);
+            println!("fused vs standalone {name}: {diff} of {} elements differ, max rel {max_rel:.2e} (tol {rel:e})", want.len());
+            assert_eq!(over, 0, "{name}: fused conv/prep differs from the standalone kernels beyond {rel:e} relative");
+        }
+    });
+}
+
+/// The mixer's scan (`tree_conv1d_silu_inv` + `gdn_chunk_scan_conv`, q and k rebuilt in the kernels from the bf16
+/// conv output and inverse norms) against the scan over stored f32 q and k (`tree_conv1d_silu_qk` +
+/// `gdn_chunk_scan_with`). The q, k arithmetic is the same, but the two scan kernels are compiled separately and
+/// the compiler is free to contract products into FMAs differently, so they agree at fp32 noise level, not
+/// bitwise (measured on this batch: 329 of 12.5M bf16 outputs and 3% of the f32 state elements differ, states by
+/// at most 1e-5 x rms). Both are checked against the f64 oracle elsewhere; here they are held to the same
+/// tolerances relative to each other.
+#[test]
+fn scan_from_bf16_conv_matches_stored_f32_qk() {
+    on_test_thread(|| {
+        let ctx = Context::new(0).unwrap();
+        let s = ctx.new_stream().unwrap();
+        let mut rng = Rng(0x5eed5eed5eed5eed);
+        let batch = tree_batch();
+        let segs = &batch.segments;
+        let t = batch.num_tokens();
+        let w = weights(&mut rng);
+        let gw = GpuWeights::new(&w, &s);
+        let proj = projection(t, &mut rng);
+        let mixer = run_gpu(GdnBackend::Tile, &proj, segs, &gw, None, &s);
+        let plan = GdnPlan::new(segs, t, &s).unwrap();
+        let proj_t = upload(to_bf16(&proj), &[t, PROJ_COLS], &s);
+        let pv = DView::of(&proj_t).unwrap();
+        let scratch = GdnScratch::new(t, plan.num_prefixes, &s).unwrap();
+        let conv = scratch.conv_view().unwrap();
+        let core = DView::of(&scratch.core).unwrap();
+        let out = api::zeros::<bf16>(&[t, VALUE_DIM]).sync_on(&s).unwrap();
+        let wv = gw.view();
+        let mut ops = DeviceOpVec::with_capacity(4);
+        unsafe {
+            ops.push(tree_conv1d_silu_qk(&plan, pv.columns(0, CONV_DIM).unwrap(), &gw.conv_w, conv, &scratch).unwrap());
+            let (a, b) = (pv.columns(CONV_DIM + VALUE_DIM, 32).unwrap(), pv.columns(CONV_DIM + VALUE_DIM + 32, 32).unwrap());
+            ops.push(gdn_gates(&plan, conv, a, b, &wv, &scratch).unwrap());
+            let v = conv.columns(2 * KEY_DIM, VALUE_DIM).unwrap();
+            ops.push(gdn_chunk_scan_with(&plan, v, &scratch, core, &GdnOptions::default()).unwrap().map(|_| ()));
+            let z = pv.columns(CONV_DIM, VALUE_DIM).unwrap();
+            ops.push(gated_rmsnorm(&plan, core, z, &gw.norm_w, EPS, DView::of(&out).unwrap()).unwrap());
+        }
+        ops.sync_on(&s).unwrap();
+        let ref_core = bf16_to_f64(&download(&scratch.core, &s));
+        let ref_state = to_f64(&download(&scratch.state, &s));
+        let ref_out = bf16_to_f64(&download(&out, &s));
+        let diff = |a: &[f64], b: &[f64]| a.iter().zip(b).filter(|(x, y)| x != y).count();
+        println!(
+            "bf16-conv scan vs stored f32 q, k: {} scan outputs, {} state elements, {} mixer outputs differ",
+            diff(&mixer.core, &ref_core),
+            diff(&mixer.state, &ref_state),
+            diff(&mixer.out, &ref_out)
+        );
+        let seg_head_rms = segment_head_rms(&ref_core, segs, t);
+        let mut over = report("scan out: bf16 conv vs f32 q, k", &mixer.core, &ref_core, "1 bf16 ulp + 5e-4 * seg-head rms", |i, r| {
+            ulp16(r) + 5e-4 * seg_head_rms[i / 128]
+        });
+        for slot in 0..plan.num_prefixes {
+            let st = &ref_state[slot * STATE_ELEMS..][..STATE_ELEMS];
+            let rms = (st.iter().map(|x| x * x).sum::<f64>() / st.len() as f64).sqrt();
+            let name = format!("prefix {slot} state: bf16 conv vs f32 q, k");
+            over += report(&name, &mixer.state[slot * STATE_ELEMS..][..STATE_ELEMS], st, "3e-4 * state rms", |_, _| 3e-4 * rms);
+        }
+        let out_rms = (ref_out.iter().map(|x| x * x).sum::<f64>() / ref_out.len() as f64).sqrt();
+        over += report("mixer out: bf16 conv vs f32 q, k", &mixer.out, &ref_out, "4 bf16 ulp + 1e-2 * out rms", |_, r| {
+            4.0 * ulp16(r) + 1e-2 * out_rms
+        });
+        assert_eq!(over, 0, "the scan from the bf16 conv differs from the scan over stored f32 q, k beyond fp32 noise");
+    });
 }

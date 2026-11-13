@@ -21,6 +21,18 @@ fn vptr<T>(v: &DView<T>) -> Arg {
     Arg::Ptr(v.ptr.cu_deviceptr())
 }
 
+/// The SIMT kernels read and write bf16 views as pairs (u32 words): they need an even row stride and a 4-byte
+/// aligned base.
+fn check_pairs(name: &str, v: &DView<bf16>) -> Result<()> {
+    ensure!(
+        v.row_stride % 2 == 0 && v.ptr.cu_deviceptr() % 4 == 0,
+        "SIMT GDN kernels need {name} with an even row stride and a 4-byte aligned base (stride {}, address {:#x})",
+        v.row_stride,
+        v.ptr.cu_deviceptr()
+    );
+    Ok(())
+}
+
 /// The gates g and beta (f32 `[T, 32]`) into `scratch` from the `a`, `b` columns of the fused projection
 /// (`[T, 32]` bf16 views): the part of `gdn_prep` the SIMT scan needs.
 ///
@@ -62,6 +74,7 @@ pub unsafe fn gates(plan: &GdnPlan, a: DView<bf16>, b: DView<bf16>, w: &GdnWeigh
 pub unsafe fn chunk_tinv(plan: &GdnPlan, conv: DView<bf16>, scratch: &GdnScratch, tinv: &Tensor<f32>) -> Result<BoxedDeviceOp<()>> {
     let t = plan.tokens;
     conv.check("conv", t, CONV_DIM)?;
+    check_pairs("conv", &conv)?;
     ensure!(t <= scratch.tokens, "plan has {t} tokens, scratch {}", scratch.tokens);
     ensure!(tinv.shape().iter().product::<i32>() as usize >= t * NUM_V_HEADS * CHUNK, "tinv too small");
     unsafe {
@@ -84,11 +97,12 @@ pub unsafe fn chunk_tinv(plan: &GdnPlan, conv: DView<bf16>, scratch: &GdnScratch
 }
 
 
-/// The SIMT chunked gated delta rule: `Tinv` per (chunk, v-head) into `scratch.tinv`, then the fused scan for
-/// prefixes (writing their final states into `scratch.state`) and for suffixes (from their parent's state).
-/// q, k and v are read from the conv output `conv` (`[T, 8192]` bf16: q | k | v) and normalised in-kernel; g and
-/// beta from `scratch`. Writes bf16 `[T, 4096]` into `out`. `scratch.q`, `scratch.k` and the WY buffers are not
-/// used.
+/// The SIMT chunked gated delta rule, as four operations like the cuTile scan (`gdn_chunk_scan`): `Tinv` per
+/// (chunk, v-head) into `scratch.tinv`, an empty operation in the slot of the cuTile WY launch, then the fused
+/// scan for prefixes (writing their final states into `scratch.state`) and for suffixes (from their parent's
+/// state). q, k and v are read from the conv output `conv` (`[T, 8192]` bf16: q | k | v) and normalised in-kernel;
+/// g and beta from `scratch`. Writes bf16 `[T, 4096]` into `out`. `scratch.q`, `scratch.k` and the WY buffers are
+/// not used.
 ///
 /// # Safety
 /// Every buffer must stay alive and unaliased by other writers until the returned operations complete.
@@ -98,10 +112,11 @@ pub unsafe fn chunk_scan(plan: &GdnPlan, conv: DView<bf16>, scratch: &GdnScratch
     ensure!(plan.num_prefixes <= scratch.slots, "{} prefixes, scratch has {} state slots", plan.num_prefixes, scratch.slots);
     conv.check("conv", t, CONV_DIM)?;
     out.check("scan output", t, VALUE_DIM)?;
-    let even = |v: &DView<bf16>| v.row_stride % 2 == 0 && v.ptr.cu_deviceptr() % 4 == 0;
-    ensure!(even(&conv) && even(&out), "SIMT scan needs even row strides and 4-byte aligned bases");
-    let mut ops = DeviceOpVec::with_capacity(3);
+    check_pairs("conv", &conv)?;
+    check_pairs("scan output", &out)?;
+    let mut ops = DeviceOpVec::with_capacity(4);
     ops.push(unsafe { chunk_tinv(plan, conv, scratch, &scratch.tinv)? });
+    ops.push(value(()).boxed());
     for phase in [0i32, 1] {
         ops.push(unsafe {
             launch(

@@ -373,7 +373,7 @@ pub mod seg_attn_module {
         tile_to_scalar(t.reshape(const_shape![]))
     }
 
-    /// Grid `(num_items, HK)`. See [`super::AttnPlan`] for the work items and the module docs for layouts.
+    /// Grid `(num_items, HK, D / DV)`. See [`super::AttnPlan`] for the work items and the module docs for layouts.
     #[cutile::entry(unchecked_accesses = true)]
     pub unsafe fn seg_attn<
         const BM: i32,
@@ -385,6 +385,8 @@ pub mod seg_attn_module {
         const HK: i32,
         const LAT: i32,
         const PS: i32, // bf16 parts of P in the P @ V product: 1, 2 or 3
+        const DV: i32, // output columns per tile block (D / grid z)
+        const RF: i32, // 1 (with PS = 2): the second part of P is f16, multiplied by f16(V)
     >(
         out_ptr: *mut bf16,
         q_ptr: *mut bf16,
@@ -398,6 +400,7 @@ pub mod seg_attn_module {
         let pid: (i32, i32, i32) = get_tile_block_id();
         let item: i32 = pid.0;
         let kvh: i32 = pid.1;
+        let dz: i32 = pid.2;
         let tok: Token = new_token_unordered();
 
         let work_shape: Shape<{ [-1] }> = Shape::<{ [-1] }> { dims: &[num_items * 8i32] };
@@ -419,7 +422,7 @@ pub mod seg_attn_module {
             let scale_c: Tile<f32, { [ME, 1] }> = scale_log2.broadcast(const_shape![ME, 1]);
             let neg_big: Tile<f32, { [ME, BN] }> = constant(-1.0e30f32, const_shape![ME, BN]);
             let zero_mn: Tile<f32, { [ME, BN] }> = constant(0.0f32, const_shape![ME, BN]);
-            let zero_md: Tile<f32, { [ME, D] }> = constant(0.0f32, const_shape![ME, D]);
+            let zero_md: Tile<f32, { [ME, DV] }> = constant(0.0f32, const_shape![ME, DV]);
             let offs_n: Tile<i32, { [BN] }> = iota(const_shape![BN]);
             let offs_n: Tile<i32, { [ME, BN] }> = offs_n.reshape(const_shape![1, BN]).broadcast(const_shape![ME, BN]);
 
@@ -436,23 +439,28 @@ pub mod seg_attn_module {
 
             let mut m_i: Tile<f32, { [ME, 1] }> = constant(-1.0e30f32, const_shape![ME, 1]);
             let mut l_i: Tile<f32, { [ME, 1] }> = constant(0.0f32, const_shape![ME, 1]);
-            let mut acc: Tile<f32, { [ME, D] }> = constant(0.0f32, const_shape![ME, D]);
+            let mut acc: Tile<f32, { [ME, DV] }> = constant(0.0f32, const_shape![ME, DV]);
             let transpose: Array<{ [1, 0] }> = Array::<{ [1, 0] }> { dims: &[1i32, 0i32] };
             let k_strides: Array<{ [-1, 1] }> = Array::<{ [-1, 1] }> { dims: &[HK * D] };
             let v_strides: Array<{ [-1, 1] }> = Array::<{ [-1, 1] }> { dims: &[2i32 * HK * D] };
+            // Column block `dz` of V, the gate and the output.
+            let dv_off: i32 = dz * DV;
+            let v_max: Tile<f32, { [BN, DV] }> = constant(65504.0f32, const_shape![BN, DV]);
+            let v_min: Tile<f32, { [BN, DV] }> = constant(-65504.0f32, const_shape![BN, DV]);
 
             // Range A then range B; the online softmax carries (m, l, acc) across both (the LSE merge).
             for r in 0i32..2i32 {
                 let r0: i32 = if r == 0i32 { a0 } else { b0 };
                 let r_len: i32 = if r == 0i32 { a_len } else { b_len };
                 let kv_shape: Shape<{ [-1, D] }> = Shape::<{ [-1, D] }> { dims: &[max(r_len, 1i32)] };
+                let v_shape: Shape<{ [-1, DV] }> = Shape::<{ [-1, DV] }> { dims: &[max(r_len, 1i32)] };
                 let k_base: PointerTile<*mut bf16, { [] }> = pointer_to_tile(k_ptr).offset((r0 * HK + kvh) * D);
                 let v_base: PointerTile<*mut bf16, { [] }> =
-                    pointer_to_tile(kv_ptr).offset((r0 * 2i32 * HK + HK + kvh) * D);
+                    pointer_to_tile(kv_ptr).offset((r0 * 2i32 * HK + HK + kvh) * D + dv_off);
                 let k_tv: Tensor<bf16, { [-1, D] }> = unsafe { make_tensor_view(k_base, kv_shape, k_strides, tok) };
-                let v_tv: Tensor<bf16, { [-1, D] }> = unsafe { make_tensor_view(v_base, kv_shape, v_strides, tok) };
+                let v_tv: Tensor<bf16, { [-1, DV] }> = unsafe { make_tensor_view(v_base, v_shape, v_strides, tok) };
                 let k_part: Partition<bf16, { [BN, D] }> = k_tv.partition(const_shape![BN, D]);
-                let v_part: Partition<bf16, { [BN, D] }> = v_tv.partition(const_shape![BN, D]);
+                let v_part: Partition<bf16, { [BN, DV] }> = v_tv.partition(const_shape![BN, DV]);
                 let n_full: i32 = r_len / BN;
                 let n_blocks: i32 = ceil_div(r_len, BN);
                 for j in 0i32..n_blocks {
@@ -473,15 +481,27 @@ pub mod seg_attn_module {
                     let l_ij: Tile<f32, { [ME] }> = reduce_sum(p, 1i32);
                     let alpha: Tile<f32, { [ME, 1] }> = exp2(m_i - m_ij, ftz::Disabled);
                     l_i = l_i * alpha + l_ij.reshape(const_shape![ME, 1]);
-                    let tv: Tile<bf16, { [BN, D] }> =
+                    let tv: Tile<bf16, { [BN, DV] }> =
                         load_view_tko(&v_part, [j, 0i32], ordering::Weak, scope::TileBlock, Some(LAT), tma::Enabled);
                     // P @ V with P split into PS bf16 parts (hi, mid, lo: ~24 mantissa bits at PS = 3). The
                     // reference's sdpa (MATH backend for head_dim 256 with a mask) keeps P in fp32; a single bf16
                     // P is 4x off its error envelope (see tests/kernels_attn.rs). The block product starts from
-                    // zero and is added to the running sum in fp32 rather than accumulated inside the MMA.
+                    // zero and is added to the running sum in fp32 rather than accumulated inside the MMA: the
+                    // tensor cores' fp32 accumulation is not round-to-nearest, and a running sum kept inside the
+                    // MMA measures 8x more mismatches against the reference.
                     let p_hi: Tile<bf16, { [ME, BN] }> = convert_tile(p);
-                    let mut pv: Tile<f32, { [ME, D] }> = zero_md;
-                    if PS > 1i32 {
+                    let mut pv: Tile<f32, { [ME, DV] }> = zero_md;
+                    if RF == 1i32 {
+                        // P - bf16(P) in f16 carries the next 11 bits (subnormal below 2^-14: an absolute error
+                        // <= 2^-25, as fp32 P has). bf16 V is exact in f16 within the f16 range; it is clamped to
+                        // that range, which only affects this correction term.
+                        let p_hi_f: Tile<f32, { [ME, BN] }> = convert_tile(p_hi);
+                        let p_r: Tile<f16, { [ME, BN] }> = convert_tile(p - p_hi_f);
+                        let vf: Tile<f32, { [BN, DV] }> = convert_tile(tv);
+                        let vf: Tile<f32, { [BN, DV] }> = min_tile(max_tile(vf, v_min), v_max);
+                        let v16: Tile<f16, { [BN, DV] }> = convert_tile(vf);
+                        pv = mma(p_r, v16, pv);
+                    } else if PS > 1i32 {
                         let p_hi_f: Tile<f32, { [ME, BN] }> = convert_tile(p_hi);
                         let p_r1: Tile<f32, { [ME, BN] }> = p - p_hi_f;
                         let p_mid: Tile<bf16, { [ME, BN] }> = convert_tile(p_r1);
@@ -493,33 +513,37 @@ pub mod seg_attn_module {
                         pv = mma(p_mid, tv, pv);
                     }
                     pv = mma(p_hi, tv, pv);
-                    acc = acc * alpha.broadcast(const_shape![ME, D]) + pv;
+                    // One rounding (FFMA) instead of a multiply and an add.
+                    let alpha_md: Tile<f32, { [ME, DV] }> = alpha.broadcast(const_shape![ME, DV]);
+                    acc = fma(acc, alpha_md, pv, rounding::NearestEven, ftz::Disabled);
                     m_i = m_ij;
                 }
             }
 
             // Epilogue: o = bf16(acc / l); out = bf16(o * bf16(sigmoid(gate))).
-            let o: Tile<f32, { [ME, D] }> = true_div(acc, l_i.broadcast(const_shape![ME, D]));
-            let o: Tile<bf16, { [ME, D] }> = convert_tile(o);
-            let o: Tile<f32, { [ME, D] }> = convert_tile(o);
+            let o: Tile<f32, { [ME, DV] }> = true_div(acc, l_i.broadcast(const_shape![ME, DV]));
+            let o: Tile<bf16, { [ME, DV] }> = convert_tile(o);
+            let o: Tile<f32, { [ME, DV] }> = convert_tile(o);
+            let o_shape: Shape<{ [-1, HQ, DV] }> = Shape::<{ [-1, HQ, DV] }> { dims: &[q_len] };
             let g_strides: Array<{ [-1, -1, 1] }> = Array::<{ [-1, -1, 1] }> { dims: &[HQ * 2i32 * D, 2i32 * D] };
-            let g_base: PointerTile<*mut bf16, { [] }> = pointer_to_tile(qg_ptr).offset(q0 * HQ * 2i32 * D + D);
-            let g_tv: Tensor<bf16, { [-1, HQ, D] }> = unsafe { make_tensor_view(g_base, q_shape, g_strides, tok) };
-            let g_part: Partition<bf16, { [BM, G, D] }> = g_tv.partition(const_shape![BM, G, D]);
-            let tg: Tile<bf16, { [BM, G, D] }> =
+            let g_base: PointerTile<*mut bf16, { [] }> =
+                pointer_to_tile(qg_ptr).offset(q0 * HQ * 2i32 * D + D + dv_off);
+            let g_tv: Tensor<bf16, { [-1, HQ, DV] }> = unsafe { make_tensor_view(g_base, o_shape, g_strides, tok) };
+            let g_part: Partition<bf16, { [BM, G, DV] }> = g_tv.partition(const_shape![BM, G, DV]);
+            let tg: Tile<bf16, { [BM, G, DV] }> =
                 load_view_tko(&g_part, [0i32, kvh, 0i32], ordering::Weak, scope::TileBlock, None, tma::Enabled);
-            let gf: Tile<f32, { [ME, D] }> = convert_tile(tg.reshape(const_shape![ME, D]));
-            let one: Tile<f32, { [ME, D] }> = constant(1.0f32, const_shape![ME, D]);
-            let sg: Tile<f32, { [ME, D] }> = true_div(one, one + exp(negf(gf)));
-            let sg: Tile<bf16, { [ME, D] }> = convert_tile(sg);
-            let sg: Tile<f32, { [ME, D] }> = convert_tile(sg);
-            let y: Tile<bf16, { [ME, D] }> = convert_tile(o * sg);
+            let gf: Tile<f32, { [ME, DV] }> = convert_tile(tg.reshape(const_shape![ME, DV]));
+            let one: Tile<f32, { [ME, DV] }> = constant(1.0f32, const_shape![ME, DV]);
+            let sg: Tile<f32, { [ME, DV] }> = true_div(one, one + exp(negf(gf)));
+            let sg: Tile<bf16, { [ME, DV] }> = convert_tile(sg);
+            let sg: Tile<f32, { [ME, DV] }> = convert_tile(sg);
+            let y: Tile<bf16, { [ME, DV] }> = convert_tile(o * sg);
 
-            let o_base: PointerTile<*mut bf16, { [] }> = pointer_to_tile(out_ptr).offset(q0 * HQ * D);
-            let o_tv: Tensor<bf16, { [-1, HQ, D] }> = unsafe { make_tensor_view(o_base, q_shape, q_strides, tok) };
-            let mut o_part: PartitionMut<bf16, { [BM, G, D] }> =
-                unsafe { o_tv.partition_full_mut(const_shape![BM, G, D]) };
-            let y: Tile<bf16, { [BM, G, D] }> = y.reshape(const_shape![BM, G, D]);
+            let o_base: PointerTile<*mut bf16, { [] }> = pointer_to_tile(out_ptr).offset(q0 * HQ * D + dv_off);
+            let o_tv: Tensor<bf16, { [-1, HQ, DV] }> = unsafe { make_tensor_view(o_base, o_shape, q_strides, tok) };
+            let mut o_part: PartitionMut<bf16, { [BM, G, DV] }> =
+                unsafe { o_tv.partition_full_mut(const_shape![BM, G, DV]) };
+            let y: Tile<bf16, { [BM, G, DV] }> = y.reshape(const_shape![BM, G, DV]);
             unsafe {
                 store_view_tko_mut(
                     &mut o_part,
@@ -544,16 +568,61 @@ pub struct AttnTiles {
     pub bn: usize,
     /// Load pipelining hint.
     pub latency: usize,
-    /// bf16 parts P is split into for `P @ V` (1, 2 or 3). 3 matches the fp32 reference (default); 1 is the
-    /// classic flash-attention bf16 P, ~4x outside the reference's error envelope.
+    /// bf16 parts P is split into for `P @ V` (1, 2 or 3). 3 matches the fp32 reference (default); 2 keeps
+    /// max and p99 but rounds 0.18% of outputs differently (envelope 0.075%); 1 is the classic
+    /// flash-attention bf16 P, ~4x outside the reference's error envelope (tests/kernels_attn.rs).
     pub p_split: usize,
     /// Worker warps per tile block (`num_worker_warps_per_cta`); 0 leaves it to the compiler.
     pub warps: usize,
     /// Occupancy hint (tile blocks per SM); 0 leaves it to the compiler.
     pub occupancy: usize,
+    /// Output column blocks per work item (1, 2 or 4): the grid's z axis. Each tile block recomputes
+    /// `Q K^T` and the softmax for its rows and keeps a `[bm * 4, 256 / d_split]` fp32 accumulator, so
+    /// `d_split = 2` with 4 warps fits two tile blocks per SM (128 registers, 42 KB shared memory) at the
+    /// cost of computing `Q K^T` twice. At fixed `bm`, `bn`, `latency`, `warps` and P split, every `d_split`
+    /// gives the same bits (asserted against the default in tests/kernels_attn.rs); a row's result still
+    /// depends only on its own segment's work item. `latency` also keeps the bits (measured);
+    /// changing `warps` or `bm` changes the softmax reduction order and so the low bits of a few outputs.
+    pub d_split: usize,
+    /// Precision knob, only with `p_split == 2`: the second part of P is `f16(P - bf16(P))` multiplied by
+    /// `f16(V)` (V clamped to the f16 range), ~20 bits of P instead of ~17 for the same two MMAs.
+    pub residual_f16: bool,
 }
 
 impl AttnTiles {
+    /// OPT-IN, NOT the engine path: the fastest measured tiles at the fp32-P numerics (`p_split = 3`) for a
+    /// packed batch of `t` tokens (bench_attn on GB10, idle GPU; see the table on [`Default`]). Build the
+    /// [`AttnPlan`] with the returned `bm`.
+    ///
+    /// For `t <= SMALL_BATCH_TOKENS` this returns 4-warp tiles, which are **not bit-identical** to
+    /// [`AttnTiles::default`] (8 warps reduce the softmax row max and sum across warps in a different
+    /// order): on the 6131-token test batch 130 of 25.1M outputs differ, by at most 2 bf16 ulp
+    /// (`seg_attn_tiles_match_default_bits` in tests/kernels_attn.rs prints the measured difference). An
+    /// engine that picks tiles by `t` therefore gives a request different bits alone (small `t`) and packed
+    /// (large `t`), which breaks the bit-exact batch invariance of DESIGN.md §3.1; the difference stays
+    /// inside the kernel's error envelope, and the model-level gate (DESIGN.md §9.2) would have to absorb
+    /// it. The engine uses [`AttnTiles::default`] at every `t`. Within one tile set, branch invariance (alone
+    /// vs packed) is exact for these tiles too. Above `SMALL_BATCH_TOKENS` this returns the default.
+    pub fn for_tokens(t: usize) -> Self {
+        if t <= SMALL_BATCH_TOKENS {
+            // Few work items: two tile blocks per SM keep the GPU busy.
+            AttnTiles { warps: 4, occupancy: 2, d_split: 2, ..Self::default() }
+        } else {
+            Self::default()
+        }
+    }
+
+    /// Panics on a combination the kernel does not implement.
+    fn validate(&self) {
+        // cuTile tiles are powers of two; an MMA needs at least 16 rows (bm * 4) and 16 keys.
+        assert!(self.bm.is_power_of_two() && self.bm >= 4, "seg_attn: bm {} must be a power of two >= 4", self.bm);
+        assert!(self.bn.is_power_of_two() && self.bn >= 16, "seg_attn: bn {} must be a power of two >= 16", self.bn);
+        assert!((1..=3).contains(&self.p_split), "seg_attn: p_split {} not in 1..=3", self.p_split);
+        assert!([1, 2, 4].contains(&self.d_split), "seg_attn: d_split {} not in 1, 2, 4", self.d_split);
+        assert!(!self.residual_f16 || self.p_split == 2, "seg_attn: residual_f16 needs p_split = 2");
+        assert!(self.latency >= 1, "seg_attn: latency must be >= 1");
+    }
+
     fn compile_options(&self) -> cutile::tile_kernel::CompileOptions {
         let mut o = cutile::tile_kernel::CompileOptions::default();
         if self.warps > 0 {
@@ -566,12 +635,37 @@ impl AttnTiles {
     }
 }
 
-/// Default: the fastest spill-free shape measured on GB10 (bench_attn, T = 4096): 168 registers per thread,
-/// 8 bytes of stack, 80 KB shared memory, 8 warps, 1 tile block per SM. The compiler's default (4 warps)
-/// at bm 16 / bn 64 needs 255 registers and spills 248 bytes per thread, and runs ~1.5x slower.
+/// Batches up to this many tokens get the opt-in `d_split = 2`, 4-warp tiles from [`AttnTiles::for_tokens`]
+/// (1024: at 2048 the two shapes tie on the median).
+pub const SMALL_BATCH_TOKENS: usize = 1024;
+
+/// Default: the engine's tiles at every T (one tile set keeps a request's bits the same alone and packed),
+/// and the fastest spill-free shape at T >= 4096 on GB10: 168 registers per thread, no stack, 80 KB
+/// shared memory, 8 warps, 1 tile block per SM. The compiler's default (4 warps) at bm 16 / bn 64 needs 255
+/// registers and spills 248 bytes per thread, and runs ~1.5x slower.
+///
+/// Measured with bench_attn under scripts/gpu.sh (idle GPU, minimum of 5 interleaved rounds; p_split 3;
+/// useful TFLOP/s count `Q K^T` and `P V` once over the attended pairs):
+///
+/// | T | default (d_split 1, 8 warps) | d_split 2, 4 warps, 2 blocks/SM | opt-in `for_tokens` |
+/// |---|---|---|---|
+/// | 1024 | 0.249 ms, 26.4 | 0.226 ms, 29.1 | d_split 2 |
+/// | 2048 | 1.026 ms, 32.2 (median 1.033) | 0.986 ms, 33.5 (median 1.039) | default (tie) |
+/// | 4096 | 4.859 ms, 37.5 | 4.972 ms, 36.7 | default |
+/// | 16384 | 76.14 ms, 37.9 | 78.49 ms, 36.8 | default |
+///
+/// No faster shape keeps the default's bits at small T: `d_split = 2` at 8 warps is bit-identical but
+/// ~3x slower (0.78 ms at 1024), and bm 8 (0.229 ms at 1024) differs from the default in 112 of 25.1M
+/// outputs on the test batch.
+///
+/// Phase 1 (same shape, separate multiply and add for the running sum): 5.03 ms at 4096, 78.4 ms at 16384.
+///
+/// `d_split = 2` runs the tensor cores at ~90 TFLOP/s against ~75 for the default, but computes `Q K^T`
+/// twice; it wins only when the default leaves SMs idle. With P split in three bf16 parts the MMA work is
+/// twice the useful work, which caps p_split 3 at ~59 useful TFLOP/s on this GPU (~118 TFLOP/s bf16 peak).
 impl Default for AttnTiles {
     fn default() -> Self {
-        AttnTiles { bm: 16, bn: 32, latency: 2, p_split: 3, warps: 8, occupancy: 0 }
+        AttnTiles { bm: 16, bn: 32, latency: 2, p_split: 3, warps: 8, occupancy: 0, d_split: 1, residual_f16: false }
     }
 }
 
@@ -594,12 +688,13 @@ pub struct SegAttnArgs {
     pub num_items: usize,
 }
 
-/// Launch `seg_attn` over `args.num_items` work items × 4 kv heads.
+/// Launch `seg_attn` over `args.num_items` work items × 4 kv heads × `tiles.d_split` column blocks.
 ///
 /// # Safety
 /// Every pointer must reference a live device buffer of the documented shape for the batch the plan was
 /// built from, and `out` must not alias any input. The plan must have been built with `tiles.bm`.
 pub unsafe fn seg_attn(args: SegAttnArgs, tiles: AttnTiles) -> impl GraphNode {
+    tiles.validate();
     let generics = vec![
         tiles.bm.to_string(),
         tiles.bn.to_string(),
@@ -610,6 +705,8 @@ pub unsafe fn seg_attn(args: SegAttnArgs, tiles: AttnTiles) -> impl GraphNode {
         NUM_KV_HEADS.to_string(),
         tiles.latency.to_string(),
         tiles.p_split.to_string(),
+        (HEAD_DIM / tiles.d_split).to_string(),
+        u8::from(tiles.residual_f16).to_string(),
     ];
     unsafe {
         seg_attn_module::seg_attn(
@@ -625,7 +722,7 @@ pub unsafe fn seg_attn(args: SegAttnArgs, tiles: AttnTiles) -> impl GraphNode {
     }
     .generics(generics)
     .compile_options(tiles.compile_options())
-    .grid((args.num_items as u32, NUM_KV_HEADS as u32, 1))
+    .grid((args.num_items as u32, NUM_KV_HEADS as u32, tiles.d_split as u32))
 }
 
 #[cfg(test)]

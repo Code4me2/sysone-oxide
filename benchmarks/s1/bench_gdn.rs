@@ -110,10 +110,35 @@ struct Args {
     shapes: Vec<String>,
     #[arg(long, default_value_t = 10)]
     iters: usize,
-    /// Delta-rule implementation: `tile` (cuTile) or `simt` (cuda-oxide). For `simt` the `wy` column is empty:
-    /// the WY operands are recomputed inside the scan.
+    /// Delta-rule implementation: `tile` (cuTile) or `simt` (cuda-oxide, docs/G1.md). For `simt` the precision,
+    /// block and warp options, `--w3a` and `--f32-qk` do not apply, and the `wy` column is empty (the WY operands
+    /// are recomputed inside the scan).
     #[arg(long, default_value = "tile")]
     backend: GdnBackend,
+    /// Scan precision: fp32 (3xTF32, default), tf32, bf16, mixed (3xTF32 state, TF32 output).
+    #[arg(long, default_value = "fp32")]
+    precision: String,
+    /// Override the prefix / suffix scan value-column blocks, the warps per CTA and the forward-substitution
+    /// block of the chunk inverse (`GdnOptions`). Each takes a comma-separated list; every combination is run.
+    #[arg(long, value_delimiter = ',')]
+    prefix_bv: Vec<usize>,
+    #[arg(long, value_delimiter = ',')]
+    suffix_bv: Vec<usize>,
+    #[arg(long, value_delimiter = ',')]
+    prefix_warps: Vec<i32>,
+    #[arg(long, value_delimiter = ',')]
+    suffix_warps: Vec<i32>,
+    #[arg(long, value_delimiter = ',')]
+    tp_warps: Vec<i32>,
+    #[arg(long, value_delimiter = ',')]
+    tp_fsb: Vec<i32>,
+    /// Time the Phase 1 (W3a) four-launch scan instead (inverse, WY, prefix scan, suffix scan).
+    #[arg(long)]
+    w3a: bool,
+    /// Time the P1 scan reading stored f32 q, k (`tree_conv1d_silu_qk` + `gdn_chunk_scan_with`) instead of the
+    /// mixer's default (`tree_conv1d_silu_inv` + `gdn_chunk_scan_conv`, q and k rebuilt from the bf16 conv output).
+    #[arg(long)]
+    f32_qk: bool,
 }
 
 const SUFFIXES: usize = 8;
@@ -166,7 +191,6 @@ fn time(iters: usize, s: &Arc<Stream>, make: &dyn Fn() -> DeviceOpVec<()>) -> Re
 fn main() -> Result<()> {
     let args = Args::parse();
     println!("# {}", sysone::engine::platform::require_idle_gpu(args.allow_shared_gpu)?);
-    println!("# backend {}", args.backend.name());
     let ctx = Context::new(0)?;
     let s = ctx.new_stream()?;
     if let Ok(dir) = std::env::var("GDN_JIT_STORE") {
@@ -189,89 +213,172 @@ fn main() -> Result<()> {
         _ => None,
     };
 
-    println!(
-        "{:>6} {:>6} {:>4} {:>4} | {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} | {:>8} {:>8} | {:>8} {:>6}",
-        "T", "prefix", "reqs", "segs", "conv", "prep", "tinv", "wy", "scan_p", "scan_s", "norm", "sum", "mixer", "x24 ms", "fwd %"
-    );
-    for shape in &args.shapes {
-        let (t, prefix) = match shape.split_once(':') {
-            Some((t, p)) => (t.parse::<usize>()?, p.parse::<usize>()?),
-            None => (shape.parse::<usize>()?, 2048usize.min(shape.parse::<usize>()?.saturating_sub(SUFFIXES * SUFFIX_LEN).max(1))),
-        };
-        let batch = tree(t, prefix);
-        batch.validate()?;
-        let t = batch.num_tokens();
-        let plan = GdnPlan::new(&batch.segments, t, &s)?;
-        let proj = upload((0..t * PROJ_COLS).map(|_| bf16::from_f32(rng.next() * 2.0)).collect(), &[t, PROJ_COLS], &s)?;
-        let scratch = GdnScratch::for_backend(args.backend, t, plan.num_prefixes, &s)?;
-        let out = api::zeros::<bf16>(&[t, VALUE_DIM]).sync_on(&s)?;
-        let pv = DView::of(&proj)?;
-        let conv = scratch.conv_view()?;
-        let core = DView::of(&scratch.core)?;
-        let ov = DView::of(&out)?;
-        let one = |op: BoxedDeviceOp<()>| {
-            let mut v = DeviceOpVec::with_capacity(1);
-            v.push(op);
-            v
-        };
-        // SAFETY (all launches below): every buffer outlives the synchronous timing loops.
-        let backend = args.backend;
-        let mixer = time(args.iters, &s, &|| unsafe { gdn_mixer_with(backend, &plan, pv, &w, 1e-6, &scratch, ov).unwrap() })?;
-        let t_conv = time(args.iters, &s, &|| one(unsafe { tree_conv1d_silu(&plan, pv.columns(0, CONV_DIM).unwrap(), &conv_w, conv).unwrap() }))?;
-        let a = pv.columns(CONV_DIM + VALUE_DIM, 32)?;
-        let b = pv.columns(CONV_DIM + VALUE_DIM + 32, 32)?;
-        // "prep" is gdn_prep for the cuTile backend and the gates-only kernel for SIMT (which normalises q, k in the scan).
-        let t_prep = time(args.iters, &s, &|| {
-            one(unsafe {
-                match backend {
-                    GdnBackend::Tile => gdn_prep(&plan, conv, a, b, &w, &scratch).unwrap(),
-                    GdnBackend::Simt => simt::gates(&plan, a, b, &w, &scratch).unwrap(),
-                }
-            })
-        })?;
-        let v = conv.columns(2 * KEY_DIM, VALUE_DIM)?;
-        let z = pv.columns(CONV_DIM, VALUE_DIM)?;
-        let mut parts = [0f64; 4];
-        // Launches of the scan in `parts` order (inverse, WY, prefix scan, suffix scan); the SIMT scan has no WY step.
-        let slots: &[usize] = match backend {
-            GdnBackend::Tile => &[0, 1, 2, 3],
-            GdnBackend::Simt => &[0, 2, 3],
-        };
-        for (k, &slot) in slots.iter().enumerate() {
-            // Time each launch alone by replaying the full sequence and dropping the others (inputs stay valid from
-            // the mixer run above).
-            parts[slot] = time(args.iters, &s, &|| {
-                let mut ops = unsafe {
-                    match backend {
-                        GdnBackend::Tile => gdn_chunk_scan(&plan, v, &scratch, core).unwrap(),
-                        GdnBackend::Simt => simt::chunk_scan(&plan, conv, &scratch, core).unwrap(),
+    let mut base = args.backend.options();
+    let simt_backend = args.backend == GdnBackend::Simt;
+    anyhow::ensure!(!simt_backend || !(args.w3a || args.f32_qk), "--w3a and --f32-qk select cuTile scans");
+    base.precision = match args.precision.as_str() {
+        "fp32" => GdnPrecision::Fp32Split3,
+        "tf32" => GdnPrecision::Tf32,
+        "bf16" => GdnPrecision::Bf16Operands,
+        "mixed" => GdnPrecision::Fp32StateTf32Output,
+        p => anyhow::bail!("unknown precision {p}"),
+    };
+    let or = |v: &Vec<usize>, d: usize| if v.is_empty() { vec![d] } else { v.clone() };
+    let ori = |v: &Vec<i32>, d: i32| if v.is_empty() { vec![d] } else { v.clone() };
+    let mut configs = Vec::new();
+    for prefix_bv in or(&args.prefix_bv, base.prefix_bv) {
+        for suffix_bv in or(&args.suffix_bv, base.suffix_bv) {
+            for (prefix_warps, suffix_warps) in ori(&args.prefix_warps, base.prefix_warps)
+                .into_iter()
+                .flat_map(|p| ori(&args.suffix_warps, base.suffix_warps).into_iter().map(move |s| (p, s)))
+            {
+                for tp_warps in ori(&args.tp_warps, base.tp_warps) {
+                    for tp_fsb in ori(&args.tp_fsb, base.tp_fsb) {
+                        configs.push(GdnOptions { prefix_bv, suffix_bv, prefix_warps, suffix_warps, tp_warps, tp_fsb, ..base });
                     }
-                };
-                let keep = ops.remove(k);
-                let mut v = DeviceOpVec::with_capacity(1);
-                v.push(keep);
-                v
-            })?;
+                }
+            }
         }
-        let t_norm = time(args.iters, &s, &|| one(unsafe { gated_rmsnorm(&plan, core, z, &norm_w, 1e-6, ov).unwrap() }))?;
-        let sum = t_conv + t_prep + parts.iter().sum::<f64>() + t_norm;
-        let fwd = gemm_forward_ms(t).map(|g| format!("{:>5.1}%", 100.0 * 24.0 * mixer * 1e3 / (g + 24.0 * mixer * 1e3)));
-        let reqs = batch.segments.iter().filter(|s| s.is_prefix()).count();
+    }
+    let w3a = args.w3a;
+    let f32_qk = args.f32_qk;
+    if w3a || simt_backend {
+        configs.truncate(1);
+    }
+    for opts in configs {
         println!(
-            "{t:>6} {prefix:>6} {reqs:>4} {:>4} | {:>7.3} {:>7.3} {:>7.3} {:>7.3} {:>7.3} {:>7.3} {:>7.3} | {:>8.3} {:>8.3} | {:>8.1} {:>6}",
-            batch.segments.len(),
-            t_conv * 1e3,
-            t_prep * 1e3,
-            parts[0] * 1e3,
-            parts[1] * 1e3,
-            parts[2] * 1e3,
-            parts[3] * 1e3,
-            t_norm * 1e3,
-            sum * 1e3,
-            mixer * 1e3,
-            24.0 * mixer * 1e3,
-            fwd.unwrap_or_else(|| "n/a".into()),
+            "# {}",
+            if w3a {
+                "W3a scan (tinv, wy, scan_p, scan_s)".to_string()
+            } else if simt_backend {
+                "SIMT (cuda-oxide) scan: tinv, wy unused, scan_p, scan_s; prep = SIMT gates".to_string()
+            } else {
+                format!("{opts:?} (tinv = Tinv + p, wy unused; q, k {})", if f32_qk { "stored f32" } else { "from the bf16 conv" })
+            }
         );
+        let scan = |plan: &GdnPlan, conv: DView<bf16>, scratch: &GdnScratch, core: DView<bf16>| -> DeviceOpVec<()> {
+            let v = conv.columns(2 * KEY_DIM, VALUE_DIM).unwrap();
+            // SAFETY: as for the other launches below.
+            unsafe {
+                if w3a {
+                    gdn_chunk_scan_w3a(plan, v, scratch, core)
+                } else if simt_backend {
+                    simt::chunk_scan(plan, conv, scratch, core)
+                } else if f32_qk {
+                    gdn_chunk_scan_with(plan, v, scratch, core, &opts)
+                } else {
+                    gdn_chunk_scan_conv(plan, conv, scratch, core, &opts)
+                }
+            }
+            .unwrap()
+        };
+        // The conv of each path: W3a plain (then gdn_prep), P1 with stored f32 q, k, or with inverse norms.
+        let conv_op = |plan: &GdnPlan, x: DView<bf16>, conv: DView<bf16>, scratch: &GdnScratch| -> BoxedDeviceOp<()> {
+            // SAFETY: as for the other launches below.
+            unsafe {
+                if w3a || simt_backend {
+                    tree_conv1d_silu(plan, x, &conv_w, conv)
+                } else if f32_qk {
+                    tree_conv1d_silu_qk(plan, x, &conv_w, conv, scratch)
+                } else {
+                    tree_conv1d_silu_inv(plan, x, &conv_w, conv)
+                }
+            }
+            .unwrap()
+        };
+        println!(
+            "{:>6} {:>6} {:>4} {:>4} | {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} | {:>8} {:>8} | {:>8} {:>6}",
+            "T", "prefix", "reqs", "segs", "conv", "prep", "tinv", "wy", "scan_p", "scan_s", "norm", "sum", "mixer", "x24 ms", "fwd %"
+        );
+        for shape in &args.shapes {
+            let (t, prefix) = match shape.split_once(':') {
+                Some((t, p)) => (t.parse::<usize>()?, p.parse::<usize>()?),
+                None => (shape.parse::<usize>()?, 2048usize.min(shape.parse::<usize>()?.saturating_sub(SUFFIXES * SUFFIX_LEN).max(1))),
+            };
+            let batch = tree(t, prefix);
+            batch.validate()?;
+            let t = batch.num_tokens();
+            let plan = GdnPlan::new(&batch.segments, t, &s)?;
+            let proj = upload((0..t * PROJ_COLS).map(|_| bf16::from_f32(rng.next() * 2.0)).collect(), &[t, PROJ_COLS], &s)?;
+            let scratch = if w3a {
+                GdnScratch::with_w3a_buffers(t, plan.num_prefixes, &s)?
+            } else {
+                GdnScratch::for_backend(opts.backend, t, plan.num_prefixes, &s)?
+            };
+            let out = api::zeros::<bf16>(&[t, VALUE_DIM]).sync_on(&s)?;
+            let pv = DView::of(&proj)?;
+            let conv = scratch.conv_view()?;
+            let core = DView::of(&scratch.core)?;
+            let ov = DView::of(&out)?;
+            let one = |op: BoxedDeviceOp<()>| {
+                let mut v = DeviceOpVec::with_capacity(1);
+                v.push(op);
+                v
+            };
+            // SAFETY (all launches below): every buffer outlives the synchronous timing loops.
+            let a = pv.columns(CONV_DIM + VALUE_DIM, 32)?;
+            let b = pv.columns(CONV_DIM + VALUE_DIM + 32, 32)?;
+            let z = pv.columns(CONV_DIM, VALUE_DIM)?;
+            // W3a: gdn_prep (q, k, g, beta); P1: cuTile gates; SIMT: its own gates kernel.
+            let prep_op = |scratch: &GdnScratch| -> BoxedDeviceOp<()> {
+                // SAFETY: as for the other launches.
+                unsafe {
+                    if w3a {
+                        gdn_prep(&plan, conv, a, b, &w, scratch)
+                    } else if simt_backend {
+                        simt::gates(&plan, a, b, &w, scratch)
+                    } else {
+                        gdn_gates(&plan, conv, a, b, &w, scratch)
+                    }
+                }
+                .unwrap()
+            };
+            let mixer = time(args.iters, &s, &|| {
+                let mut ops = DeviceOpVec::with_capacity(4);
+                unsafe {
+                    ops.push(conv_op(&plan, pv.columns(0, CONV_DIM).unwrap(), conv, &scratch));
+                    ops.push(prep_op(&scratch));
+                    ops.push(scan(&plan, conv, &scratch, core).map(|_| ()));
+                    ops.push(gated_rmsnorm(&plan, core, z, &norm_w, 1e-6, ov).unwrap());
+                }
+                ops
+            })?;
+            // P1: conv also writes inverse norms (or normalised f32 q, k), prep = gates only; W3a: conv, then prep.
+            let t_conv = time(args.iters, &s, &|| one(conv_op(&plan, pv.columns(0, CONV_DIM).unwrap(), conv, &scratch)))?;
+            let t_prep = time(args.iters, &s, &|| one(prep_op(&scratch)))?;
+            // The scan is four operations (W3a: inverse, WY, prefix scan, suffix scan; P1: inverse + p, an empty
+            // op in the WY slot, prefix scan, suffix scan); time each alone by replaying the full sequence and
+            // dropping the others (inputs stay valid from the mixer run above).
+            let mut parts = [0f64; 4];
+            for k in 0..4 {
+                parts[k] = time(args.iters, &s, &|| {
+                    let mut ops = scan(&plan, conv, &scratch, core);
+                    let keep = ops.remove(k);
+                    let mut v = DeviceOpVec::with_capacity(1);
+                    v.push(keep);
+                    v
+                })?;
+            }
+            let t_norm = time(args.iters, &s, &|| one(unsafe { gated_rmsnorm(&plan, core, z, &norm_w, 1e-6, ov).unwrap() }))?;
+            let sum = t_conv + t_prep + parts.iter().sum::<f64>() + t_norm;
+            let fwd = gemm_forward_ms(t).map(|g| format!("{:>5.1}%", 100.0 * 24.0 * mixer * 1e3 / (g + 24.0 * mixer * 1e3)));
+            let reqs = batch.segments.iter().filter(|s| s.is_prefix()).count();
+            println!(
+                "{t:>6} {prefix:>6} {reqs:>4} {:>4} | {:>7.3} {:>7.3} {:>7.3} {:>7.3} {:>7.3} {:>7.3} {:>7.3} | {:>8.3} {:>8.3} | {:>8.1} {:>6}",
+                batch.segments.len(),
+                t_conv * 1e3,
+                t_prep * 1e3,
+                parts[0] * 1e3,
+                parts[1] * 1e3,
+                parts[2] * 1e3,
+                parts[3] * 1e3,
+                t_norm * 1e3,
+                sum * 1e3,
+                mixer * 1e3,
+                24.0 * mixer * 1e3,
+                fwd.unwrap_or_else(|| "n/a".into()),
+            );
+        }
     }
     println!("ms per layer (one GDN mixer, excluding the in/out projections); fwd % = 24 layers / (Phase 0 GEMM forward + 24 layers)");
     Ok(())

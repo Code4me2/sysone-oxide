@@ -1,3 +1,17 @@
+//! `sysone`: the server binary. Parses the CLI, loads the model config and the [frontend], builds the engine
+//! factory (`--engine mock` or `--engine bf16`), starts the scheduler and CPU pool (`AppState::start_with`) and
+//! serves HTTP until Ctrl-C.
+//!
+//! The engine is built inside the scheduler's GPU worker thread (the factory closure runs there), because a CUDA
+//! context belongs to the thread that creates it. `--max-step-tokens` must cover both `--token-budget` and
+//! `--max-request-tokens`: requests are never split across steps. `--engine mock` wraps `MockEngine` in
+//! `SimulatedEngine`, which can sleep like a real step (`--mock-step-us`, `--mock-ns-per-token`) for scheduler
+//! and load-generator work without a GPU.
+//!
+//! See docs/ARCHITECTURE.md §2 for the path of a request, and `sysone --help` for every flag.
+//!
+//! [frontend]: sysone::frontend
+
 use anyhow::{Context, Result, ensure};
 use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
@@ -8,6 +22,7 @@ use sysone::api::query::py_int;
 use sysone::api::server::{self, AppState, ServerInfo, ServerOptions};
 use sysone::contract::{DecisionBatch, DecisionEngine, MassReadout, MockEngine, SlotLogits};
 use sysone::engine::config::ModelConfig;
+use sysone::engine::gpu::{EngineOptions, GpuEngine};
 use sysone::frontend::{Frontend, Limits};
 use sysone::sched::{EngineFactory, SchedConfig};
 
@@ -15,6 +30,8 @@ use sysone::sched::{EngineFactory, SchedConfig};
 enum EngineKind {
     /// The deterministic stand-in (`contract::MockEngine`): real frontend and scheduler, fake logits.
     Mock,
+    /// The bf16 GPU engine (`engine::gpu::GpuEngine`) on device 0.
+    Bf16,
 }
 
 #[derive(Parser, Debug)]
@@ -37,9 +54,19 @@ struct Args {
     /// Pass `--name` to pin the name a client expects.
     #[arg(long)]
     name: Option<String>,
-    /// Engine. Only the mock exists until the real engine lands (DESIGN.md §11, W4).
+    /// Engine: `bf16` runs the model on the GPU; `mock` returns deterministic fake logits.
     #[arg(long, value_enum, default_value_t = EngineKind::Mock)]
     engine: EngineKind,
+    /// bf16 engine: largest packed step (T bucket) in tokens; it must cover --max-request-tokens and
+    /// --token-budget, since a request is never split across steps (default: the larger of the two).
+    #[arg(long)]
+    max_step_tokens: Option<usize>,
+    /// bf16 engine: run every step eagerly instead of replaying a CUDA graph per T bucket.
+    #[arg(long)]
+    no_cuda_graphs: bool,
+    /// bf16 engine: most requests (prefix segments) in one step; each needs 2 MiB of GDN state per step.
+    #[arg(long, default_value_t = 256)]
+    max_prefixes: usize,
     /// Close a batch once it holds this many packed tokens (a larger request runs alone).
     #[arg(long, default_value_t = 16384)]
     token_budget: usize,
@@ -140,6 +167,27 @@ fn main() -> Result<()> {
             Box::new(move || {
                 let inner = MockEngine { max_tokens: step };
                 Ok(Box::new(SimulatedEngine { inner, step: fixed, per_token }) as Box<dyn DecisionEngine>)
+            })
+        }
+        EngineKind::Bf16 => {
+            let max_step = args.max_step_tokens.unwrap_or(step);
+            ensure!(
+                max_step >= step,
+                "--max-step-tokens {max_step} is below the largest request the limits admit ({} tokens) or the token \
+                 budget ({}); requests are never split across steps, so raise it or lower --max-request-tokens",
+                args.max_request_tokens,
+                args.token_budget
+            );
+            let opts = EngineOptions {
+                buckets: EngineOptions::buckets_up_to(max_step),
+                cuda_graphs: !args.no_cuda_graphs,
+                max_prefixes: args.max_prefixes,
+                ..Default::default()
+            };
+            let (model, slot_ids) = (args.model.clone(), frontend.slot_ids.clone());
+            Box::new(move || {
+                let e = GpuEngine::load(&model, &slot_ids, opts)?;
+                Ok(Box::new(e) as Box<dyn DecisionEngine>)
             })
         }
     };

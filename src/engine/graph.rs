@@ -230,35 +230,32 @@ impl From<ValueId> for TensorRef {
     }
 }
 
-/// The two launches of a GDN layer's scan (DESIGN §6.1).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ScanPhase {
-    /// Prefix segments: scan from zero, write the final state to the scratch slot.
-    Prefix,
-    /// Suffix segments: scan from the parent's state, read-only.
-    Suffix,
-}
-
 /// The per-layer op list of DESIGN §6.3 and the NVFP4 MLP path of §6.6. Shapes are documented with
 /// T = bucket tokens, Q = bucket answers.
+///
+/// The ops follow the W3 kernels' real interfaces (Phase 2a, I1):
+/// - the residual stream is updated **in place** by the fused add + norm (`residual_out` aliases `residual`'s
+///   storage; the plan enforces that nothing reads `residual` afterwards);
+/// - a GDN layer's q/k/g/beta and scan intermediates live in the kernels' own scratch ([`Kernels`] owns it), so
+///   [`GraphOp::GdnPrep`] has no graph outputs and [`GraphOp::GdnChunkScan`] reads that scratch;
+/// - the attention gate and v are read in place from the `q_proj` and `[k; v]` outputs.
 #[derive(Clone, Debug, PartialEq)]
 pub enum GraphOp {
     /// `out [T, hidden] bf16 = embed[token_ids]` (executor, cutile-kernels).
     Embedding { out: ValueId },
     /// Zero-centred RMSNorm `(x · rsqrt(mean x² + eps)) · (1 + w)`, fp32 statistics, bf16 out.
     ZcRmsNorm { x: TensorRef, w: WeightRef, out: ValueId },
-    /// `residual_out = residual + x; out = zc_rmsnorm(residual_out, w)`.
-    AddZcRmsNorm { residual: TensorRef, x: TensorRef, w: WeightRef, out: ValueId, residual_out: ValueId },
-    /// `out = a + b` (bf16).
-    Add { a: TensorRef, b: TensorRef, out: ValueId },
+    /// `residual_out = bf16(residual + x); out = zc_rmsnorm(residual_out, w)`, in place: `residual_out` is
+    /// `residual`'s storage.
+    AddZcRmsNorm { residual: ValueId, x: TensorRef, w: WeightRef, out: ValueId, residual_out: ValueId },
     /// `out [T, N] = x [T, K] · Wᵀ` for a bf16 [`Linear`] (executor, cuBLAS). `out` may be bf16 or f32.
     Gemm { x: TensorRef, w: WeightRef, out: ValueId },
     /// NVFP4 activation quantization of `x` under `w`'s `input_global_scale`: `q [T, K/2] u8`, `s [T, K/16]`.
     QuantizeNvfp4 { x: TensorRef, w: WeightRef, q: ValueId, s: ValueId },
     /// `zc_rmsnorm` with the NVFP4 quantization fused into the epilogue (`w` names the consuming projection).
     ZcRmsNormNvfp4 { x: TensorRef, norm: WeightRef, w: WeightRef, q: ValueId, s: ValueId },
-    /// `AddZcRmsNorm` with fused NVFP4 quantization of the normed output.
-    AddZcRmsNormNvfp4 { residual: TensorRef, x: TensorRef, norm: WeightRef, w: WeightRef, q: ValueId, s: ValueId,
+    /// `AddZcRmsNorm` with fused NVFP4 quantization of the normed output (in place like `AddZcRmsNorm`).
+    AddZcRmsNormNvfp4 { residual: ValueId, x: TensorRef, norm: WeightRef, w: WeightRef, q: ValueId, s: ValueId,
                         residual_out: ValueId },
     /// Block-scaled FP4 GEMM, per-part epilogue `1 / (a_gs · w_gs)`, bf16 out.
     GemmNvfp4 { q: TensorRef, s: TensorRef, w: WeightRef, out: ValueId },
@@ -267,24 +264,27 @@ pub enum GraphOp {
     /// `SiluMul` with fused NVFP4 quantization under `w`'s input scale.
     SiluMulNvfp4 { gu: TensorRef, w: WeightRef, q: ValueId, s: ValueId },
     /// Causal depthwise conv1d (kernel 4) over segments, taps from the parent prefix, then SiLU.
+    /// `x`: the `[T, 8192]` qkv columns of the fused GDN projection; `out [T, 8192]` bf16.
     TreeConv1dSilu { layer: usize, x: TensorRef, out: ValueId },
-    /// Split q/k/v, repeat-interleave and l2-normalize q/k, `g = -exp(A_log)·softplus(a + dt_bias)` and
-    /// `beta = sigmoid(b)` in f32.
-    GdnPrep { layer: usize, qkv: TensorRef, a: TensorRef, b: TensorRef, q: ValueId, k: ValueId, v: ValueId,
-              g: ValueId, beta: ValueId },
-    /// Chunked gated delta rule over segments (one phase). The suffix phase reads the scratch states the prefix
-    /// phase wrote; `out` is written by both phases (each its own tokens), so it is an input of the second.
-    GdnChunkScan { layer: usize, phase: ScanPhase, q: TensorRef, k: TensorRef, v: TensorRef, g: TensorRef,
-                   beta: TensorRef, out: ValueId },
+    /// From the conv output (q | k columns) and the `a`, `b` columns of the fused projection: l2-normalised q, k
+    /// and the gates `g = -exp(A_log)·softplus(a + dt_bias)`, `beta = sigmoid(b)`, all f32, into the GDN scratch.
+    GdnPrep { layer: usize, conv: TensorRef, a: TensorRef, b: TensorRef },
+    /// Chunked gated delta rule over segments: chunk inverse, WY transform, prefix scan (writing each prefix's
+    /// final state), suffix scan (from the parent's state). Reads q/k/g/beta from the scratch and `v`
+    /// (`[T, 4096]`, the conv output's v columns); `out [T, 4096]` bf16.
+    GdnChunkScan { layer: usize, v: TensorRef, out: ValueId },
     /// Gated RMSNorm per v-head: `bf16(norm(o)) · w · silu(z)`.
     GatedRmsNorm { layer: usize, o: TensorRef, z: TensorRef, out: ValueId },
-    /// q/k zero-centred norm, partial RoPE on the first `rotary_dim` dims, q/gate split.
-    QkNormRopePartial { layer: usize, qg: TensorRef, kv: TensorRef, q: ValueId, gate: ValueId, k: ValueId,
-                        v: ValueId },
-    /// Segment attention (non-causal, ≤ 2 KV ranges, LSE merge), GQA, `· sigmoid(gate)` epilogue.
-    SegAttn { layer: usize, q: TensorRef, k: TensorRef, v: TensorRef, gate: TensorRef, out: ValueId },
+    /// q/k zero-centred norm and partial RoPE: `q [T, 16·256]` from the query halves of `qg [T, 16·512]`,
+    /// `k [T, 4·256]` from the k heads of `kv [T, 8·256]`.
+    QkNormRope { layer: usize, qg: TensorRef, kv: TensorRef, q: ValueId, k: ValueId },
+    /// Segment attention (non-causal, ≤ 2 KV ranges, LSE merge), GQA, `· sigmoid(gate)` epilogue. v is read from
+    /// `kv`, the gate from `qg`; `out [T, 4096]`.
+    SegAttn { layer: usize, q: TensorRef, k: TensorRef, kv: TensorRef, qg: TensorRef, out: ValueId },
     /// `out [Q, C] = src[answer_rows]`.
     GatherRows { src: TensorRef, out: ValueId },
+    /// `out = src` (device copy; debug taps of a value that is later updated in place).
+    Copy { src: TensorRef, out: ValueId },
     /// Reinterpret a contiguous value with another shape (no copy; `out` aliases `input`'s storage).
     View { input: ValueId, out: ValueId },
 }
@@ -294,20 +294,18 @@ impl GraphOp {
     pub fn outputs(&self) -> Vec<ValueId> {
         use GraphOp::*;
         match self {
-            Embedding { out } | ZcRmsNorm { out, .. } | Add { out, .. } | Gemm { out, .. } | GemmNvfp4 { out, .. }
+            Embedding { out } | ZcRmsNorm { out, .. } | Gemm { out, .. } | GemmNvfp4 { out, .. }
             | SiluMul { out, .. } | TreeConv1dSilu { out, .. } | GatedRmsNorm { out, .. } | SegAttn { out, .. }
-            | GatherRows { out, .. } => vec![*out],
-            GdnChunkScan { phase, out, .. } => if *phase == ScanPhase::Prefix { vec![*out] } else { vec![] },
+            | GatherRows { out, .. } | GdnChunkScan { out, .. } | Copy { out, .. } => vec![*out],
             AddZcRmsNorm { out, residual_out, .. } => vec![*out, *residual_out],
             QuantizeNvfp4 { q, s, .. } | ZcRmsNormNvfp4 { q, s, .. } | SiluMulNvfp4 { q, s, .. } => vec![*q, *s],
             AddZcRmsNormNvfp4 { q, s, residual_out, .. } => vec![*q, *s, *residual_out],
-            GdnPrep { q, k, v, g, beta, .. } => vec![*q, *k, *v, *g, *beta],
-            QkNormRopePartial { q, gate, k, v, .. } => vec![*q, *gate, *k, *v],
-            View { .. } => vec![],
+            QkNormRope { q, k, .. } => vec![*q, *k],
+            GdnPrep { .. } | View { .. } => vec![],
         }
     }
 
-    /// Values this op reads (a suffix scan also reads-and-writes its `out`).
+    /// Values this op reads.
     pub fn inputs(&self) -> Vec<ValueId> {
         use GraphOp::*;
         let v = |r: &TensorRef| r.value();
@@ -315,23 +313,25 @@ impl GraphOp {
             Embedding { .. } => vec![],
             ZcRmsNorm { x, .. } | Gemm { x, .. } | QuantizeNvfp4 { x, .. } | ZcRmsNormNvfp4 { x, .. }
             | TreeConv1dSilu { x, .. } => vec![v(x)],
-            AddZcRmsNorm { residual, x, .. } | AddZcRmsNormNvfp4 { residual, x, .. } => vec![v(residual), v(x)],
-            Add { a, b, .. } => vec![v(a), v(b)],
+            AddZcRmsNorm { residual, x, .. } | AddZcRmsNormNvfp4 { residual, x, .. } => vec![*residual, v(x)],
             GemmNvfp4 { q, s, .. } => vec![v(q), v(s)],
             SiluMul { gu, .. } | SiluMulNvfp4 { gu, .. } => vec![v(gu)],
-            GdnPrep { qkv, a, b, .. } => vec![v(qkv), v(a), v(b)],
-            GdnChunkScan { phase, q, k, v: vv, g, beta, out, .. } => {
-                let mut i = vec![v(q), v(k), v(vv), v(g), v(beta)];
-                if *phase == ScanPhase::Suffix {
-                    i.push(*out);
-                }
-                i
-            }
+            GdnPrep { conv, a, b, .. } => vec![v(conv), v(a), v(b)],
+            GdnChunkScan { v: vv, .. } => vec![v(vv)],
             GatedRmsNorm { o, z, .. } => vec![v(o), v(z)],
-            QkNormRopePartial { qg, kv, .. } => vec![v(qg), v(kv)],
-            SegAttn { q, k, v: vv, gate, .. } => vec![v(q), v(k), v(vv), v(gate)],
-            GatherRows { src, .. } => vec![v(src)],
+            QkNormRope { qg, kv, .. } => vec![v(qg), v(kv)],
+            SegAttn { q, k, kv, qg, .. } => vec![v(q), v(k), v(kv), v(qg)],
+            GatherRows { src, .. } | Copy { src, .. } => vec![v(src)],
             View { input, .. } => vec![*input],
+        }
+    }
+
+    /// `(residual, residual_out)` of an op that updates the residual stream in place.
+    pub fn in_place(&self) -> Option<(ValueId, ValueId)> {
+        match self {
+            GraphOp::AddZcRmsNorm { residual, residual_out, .. }
+            | GraphOp::AddZcRmsNormNvfp4 { residual, residual_out, .. } => Some((*residual, *residual_out)),
+            _ => None,
         }
     }
 
@@ -341,7 +341,6 @@ impl GraphOp {
             Embedding { .. } => "embedding",
             ZcRmsNorm { .. } => "zc_rmsnorm",
             AddZcRmsNorm { .. } => "add_zc_rmsnorm",
-            Add { .. } => "add",
             Gemm { .. } => "gemm",
             QuantizeNvfp4 { .. } => "quantize_nvfp4",
             ZcRmsNormNvfp4 { .. } => "zc_rmsnorm_nvfp4",
@@ -353,10 +352,40 @@ impl GraphOp {
             GdnPrep { .. } => "gdn_prep",
             GdnChunkScan { .. } => "gdn_chunk_scan",
             GatedRmsNorm { .. } => "gated_rmsnorm",
-            QkNormRopePartial { .. } => "qk_norm_rope_partial",
+            QkNormRope { .. } => "qk_norm_rope",
             SegAttn { .. } => "seg_attn_gqa",
             GatherRows { .. } => "gather_rows",
+            Copy { .. } => "copy",
             View { .. } => "view",
+        }
+    }
+
+    /// Profile class of the op (DESIGN §11 Phase 2a: per-op forward profile): GEMMs by projection, GDN stages,
+    /// attention, norms, pointwise, readout.
+    pub fn profile_label(&self) -> String {
+        use GraphOp::*;
+        let proj = |w: &WeightRef| match w {
+            WeightRef::Layer(_, s) => format!("{s:?}"),
+            other => format!("{other:?}"),
+        };
+        match self {
+            Gemm { w, .. } => format!("gemm.{}", proj(w)),
+            GemmNvfp4 { w, .. } => format!("gemm_nvfp4.{}", proj(w)),
+            Embedding { .. } => "embedding".into(),
+            ZcRmsNorm { .. } | AddZcRmsNorm { .. } => "norm.zc_rmsnorm".into(),
+            QuantizeNvfp4 { .. } | ZcRmsNormNvfp4 { .. } | AddZcRmsNormNvfp4 { .. } | SiluMulNvfp4 { .. } => {
+                format!("nvfp4.{}", self.name())
+            }
+            SiluMul { .. } => "pointwise.silu_mul".into(),
+            TreeConv1dSilu { .. } => "gdn.conv1d_silu".into(),
+            GdnPrep { .. } => "gdn.prep".into(),
+            GdnChunkScan { .. } => "gdn.scan".into(),
+            GatedRmsNorm { .. } => "gdn.gated_rmsnorm".into(),
+            QkNormRope { .. } => "attn.qk_norm_rope".into(),
+            SegAttn { .. } => "attn.seg_attn".into(),
+            GatherRows { .. } => "readout.gather".into(),
+            Copy { .. } => "debug.copy".into(),
+            View { .. } => "view".into(),
         }
     }
 }
@@ -433,12 +462,28 @@ impl StepGraph {
         for o in &self.outputs {
             ensure!(defined[o.0], "graph output {} is never written", o.0);
         }
+        // An in-place op overwrites `residual`, so nothing may read it (or a view of it) afterwards, and it
+        // cannot be a graph output.
+        for (i, op) in self.ops.iter().enumerate() {
+            let Some((res, res_out)) = op.in_place() else { continue };
+            ensure!(self.spec(res) == self.spec(res_out), "op {i}: in-place residual changes shape");
+            ensure!(!self.outputs.contains(&res), "op {i}: overwritten residual {} is a graph output", res.0);
+            for (j, later) in self.ops.iter().enumerate().skip(i + 1) {
+                ensure!(!later.inputs().contains(&res), "op {j} ({}) reads residual {} after op {i} overwrote it",
+                        later.name(), res.0);
+            }
+            for later in &self.ops {
+                if let GraphOp::View { input, out } = later {
+                    ensure!(*input != res && *out != res, "op {i}: residual {} has a view", res.0);
+                }
+            }
+        }
         Ok(())
     }
 
     /// Liveness-based arena plan for `bucket` (grout's pool plan, as offsets): a value's storage is taken
     /// when the op writing it runs and returned after its last reader; graph outputs stay live to the end.
-    /// Views share their input's storage. First fit over a sorted free list with coalescing.
+    /// Views share their input's storage, and so does the `residual_out` of an in-place op. First fit over a sorted free list with coalescing.
     pub fn plan(&self, bucket: Bucket) -> Result<PoolPlan> {
         self.validate()?;
         let n = self.specs.len();
@@ -447,6 +492,9 @@ impl StepGraph {
         for op in &self.ops {
             if let GraphOp::View { input, out } = op {
                 root[out.0] = root[input.0];
+            }
+            if let Some((res, res_out)) = op.in_place() {
+                root[res_out.0] = root[res.0];
             }
         }
         let end = self.ops.len();
@@ -529,6 +577,47 @@ fn release(free: &mut Vec<(usize, usize)>, off: usize, len: usize) {
 // ---------------------------------------------------------------------------------------------------------
 // Kernels (W3) and execution.
 
+/// CUDA-event timeline of one eager forward, for the per-op profile. The executor marks each op with its
+/// [`GraphOp::profile_label`]; kernels may add finer marks for their sub-launches ([`Launch::mark`]). The time
+/// between a mark and the next one is charged to the first mark's label.
+pub struct Profiler {
+    ctx: Arc<cuda_core::Context>,
+    marks: std::sync::Mutex<Vec<(String, cuda_core::Event)>>,
+}
+
+impl Profiler {
+    pub fn new(ctx: &Arc<cuda_core::Context>) -> Self {
+        Self { ctx: ctx.clone(), marks: Default::default() }
+    }
+
+    /// Record a timing event named `label` on `stream`.
+    pub fn mark(&self, label: &str, stream: &Stream) -> Result<()> {
+        let e = self.ctx.new_event()?;
+        e.record(stream)?;
+        self.marks.lock().unwrap_or_else(|e| e.into_inner()).push((label.to_string(), e));
+        Ok(())
+    }
+
+    /// `(label, total ms, launches)` per label in first-seen order, plus the total; waits for the last mark.
+    pub fn summary(&self) -> Result<(Vec<(String, f64, usize)>, f64)> {
+        let marks = self.marks.lock().unwrap_or_else(|e| e.into_inner());
+        let mut out: Vec<(String, f64, usize)> = Vec::new();
+        let mut total = 0.0;
+        for w in marks.windows(2) {
+            let ms = w[0].1.elapsed_ms(&w[1].1)? as f64;
+            total += ms;
+            match out.iter_mut().find(|(l, ..)| *l == w[0].0) {
+                Some(e) => {
+                    e.1 += ms;
+                    e.2 += 1;
+                }
+                None => out.push((w[0].0.clone(), ms, 1)),
+            }
+        }
+        Ok((out, total))
+    }
+}
+
 /// What a kernel launch gets besides its operands.
 pub struct Launch<'a> {
     /// The cuda-async execution context to launch on (`unsafe { op.execute(cx.exec) }` for cuTile ops).
@@ -537,31 +626,41 @@ pub struct Launch<'a> {
     pub bucket: Bucket,
     /// Batch metadata (segments, positions, answer rows) for kernels that are segment-aware.
     pub meta: &'a DeviceMeta,
-    /// GDN prefix-state scratch `[max_prefixes, v_heads, k_dim, v_dim]` f32, if allocated.
-    pub gdn_state: Option<&'a DevTensor>,
     pub cfg: Option<&'a ModelConfig>,
     pub weights: &'a dyn WeightStore,
+    /// Set for a profiled eager run.
+    pub profiler: Option<&'a Profiler>,
+}
+
+impl Launch<'_> {
+    /// Add a profile mark (no-op unless profiling).
+    pub fn mark(&self, label: &str) -> Result<()> {
+        match self.profiler {
+            Some(p) => p.mark(label, self.stream),
+            None => Ok(()),
+        }
+    }
 }
 
 fn missing(name: &str) -> Result<()> {
-    Err(anyhow!("kernel {name} is not implemented yet (W3)"))
+    Err(anyhow!("kernel {name} is not implemented"))
 }
 
-/// The kernels the forward calls (DESIGN §6.4). Every method has a failing default, so an implementation
-/// can be filled in kernel by kernel. Operands are arena views ([`DevTensor`]); use [`DevTensor::tile`] to
-/// pass them to cuTile kernels. All launches go on `cx.exec`'s stream and must not allocate (they are
-/// recorded into CUDA graphs).
+/// The kernels the forward calls (DESIGN §6.4), shaped after the W3 kernels' real interfaces (see
+/// [`GraphOp`]). Every method has a failing default, so an implementation can be filled in kernel by kernel.
+/// Operands are arena views ([`DevTensor`]); use [`DevTensor::tile`] to pass them to cuTile kernels. All
+/// launches go on `cx.exec`'s stream and must not allocate or synchronize (they are recorded into CUDA graphs);
+/// batch-dependent state (segment tables, work lists) lives in fixed device buffers the implementation
+/// rewrites before each step.
 #[allow(unused_variables)]
 pub trait Kernels: Sync {
     fn zc_rmsnorm(&self, cx: &Launch, x: &DevTensor, w: &DevTensor, out: &DevTensor) -> Result<()> {
         missing("zc_rmsnorm")
     }
-    fn add_zc_rmsnorm(&self, cx: &Launch, residual: &DevTensor, x: &DevTensor, w: &DevTensor, out: &DevTensor,
-                      residual_out: &DevTensor) -> Result<()> {
+    /// `residual = bf16(residual + x)` in place, then `out = zc_rmsnorm(residual, w)`.
+    fn add_zc_rmsnorm(&self, cx: &Launch, residual: &DevTensor, x: &DevTensor, w: &DevTensor, out: &DevTensor)
+        -> Result<()> {
         missing("add_zc_rmsnorm")
-    }
-    fn add(&self, cx: &Launch, a: &DevTensor, b: &DevTensor, out: &DevTensor) -> Result<()> {
-        missing("add")
     }
     fn quantize_nvfp4(&self, cx: &Launch, x: &DevTensor, a_gs: f32, q: &DevTensor, s: &DevTensor) -> Result<()> {
         missing("quantize_nvfp4")
@@ -572,7 +671,7 @@ pub trait Kernels: Sync {
     }
     #[allow(clippy::too_many_arguments)]
     fn add_zc_rmsnorm_nvfp4(&self, cx: &Launch, residual: &DevTensor, x: &DevTensor, norm: &DevTensor, a_gs: f32,
-                            q: &DevTensor, s: &DevTensor, residual_out: &DevTensor) -> Result<()> {
+                            q: &DevTensor, s: &DevTensor) -> Result<()> {
         missing("add_zc_rmsnorm_nvfp4")
     }
     fn gemm_nvfp4(&self, cx: &Launch, q: &DevTensor, s: &DevTensor, w: &Linear, out: &DevTensor) -> Result<()> {
@@ -589,13 +688,11 @@ pub trait Kernels: Sync {
         missing("tree_conv1d_silu")
     }
     #[allow(clippy::too_many_arguments)]
-    fn gdn_prep(&self, cx: &Launch, layer: usize, qkv: &DevTensor, a: &DevTensor, b: &DevTensor, q: &DevTensor,
-                k: &DevTensor, v: &DevTensor, g: &DevTensor, beta: &DevTensor) -> Result<()> {
+    fn gdn_prep(&self, cx: &Launch, layer: usize, conv: &DevTensor, a: &DevTensor, b: &DevTensor, a_log: &DevTensor,
+                dt_bias: &DevTensor) -> Result<()> {
         missing("gdn_prep")
     }
-    #[allow(clippy::too_many_arguments)]
-    fn gdn_chunk_scan(&self, cx: &Launch, layer: usize, phase: ScanPhase, q: &DevTensor, k: &DevTensor,
-                      v: &DevTensor, g: &DevTensor, beta: &DevTensor, out: &DevTensor) -> Result<()> {
+    fn gdn_chunk_scan(&self, cx: &Launch, layer: usize, v: &DevTensor, out: &DevTensor) -> Result<()> {
         missing("gdn_chunk_scan")
     }
     fn gated_rmsnorm(&self, cx: &Launch, layer: usize, o: &DevTensor, z: &DevTensor, w: &DevTensor, out: &DevTensor)
@@ -603,16 +700,16 @@ pub trait Kernels: Sync {
         missing("gated_rmsnorm")
     }
     #[allow(clippy::too_many_arguments)]
-    fn qk_norm_rope_partial(&self, cx: &Launch, layer: usize, qg: &DevTensor, kv: &DevTensor, q_norm: &DevTensor,
-                            k_norm: &DevTensor, q: &DevTensor, gate: &DevTensor, k: &DevTensor, v: &DevTensor)
-        -> Result<()> {
-        missing("qk_norm_rope_partial")
+    fn qk_norm_rope(&self, cx: &Launch, layer: usize, qg: &DevTensor, kv: &DevTensor, q_norm: &DevTensor,
+                    k_norm: &DevTensor, q: &DevTensor, k: &DevTensor) -> Result<()> {
+        missing("qk_norm_rope")
     }
     #[allow(clippy::too_many_arguments)]
-    fn seg_attn(&self, cx: &Launch, layer: usize, q: &DevTensor, k: &DevTensor, v: &DevTensor, gate: &DevTensor,
+    fn seg_attn(&self, cx: &Launch, layer: usize, q: &DevTensor, k: &DevTensor, kv: &DevTensor, qg: &DevTensor,
                 out: &DevTensor) -> Result<()> {
         missing("seg_attn_gqa")
     }
+    /// `out[i] = src[answer_rows[i]]` (answer rows from `cx.meta`).
     fn gather_rows(&self, cx: &Launch, src: &DevTensor, out: &DevTensor) -> Result<()> {
         missing("gather_rows")
     }
@@ -635,8 +732,9 @@ pub struct Executor<'a> {
     pub kernels: &'a dyn Kernels,
     pub blas: &'a Blas,
     pub meta: &'a DeviceMeta,
-    pub gdn_state: Option<&'a DevTensor>,
     pub cfg: Option<&'a ModelConfig>,
+    /// Profile marks per op (eager runs only; never set while capturing).
+    pub profiler: Option<&'a Profiler>,
 }
 
 impl<'a> Executor<'a> {
@@ -664,14 +762,18 @@ impl<'a> Executor<'a> {
             stream: exec.get_cuda_stream(),
             bucket: self.plan.bucket,
             meta: self.meta,
-            gdn_state: self.gdn_state,
             cfg: self.cfg,
             weights: self.weights,
+            profiler: self.profiler,
         };
         for (i, op) in self.graph.ops.iter().enumerate() {
+            if matches!(op, GraphOp::View { .. }) {
+                continue;
+            }
+            cx.mark(&op.profile_label())?;
             self.run_op(&cx, op).with_context(|| format!("op {i} ({})", op.name()))?;
         }
-        Ok(())
+        cx.mark("end")
     }
 
     fn a_gs(&self, w: WeightRef) -> Result<f32> {
@@ -685,15 +787,16 @@ impl<'a> Executor<'a> {
         use GraphOp::*;
         let k = self.kernels;
         let w = |r: WeightRef| self.weights.tensor(r);
+        let lw = |l: usize, s: LayerWeight| self.weights.tensor(WeightRef::Layer(l, s));
         let v = |x: ValueId| self.value(x);
         let r = |x: TensorRef| self.resolve(x);
         match *op {
             Embedding { out } => self.embedding(cx, &v(out)?),
             ZcRmsNorm { x, w: n, out } => k.zc_rmsnorm(cx, &r(x)?, w(n)?, &v(out)?),
-            AddZcRmsNorm { residual, x, w: n, out, residual_out } => {
-                k.add_zc_rmsnorm(cx, &r(residual)?, &r(x)?, w(n)?, &v(out)?, &v(residual_out)?)
+            // `residual_out` is `residual`'s storage (planned in place).
+            AddZcRmsNorm { x, w: n, out, residual_out, .. } => {
+                k.add_zc_rmsnorm(cx, &v(residual_out)?, &r(x)?, w(n)?, &v(out)?)
             }
-            Add { a, b, out } => k.add(cx, &r(a)?, &r(b)?, &v(out)?),
             Gemm { x, w: wr, out } => {
                 let wt = match wr {
                     WeightRef::SlotHead | WeightRef::LmHead | WeightRef::Embed => self.weights.tensor(wr)?,
@@ -708,32 +811,51 @@ impl<'a> Executor<'a> {
             ZcRmsNormNvfp4 { x, norm, w: wr, q, s } => {
                 k.zc_rmsnorm_nvfp4(cx, &r(x)?, w(norm)?, self.a_gs(wr)?, &v(q)?, &v(s)?)
             }
-            AddZcRmsNormNvfp4 { residual, x, norm, w: wr, q, s, residual_out } => k.add_zc_rmsnorm_nvfp4(
-                cx, &r(residual)?, &r(x)?, w(norm)?, self.a_gs(wr)?, &v(q)?, &v(s)?, &v(residual_out)?),
+            AddZcRmsNormNvfp4 { x, norm, w: wr, q, s, residual_out, .. } => {
+                k.add_zc_rmsnorm_nvfp4(cx, &v(residual_out)?, &r(x)?, w(norm)?, self.a_gs(wr)?, &v(q)?, &v(s)?)
+            }
             GemmNvfp4 { q, s, w: wr, out } => k.gemm_nvfp4(cx, &r(q)?, &r(s)?, self.weights.linear(wr)?, &v(out)?),
             SiluMul { gu, out } => k.silu_mul(cx, &r(gu)?, &v(out)?),
             SiluMulNvfp4 { gu, w: wr, q, s } => k.silu_mul_nvfp4(cx, &r(gu)?, self.a_gs(wr)?, &v(q)?, &v(s)?),
             TreeConv1dSilu { layer, x, out } => {
-                k.tree_conv1d_silu(cx, layer, &r(x)?, w(WeightRef::Layer(layer, LayerWeight::GdnConv))?, &v(out)?)
+                k.tree_conv1d_silu(cx, layer, &r(x)?, lw(layer, LayerWeight::GdnConv)?, &v(out)?)
             }
-            GdnPrep { layer, qkv, a, b, q, k: kk, v: vv, g, beta } => {
-                k.gdn_prep(cx, layer, &r(qkv)?, &r(a)?, &r(b)?, &v(q)?, &v(kk)?, &v(vv)?, &v(g)?, &v(beta)?)
-            }
-            GdnChunkScan { layer, phase, q, k: kk, v: vv, g, beta, out } => {
-                k.gdn_chunk_scan(cx, layer, phase, &r(q)?, &r(kk)?, &r(vv)?, &r(g)?, &r(beta)?, &v(out)?)
-            }
+            GdnPrep { layer, conv, a, b } => k.gdn_prep(cx, layer, &r(conv)?, &r(a)?, &r(b)?,
+                                                       lw(layer, LayerWeight::GdnALog)?,
+                                                       lw(layer, LayerWeight::GdnDtBias)?),
+            GdnChunkScan { layer, v: vv, out } => k.gdn_chunk_scan(cx, layer, &r(vv)?, &v(out)?),
             GatedRmsNorm { layer, o, z, out } => {
-                k.gated_rmsnorm(cx, layer, &r(o)?, &r(z)?, w(WeightRef::Layer(layer, LayerWeight::GdnNorm))?, &v(out)?)
+                k.gated_rmsnorm(cx, layer, &r(o)?, &r(z)?, lw(layer, LayerWeight::GdnNorm)?, &v(out)?)
             }
-            QkNormRopePartial { layer, qg, kv, q, gate, k: kk, v: vv } => k.qk_norm_rope_partial(
-                cx, layer, &r(qg)?, &r(kv)?, w(WeightRef::Layer(layer, LayerWeight::QNorm))?,
-                w(WeightRef::Layer(layer, LayerWeight::KNorm))?, &v(q)?, &v(gate)?, &v(kk)?, &v(vv)?),
-            SegAttn { layer, q, k: kk, v: vv, gate, out } => {
-                k.seg_attn(cx, layer, &r(q)?, &r(kk)?, &r(vv)?, &r(gate)?, &v(out)?)
+            QkNormRope { layer, qg, kv, q, k: kk } => k.qk_norm_rope(
+                cx, layer, &r(qg)?, &r(kv)?, lw(layer, LayerWeight::QNorm)?, lw(layer, LayerWeight::KNorm)?, &v(q)?,
+                &v(kk)?),
+            SegAttn { layer, q, k: kk, kv, qg, out } => {
+                k.seg_attn(cx, layer, &r(q)?, &r(kk)?, &r(kv)?, &r(qg)?, &v(out)?)
             }
             GatherRows { src, out } => k.gather_rows(cx, &r(src)?, &v(out)?),
+            Copy { src, out } => self.copy(cx, &r(src)?, &v(out)?),
             View { .. } => Ok(()),
         }
+    }
+
+    /// Device-to-device copy of a contiguous view (row by row for a strided source).
+    fn copy(&self, cx: &Launch, src: &DevTensor, out: &DevTensor) -> Result<()> {
+        ensure!(src.dtype == out.dtype && src.shape == out.shape && out.is_contiguous(), "copy {src:?} -> {out:?}");
+        let es = src.dtype.size_in_bytes();
+        let s = cx.stream.cu_stream();
+        if src.is_contiguous() {
+            unsafe { cuda_core::memory::memcpy_dtod_async(out.ptr(), src.ptr(), src.bytes(), s)? };
+        } else {
+            let row = src.cols() * es;
+            for i in 0..src.rows() {
+                unsafe {
+                    cuda_core::memory::memcpy_dtod_async(out.ptr() + (i * row) as u64,
+                                                         src.ptr() + (i * src.row_stride * es) as u64, row, s)?
+                };
+            }
+        }
+        Ok(())
     }
 
     /// `out[t] = embed[token_ids[t]]` with cutile-kernels' `embedding_batch_f16` (bf16 bits moved as f16:
@@ -914,11 +1036,35 @@ mod tests {
         let c = g.value(GraphDType::BF16, vec![Dim::Tokens, Dim::Fixed(8)]);
         g.push(GraphOp::Embedding { out: a });
         g.push(GraphOp::View { input: a, out: b });
-        g.push(GraphOp::Add { a: b.into(), b: b.into(), out: c });
+        g.push(GraphOp::Copy { src: b.into(), out: c });
         g.outputs.push(c);
         let p = g.plan(Bucket { tokens: 10, answers: 1, segments: 2 }).unwrap();
         assert_eq!(p.offsets[a.0], p.offsets[b.0]);
         assert_ne!(p.offsets[c.0], p.offsets[a.0]);
+    }
+
+    #[test]
+    fn in_place_residual_shares_storage_and_is_not_read_after() {
+        let w = WeightRef::Layer(0, LayerWeight::InputNorm);
+        let mk = |read_old_after: bool| {
+            let mut g = StepGraph::new();
+            let sh = vec![Dim::Tokens, Dim::Fixed(8)];
+            let x = g.value(GraphDType::BF16, sh.clone());
+            let d = g.value(GraphDType::BF16, sh.clone());
+            let h = g.value(GraphDType::BF16, sh.clone());
+            let x2 = g.value(GraphDType::BF16, sh.clone());
+            let o = g.value(GraphDType::BF16, sh.clone());
+            g.push(GraphOp::Embedding { out: x });
+            g.push(GraphOp::Copy { src: x.into(), out: d });
+            g.push(GraphOp::AddZcRmsNorm { residual: x, x: d.into(), w, out: h, residual_out: x2 });
+            g.push(GraphOp::Copy { src: if read_old_after { x } else { x2 }.into(), out: o });
+            g.outputs.extend([h, o]);
+            (g, x, x2)
+        };
+        let (g, x, x2) = mk(false);
+        let p = g.plan(Bucket { tokens: 10, answers: 1, segments: 2 }).unwrap();
+        assert_eq!(p.offsets[x.0], p.offsets[x2.0]);
+        assert!(mk(true).0.validate().is_err());
     }
 
     #[test]

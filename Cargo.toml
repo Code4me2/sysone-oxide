@@ -84,3 +84,7 @@ path = "benchmarks/s1/bench_nvfp4.rs"
 [[bin]]
 name = "cpu_ref_check"
 path = "src/engine/cpu_ref/check_main.rs"
+
+[[bin]]
+name = "bench_forward"
+path = "benchmarks/s1/bench_forward.rs"

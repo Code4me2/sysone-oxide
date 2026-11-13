@@ -6,17 +6,25 @@
 //! ```text
 //! conv   = tree_conv1d_silu(qkv, conv_w)                  bf16 [T, 8192]
 //! q,k,g,beta = gdn_prep(conv, a, b, A_log, dt_bias)       f32 [T,16,128] x2, f32 [T,32] x2
-//! tinv   = gdn_chunk_tinv(k, g, beta)                     f32 [T,32,64]        (parallel over chunks)
-//! w,u,qd,kd,p = gdn_chunk_wy(q, k, v=conv[:, 4096:], ..)  f32 [T,32,128] x4, [T,32,64]   (parallel)
-//! o      = gdn_chunk_state(w, u, qd, kd, p, g)            bf16 [T, 4096]       (prefixes, then suffixes)
+//! tinv,p = gdn_chunk_tp(q, k, g, beta)                   f32 [T,32,64] x2     (parallel over chunks)
+//! o      = gdn_chunk_scan_fused(q, k, v, g, beta, tinv, p) bf16 [T, 4096]      (prefixes, then suffixes)
 //! y      = gated_rmsnorm(o, z, norm_w)                    bf16 [T, 4096]
 //! ```
 //!
-//! Numerics follow `torch_chunk_gated_delta_rule` (chunk 64, UT/WY form, fp32), with two deliberate,
-//! mathematically identical changes: fp32 matmuls run as split-TF32 ("3xTF32", ~2^-21 per product) because cuTile's
-//! plain f32 `mma` is emulated and spills; and the decay to the chunk end uses a reverse scan instead of
-//! `cum_last - cum` (which cancels catastrophically for strongly decaying heads). Measured against an f64 oracle,
-//! both stay inside the error envelope of transformers' own f32 implementation (tests/kernels_gdn.rs).
+//! [`gdn_mixer`] fuses the first two steps differently: the conv also writes each q/k head's inverse L2 norm
+//! ([`tree_conv1d_silu_inv`], into the plan), `gdn_gates` computes g and beta only, and the inverse and scan
+//! kernels rebuild the normalised f32 q and k from the bf16 conv output ([`gdn_chunk_scan_conv`]) instead of
+//! reading 16 KB per token of stored f32 rows.
+//!
+//! Numerics follow `torch_chunk_gated_delta_rule` (chunk 64, UT/WY form, fp32), with deliberate, mathematically
+//! identical changes: fp32 matmuls run as split-TF32 ("3xTF32", ~2^-21 per product) because cuTile's plain f32
+//! `mma` is emulated and spills; the decay to the chunk end uses a reverse scan instead of `cum_last - cum` (which
+//! cancels catastrophically for strongly decaying heads); the unit lower-triangular inverse is computed blockwise
+//! (forward substitution inside 16-row blocks, then block doubling, as fla's `solve_tril`); and the scan uses
+//! `v_new = Tinv (v*beta - (k*beta*exp(cum)) S)` instead of the reference's `u - w S` with stored `u = Tinv v*beta`,
+//! `w = Tinv k*beta*exp(cum)`, so no `[T, 4096]` f32 intermediate is written (P1). Measured against an f64 oracle,
+//! these stay inside the error envelope of transformers' own f32 implementation (tests/kernels_gdn.rs).
+//! [`GdnPrecision`] selects faster, less precise products (DESIGN §1 "Precision knobs").
 //!
 //! Segment structure comes from a [`GdnPlan`] (device tables built from the batch's [`Segment`]s). Grids depend
 //! only on the plan's capacities, so a launch sequence can be captured once per T bucket and replayed after
@@ -55,7 +63,7 @@ pub const STATE_ELEMS: usize = NUM_V_HEADS * HEAD_DIM * HEAD_DIM;
 /// `Simt` is the cuda-oxide path (`simt.rs`, docs/G1.md): tensor-core `mma.sync` with split-bf16 operands,
 /// recomputing the WY operands inside the scan instead of storing them. `Tile` is the cuTile path, kept as the
 /// fallback and as the test reference.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum GdnBackend {
     #[default]
     Tile,
@@ -64,6 +72,11 @@ pub enum GdnBackend {
 
 impl GdnBackend {
     pub const ALL: [GdnBackend; 2] = [GdnBackend::Tile, GdnBackend::Simt];
+
+    /// Default [`GdnOptions`] with this backend.
+    pub fn options(self) -> GdnOptions {
+        GdnOptions { backend: self, ..GdnOptions::default() }
+    }
 
     pub fn name(self) -> &'static str {
         match self {
@@ -154,6 +167,10 @@ pub struct GdnPlan {
     pub num_prefixes: usize,
     chunks: Tensor<i32>,
     segs: Tensor<i32>,
+    /// Per-(token, head) inverse L2 norms of the conv output's q and k heads, f32 `[tokens, 32]` (q heads, then k
+    /// heads), written by [`tree_conv1d_silu_inv`] and read by [`gdn_chunk_scan_conv`]. Per-batch data, kept in
+    /// the plan so that [`GdnScratch`] keeps its fields.
+    qk_inv: Tensor<f32>,
 }
 
 /// Host-side tables of a [`GdnPlan`] (see `tile.rs` for the layouts).
@@ -233,7 +250,8 @@ impl GdnPlan {
         let t = GdnTables::build(segments, tokens, max_chunks, max_segs)?;
         let chunks = api::copy_host_vec_to_device(&Arc::new(t.chunks)).sync_on(stream)?;
         let segs = api::copy_host_vec_to_device(&Arc::new(t.segs)).sync_on(stream)?;
-        Ok(Self { tokens, max_chunks, max_segs, num_prefixes: t.num_prefixes, chunks, segs })
+        let qk_inv = api::zeros::<f32>(&[tokens, 2 * NUM_K_HEADS]).sync_on(stream)?;
+        Ok(Self { tokens, max_chunks, max_segs, num_prefixes: t.num_prefixes, chunks, segs, qk_inv })
     }
 
     /// Rewrite the tables in place for another batch with the same capacities (for graph replay).
@@ -254,14 +272,18 @@ pub struct GdnScratch {
     pub slots: usize,
     /// conv1d+SiLU output, bf16 `[T, 8192]` (q | k | v).
     pub conv: Tensor<bf16>,
-    /// L2-normalised (q also scaled) queries and keys, f32 `[T, 16 * 128]`.
+    /// L2-normalised (q also scaled) queries and keys, f32 `[T, 16 * 128]`, written by [`gdn_prep`] or
+    /// [`tree_conv1d_silu_qk`]. [`gdn_mixer`] neither writes nor reads them (its scan rebuilds q and k from the
+    /// bf16 conv output).
     pub q: Tensor<f32>,
     pub k: Tensor<f32>,
     /// f32 `[T, 32]`.
     pub g: Tensor<f32>,
     pub beta: Tensor<f32>,
-    /// Phase A of the scan, per v-head: WY-transformed keys and values, decayed queries and keys,
-    /// f32 `[T, 32 * 128]` each.
+    /// Stored WY operands of the Phase 1 scan ([`gdn_chunk_scan_w3a`] only): WY-transformed keys and values,
+    /// decayed queries and keys, f32 `[T, 32 * 128]` each when allocated by
+    /// [`with_w3a_buffers`](Self::with_w3a_buffers). [`new`](Self::new) allocates them as `[1, 32 * 128]`
+    /// placeholders: the default scan recomputes them per chunk (64 KB per token saved).
     pub w: Tensor<f32>,
     pub u: Tensor<f32>,
     pub qd: Tensor<f32>,
@@ -279,27 +301,39 @@ pub struct GdnScratch {
 impl GdnScratch {
     /// Scratch for the cuTile backend (every buffer at full size).
     pub fn new(tokens: usize, slots: usize, stream: &Arc<Stream>) -> Result<Self> {
-        Self::for_backend(GdnBackend::Tile, tokens, slots, stream)
+        Self::alloc(tokens, slots, tokens, 1, stream)
     }
 
-    /// Scratch for `backend`. The SIMT backend does not use q, k, w, u, qd, kd or p (it recomputes them inside
-    /// the scan), so those are allocated with one row only (~1.2 GB less at T = 16k).
+    /// Like [`new`](Self::new), with full-size `w, u, qd, kd` for [`gdn_chunk_scan_w3a`].
+    pub fn with_w3a_buffers(tokens: usize, slots: usize, stream: &Arc<Stream>) -> Result<Self> {
+        Self::alloc(tokens, slots, tokens, tokens, stream)
+    }
+
+    /// Scratch for `backend`'s mixer. `Tile` is [`new`](Self::new). The SIMT backend does not use q, k or p either
+    /// (it normalises q, k and recomputes P inside the scan), so those are also one-row placeholders.
     pub fn for_backend(backend: GdnBackend, tokens: usize, slots: usize, stream: &Arc<Stream>) -> Result<Self> {
+        match backend {
+            GdnBackend::Tile => Self::new(tokens, slots, stream),
+            GdnBackend::Simt => Self::alloc(tokens, slots, 1, 1, stream),
+        }
+    }
+
+    /// `qkp_rows`: rows of q, k and p (`tokens`, or 1 when unused); `wy_rows`: rows of w, u, qd, kd.
+    fn alloc(tokens: usize, slots: usize, qkp_rows: usize, wy_rows: usize, stream: &Arc<Stream>) -> Result<Self> {
         let slots = slots.max(1);
-        let rows = if backend == GdnBackend::Simt { 1 } else { tokens };
         Ok(Self {
             tokens,
             slots,
             conv: api::zeros::<bf16>(&[tokens, CONV_DIM]).sync_on(stream)?,
-            q: api::zeros::<f32>(&[rows, KEY_DIM]).sync_on(stream)?,
-            k: api::zeros::<f32>(&[rows, KEY_DIM]).sync_on(stream)?,
+            q: api::zeros::<f32>(&[qkp_rows, KEY_DIM]).sync_on(stream)?,
+            k: api::zeros::<f32>(&[qkp_rows, KEY_DIM]).sync_on(stream)?,
             g: api::zeros::<f32>(&[tokens, NUM_V_HEADS]).sync_on(stream)?,
             beta: api::zeros::<f32>(&[tokens, NUM_V_HEADS]).sync_on(stream)?,
-            w: api::zeros::<f32>(&[rows, VALUE_DIM]).sync_on(stream)?,
-            u: api::zeros::<f32>(&[rows, VALUE_DIM]).sync_on(stream)?,
-            qd: api::zeros::<f32>(&[rows, VALUE_DIM]).sync_on(stream)?,
-            kd: api::zeros::<f32>(&[rows, VALUE_DIM]).sync_on(stream)?,
-            p: api::zeros::<f32>(&[rows, NUM_V_HEADS * CHUNK]).sync_on(stream)?,
+            w: api::zeros::<f32>(&[wy_rows, VALUE_DIM]).sync_on(stream)?,
+            u: api::zeros::<f32>(&[wy_rows, VALUE_DIM]).sync_on(stream)?,
+            qd: api::zeros::<f32>(&[wy_rows, VALUE_DIM]).sync_on(stream)?,
+            kd: api::zeros::<f32>(&[wy_rows, VALUE_DIM]).sync_on(stream)?,
+            p: api::zeros::<f32>(&[qkp_rows, NUM_V_HEADS * CHUNK]).sync_on(stream)?,
             tinv: api::zeros::<f32>(&[tokens, NUM_V_HEADS * CHUNK]).sync_on(stream)?,
             core: api::zeros::<bf16>(&[tokens, VALUE_DIM]).sync_on(stream)?,
             state: api::zeros::<f32>(&[slots, NUM_V_HEADS, HEAD_DIM, HEAD_DIM]).sync_on(stream)?,
@@ -343,9 +377,69 @@ pub unsafe fn tree_conv1d_silu(
     conv_w: &Tensor<bf16>,
     out: DView<bf16>,
 ) -> Result<BoxedDeviceOp<()>> {
+    unsafe { conv_impl(plan, x, conv_w, out, ConvQk::None) }
+}
+
+/// [`tree_conv1d_silu`] that also writes the L2-normalised (q also scaled) f32 q and k into `scratch.{q,k}`,
+/// exactly as [`gdn_prep`] computes them from the conv output; pair it with [`gdn_gates`]. Saves reading the
+/// q and k columns back.
+///
+/// # Safety
+/// As for [`tree_conv1d_silu`].
+pub unsafe fn tree_conv1d_silu_qk(
+    plan: &GdnPlan,
+    x: DView<bf16>,
+    conv_w: &Tensor<bf16>,
+    out: DView<bf16>,
+    scratch: &GdnScratch,
+) -> Result<BoxedDeviceOp<()>> {
+    ensure!(plan.tokens <= scratch.tokens, "plan has {} tokens, scratch {}", plan.tokens, scratch.tokens);
+    unsafe { conv_impl(plan, x, conv_w, out, ConvQk::F32(scratch)) }
+}
+
+/// [`tree_conv1d_silu`] that also writes the per-(token, head) inverse L2 norms of the q and k heads into the
+/// plan, for [`gdn_chunk_scan_conv`], which rebuilds the normalised f32 q and k from `out` with the same
+/// arithmetic (bit-identical to [`tree_conv1d_silu_qk`]'s) instead of reading 16 KB per token of f32 rows.
+///
+/// # Safety
+/// As for [`tree_conv1d_silu`].
+pub unsafe fn tree_conv1d_silu_inv(
+    plan: &GdnPlan,
+    x: DView<bf16>,
+    conv_w: &Tensor<bf16>,
+    out: DView<bf16>,
+) -> Result<BoxedDeviceOp<()>> {
+    unsafe { conv_impl(plan, x, conv_w, out, ConvQk::InvNorms) }
+}
+
+/// What the conv writes besides its bf16 output.
+enum ConvQk<'a> {
+    None,
+    /// Normalised f32 q and k into the scratch (`gdn_prep` layout).
+    F32(&'a GdnScratch),
+    /// Inverse norms into the plan.
+    InvNorms,
+}
+
+unsafe fn conv_impl(
+    plan: &GdnPlan,
+    x: DView<bf16>,
+    conv_w: &Tensor<bf16>,
+    out: DView<bf16>,
+    qk: ConvQk<'_>,
+) -> Result<BoxedDeviceOp<()>> {
     x.check("conv input", plan.tokens, CONV_DIM)?;
     out.check("conv output", plan.tokens, CONV_DIM)?;
     let w = check_tensor("conv_w", conv_w, &[CONV_DIM, CONV_KERNEL])?;
+    let inv = plan.qk_inv.device_pointer();
+    let (q, k, mode) = match qk {
+        ConvQk::F32(s) => (s.q.device_pointer(), s.k.device_pointer(), 1),
+        // SAFETY: the q, k pointers are never dereferenced by the kernel in these modes.
+        ConvQk::None | ConvQk::InvNorms => unsafe {
+            let p = DevicePointer::<f32>::from_cu_deviceptr(out.ptr.cu_deviceptr());
+            (p, p, if matches!(qk, ConvQk::None) { 0 } else { 2 })
+        },
+    };
     let op = unsafe {
         gdn_tile::tree_conv1d_silu(
             x.ptr,
@@ -353,12 +447,15 @@ pub unsafe fn tree_conv1d_silu(
             w,
             out.ptr,
             value(out.row_stride as i32),
+            q,
+            k,
+            inv,
             plan.chunks.device_pointer(),
             value(plan.max_chunks as i32),
             value(plan.tokens as i32),
         )
     }
-    .generics(vec![CONV_DIM.to_string(), CONV_BC.to_string()])
+    .generics(vec![CONV_DIM.to_string(), CONV_BC.to_string(), (CONV_BC / HEAD_DIM).to_string(), mode.to_string()])
     .grid(grid(plan.max_chunks, CONV_DIM / CONV_BC, 1));
     Ok(op.map(|_| ()).boxed())
 }
@@ -375,6 +472,33 @@ pub unsafe fn gdn_prep(
     b: DView<bf16>,
     w: &GdnWeights<'_>,
     scratch: &GdnScratch,
+) -> Result<BoxedDeviceOp<()>> {
+    unsafe { prep_impl(plan, conv, a, b, w, scratch, true) }
+}
+
+/// The gate half of [`gdn_prep`] (g, beta only), for use after [`tree_conv1d_silu_qk`].
+///
+/// # Safety
+/// As for [`tree_conv1d_silu`].
+pub unsafe fn gdn_gates(
+    plan: &GdnPlan,
+    conv: DView<bf16>,
+    a: DView<bf16>,
+    b: DView<bf16>,
+    w: &GdnWeights<'_>,
+    scratch: &GdnScratch,
+) -> Result<BoxedDeviceOp<()>> {
+    unsafe { prep_impl(plan, conv, a, b, w, scratch, false) }
+}
+
+unsafe fn prep_impl(
+    plan: &GdnPlan,
+    conv: DView<bf16>,
+    a: DView<bf16>,
+    b: DView<bf16>,
+    w: &GdnWeights<'_>,
+    scratch: &GdnScratch,
+    qk: bool,
 ) -> Result<BoxedDeviceOp<()>> {
     let t = plan.tokens;
     ensure!(t <= scratch.tokens, "plan has {t} tokens, scratch {}", scratch.tokens);
@@ -400,19 +524,221 @@ pub unsafe fn gdn_prep(
             value(t as i32),
         )
     }
-    .generics(vec![ROW_BLOCK.to_string()])
-    .grid(grid(t.div_ceil(ROW_BLOCK), NUM_K_HEADS, 1));
+    .generics(vec![ROW_BLOCK.to_string(), (qk as i32).to_string()])
+    .grid(grid(t.div_ceil(ROW_BLOCK), if qk { NUM_K_HEADS } else { 1 }, 1));
     Ok(op.map(|_| ()).boxed())
 }
 
-/// The chunked gated delta rule over the plan's segment tree: WY transform (parallel over chunks), then the
-/// inter-chunk scan for prefixes (writing their final states into `scratch.state`), then for suffixes (starting
-/// from their parent's state). Reads `scratch.{q,k,g,beta}` and v (`[T, 4096]` bf16 view, normally columns
-/// 4096.. of the conv output); writes bf16 `[T, 4096]` into `out`.
+/// Arithmetic of the matrix products inside the chunked delta rule (DESIGN §1 "Precision knobs": the end-to-end
+/// gate decides whether a faster variant is acceptable; the default is the precise one).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum GdnPrecision {
+    /// Split TF32 ("3xTF32", ~2^-21 relative per product): fp32-grade, within the tolerances of
+    /// tests/kernels_gdn.rs.
+    #[default]
+    Fp32Split3,
+    /// One TF32 product (10-bit mantissa operands, fp32 accumulation) everywhere.
+    Tf32,
+    /// bf16 operands (fp32 accumulation) in the sequential scan; TF32 for the chunk inverse and the intra-chunk
+    /// attention, where bf16 would compound through the triangular solve.
+    Bf16Operands,
+    /// Split TF32 for every product that feeds the recurrent state (`(k*beta) k^T` and the chunk inverse,
+    /// `k S`, `Tinv (..)`, `k^T v_new`) and one TF32 product for the output-only ones (`q k^T`, `q S`,
+    /// `p v_new`): output errors do not compound across chunks.
+    Fp32StateTf32Output,
+}
+
+impl GdnPrecision {
+    /// `[element type, split, output element type, output split]` generics of the chunk-inverse kernel and of
+    /// the scan kernel.
+    fn generics(self) -> ([&'static str; 4], [&'static str; 4]) {
+        match self {
+            Self::Fp32Split3 => (["tf32", "3", "tf32", "3"], ["tf32", "3", "tf32", "3"]),
+            Self::Tf32 => (["tf32", "1", "tf32", "1"], ["tf32", "1", "tf32", "1"]),
+            Self::Bf16Operands => (["tf32", "1", "tf32", "1"], ["bf16", "1", "bf16", "1"]),
+            Self::Fp32StateTf32Output => (["tf32", "3", "tf32", "1"], ["tf32", "3", "tf32", "1"]),
+        }
+    }
+}
+
+/// Tuning and precision options of [`gdn_chunk_scan_with`] / [`gdn_mixer_with`]. `Default` is what
+/// [`gdn_chunk_scan`] and [`gdn_mixer`] use.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct GdnOptions {
+    /// Implementation of the delta rule in [`gdn_mixer_with`]. The other fields tune the cuTile (`Tile`) kernels
+    /// only; the SIMT kernels have one configuration. [`gdn_chunk_scan_with`] is always cuTile.
+    pub backend: GdnBackend,
+    pub precision: GdnPrecision,
+    /// Value columns per program of the prefix scan (phase 0: few, long segments; smaller blocks give more
+    /// programs). One of 16, 32, 64, 128.
+    pub prefix_bv: usize,
+    /// Value columns per program of the suffix scan (phase 1: many short segments).
+    pub suffix_bv: usize,
+    /// Warps per CTA of the prefix and suffix scans.
+    pub prefix_warps: i32,
+    pub suffix_warps: i32,
+    /// Warps per CTA of the chunk-inverse kernel.
+    pub tp_warps: i32,
+    /// Block size of the chunk inverse solved by forward substitution before block doubling takes over (a
+    /// power of two, 2..=64; 2 = doubling only, 64 = forward substitution only).
+    pub tp_fsb: i32,
+}
+
+impl Default for GdnOptions {
+    fn default() -> Self {
+        Self {
+            backend: GdnBackend::default(),
+            precision: GdnPrecision::default(),
+            prefix_bv: 32,
+            suffix_bv: 32,
+            prefix_warps: 8,
+            suffix_warps: 8,
+            tp_warps: 8,
+            tp_fsb: 16,
+        }
+    }
+}
+
+/// The chunked gated delta rule over the plan's segment tree with default [`GdnOptions`]; see
+/// [`gdn_chunk_scan_with`].
 ///
 /// # Safety
 /// As for [`tree_conv1d_silu`].
 pub unsafe fn gdn_chunk_scan(
+    plan: &GdnPlan,
+    v: DView<bf16>,
+    scratch: &GdnScratch,
+    out: DView<bf16>,
+) -> Result<DeviceOpVec<()>> {
+    unsafe { gdn_chunk_scan_with(plan, v, scratch, out, &GdnOptions::default()) }
+}
+
+/// The chunked gated delta rule over the plan's segment tree, as four operations: the chunk inverse `Tinv` and
+/// masked intra-chunk attention `p` (parallel over chunks, into `scratch.{tinv,p}`), an empty operation in the
+/// slot of the Phase 1 WY launch (now fused into the scans), then the inter-chunk scan for prefixes (writing
+/// their final states into `scratch.state`), then for suffixes (starting from their parent's state). Reads `scratch.{q,k,g,beta}` and v (`[T, 4096]` bf16 view, normally columns 4096.. of the
+/// conv output); writes bf16 `[T, 4096]` into `out`.
+///
+/// # Safety
+/// As for [`tree_conv1d_silu`].
+pub unsafe fn gdn_chunk_scan_with(
+    plan: &GdnPlan,
+    v: DView<bf16>,
+    scratch: &GdnScratch,
+    out: DView<bf16>,
+    opts: &GdnOptions,
+) -> Result<DeviceOpVec<()>> {
+    unsafe { scan_impl(plan, None, v, scratch, out, opts) }
+}
+
+/// [`gdn_chunk_scan_with`] for the mixer's conv output: `conv` is the full `[T, 8192]` bf16 view written by
+/// [`tree_conv1d_silu_inv`] (same plan), whose v columns are the scan's values. Instead of reading f32 q and k
+/// from `scratch.{q,k}` (16 KB per token, written by the conv or `gdn_prep`), it rebuilds them from the bf16 q, k
+/// columns and the plan's inverse norms with the same arithmetic, so the result is bit-identical to
+/// [`tree_conv1d_silu_qk`] followed by [`gdn_chunk_scan_with`]. `scratch.{q,k}` are neither read nor written.
+///
+/// # Safety
+/// As for [`tree_conv1d_silu`].
+pub unsafe fn gdn_chunk_scan_conv(
+    plan: &GdnPlan,
+    conv: DView<bf16>,
+    scratch: &GdnScratch,
+    out: DView<bf16>,
+    opts: &GdnOptions,
+) -> Result<DeviceOpVec<()>> {
+    conv.check("conv", plan.tokens, CONV_DIM)?;
+    unsafe { scan_impl(plan, Some(conv), conv.columns(2 * KEY_DIM, VALUE_DIM)?, scratch, out, opts) }
+}
+
+unsafe fn scan_impl(
+    plan: &GdnPlan,
+    conv: Option<DView<bf16>>,
+    v: DView<bf16>,
+    scratch: &GdnScratch,
+    out: DView<bf16>,
+    opts: &GdnOptions,
+) -> Result<DeviceOpVec<()>> {
+    let t = plan.tokens;
+    ensure!(t <= scratch.tokens, "plan has {t} tokens, scratch {}", scratch.tokens);
+    ensure!(plan.num_prefixes <= scratch.slots, "{} prefixes, scratch has {} state slots", plan.num_prefixes, scratch.slots);
+    v.check("v", t, VALUE_DIM)?;
+    out.check("scan output", t, VALUE_DIM)?;
+    // q, k source: QKB 1 = rebuilt from the bf16 conv output and the plan's inverse norms; 0 = scratch.{q,k}
+    // (the conv pointer is then unused; v's stands in).
+    let (conv_ptr, conv_stride, qkb) = match conv {
+        Some(c) => (c.ptr, c.row_stride, 1),
+        None => (v.ptr, v.row_stride, 0),
+    };
+    ensure!(opts.tp_fsb >= 2 && opts.tp_fsb <= 64 && opts.tp_fsb.count_ones() == 1, "tp_fsb {} (power of two, 2..=64)", opts.tp_fsb);
+    for bv in [opts.prefix_bv, opts.suffix_bv] {
+        ensure!(matches!(bv, 16 | 32 | 64 | 128), "scan block of {bv} value columns (16, 32, 64 or 128)");
+    }
+    let sp = |t: &Tensor<f32>| t.device_pointer();
+    let (tp_gen, scan_gen) = opts.precision.generics();
+    let mut ops = DeviceOpVec::with_capacity(4);
+    let tp = unsafe {
+        gdn_tile::gdn_chunk_tp(
+            sp(&scratch.q),
+            sp(&scratch.k),
+            conv_ptr,
+            value(conv_stride as i32),
+            sp(&plan.qk_inv),
+            sp(&scratch.g),
+            sp(&scratch.beta),
+            sp(&scratch.tinv),
+            sp(&scratch.p),
+            plan.chunks.device_pointer(),
+            value(plan.max_chunks as i32),
+        )
+    }
+    .generics(tp_gen.iter().map(|g| g.to_string()).chain([opts.tp_fsb.to_string(), qkb.to_string()]).collect())
+    .compile_options(CompileOptions::default().num_worker_warps_per_cta(opts.tp_warps))
+    // Heads fastest: the two v-heads of a k-head (and the heads of one chunk) read the same q, k rows together.
+    .grid(grid(NUM_V_HEADS, plan.max_chunks, 1));
+    ops.push(tp.map(|_| ()));
+    // The Phase 1 WY launch is fused into the scans; an empty op keeps the four-launch shape
+    // (inverse, WY, prefix scan, suffix scan) that callers label and replay.
+    ops.push(value(()).boxed());
+    for (phase, bv, warps) in [(0i32, opts.prefix_bv, opts.prefix_warps), (1, opts.suffix_bv, opts.suffix_warps)] {
+        let scan = unsafe {
+            gdn_tile::gdn_chunk_scan_fused(
+                sp(&scratch.q),
+                sp(&scratch.k),
+                conv_ptr,
+                value(conv_stride as i32),
+                sp(&plan.qk_inv),
+                v.ptr,
+                value(v.row_stride as i32),
+                sp(&scratch.g),
+                sp(&scratch.beta),
+                sp(&scratch.tinv),
+                sp(&scratch.p),
+                sp(&scratch.state),
+                out.ptr,
+                value(out.row_stride as i32),
+                plan.segs.device_pointer(),
+                value(plan.max_segs as i32),
+                value(scratch.slots as i32),
+                value(phase),
+            )
+        }
+        .generics(scan_gen.iter().map(|g| g.to_string()).chain([bv.to_string(), qkb.to_string()]).collect())
+        .compile_options(CompileOptions::default().num_worker_warps_per_cta(warps))
+        // Value blocks fastest, then heads: the CTAs that read one chunk's q, k, Tinv and p (the value blocks of
+        // a head, and the two v-heads of a k-head) are launched together and share those reads through L2.
+        .grid(grid(HEAD_DIM / bv, NUM_V_HEADS, plan.max_segs));
+        ops.push(scan.map(|_| ()));
+    }
+    Ok(ops)
+}
+
+/// The Phase 1 (W3a) four-launch scan: inverse by forward substitution, stored WY intermediates
+/// (`scratch.{w,u,qd,kd,p}`, which need [`GdnScratch::with_w3a_buffers`]), then the state scan. Kept for
+/// comparison in `bench_gdn`.
+///
+/// # Safety
+/// As for [`tree_conv1d_silu`].
+pub unsafe fn gdn_chunk_scan_w3a(
     plan: &GdnPlan,
     v: DView<bf16>,
     scratch: &GdnScratch,
@@ -423,6 +749,7 @@ pub unsafe fn gdn_chunk_scan(
     ensure!(plan.num_prefixes <= scratch.slots, "{} prefixes, scratch has {} state slots", plan.num_prefixes, scratch.slots);
     v.check("v", t, VALUE_DIM)?;
     out.check("scan output", t, VALUE_DIM)?;
+    ensure!(scratch.w.shape()[0] as usize >= t, "gdn_chunk_scan_w3a needs GdnScratch::with_w3a_buffers");
     let mut ops = DeviceOpVec::with_capacity(4);
     let sp = |t: &Tensor<f32>| t.device_pointer();
     let tinv = unsafe {
@@ -521,7 +848,8 @@ pub unsafe fn gated_rmsnorm(
 }
 
 /// The whole GDN mixer between the fused input projection and `out_proj`: `proj` is the `[T, 12352]` bf16 GEMM
-/// output (`qkv | z | a | b`), `out` the `[T, 4096]` bf16 input of `out_proj`.
+/// output (`qkv | z | a | b`), `out` the `[T, 4096]` bf16 input of `out_proj`. Launches
+/// [`tree_conv1d_silu_inv`], [`gdn_gates`], [`gdn_chunk_scan_conv`] and [`gated_rmsnorm`].
 ///
 /// # Safety
 /// As for [`tree_conv1d_silu`].
@@ -533,21 +861,21 @@ pub unsafe fn gdn_mixer(
     scratch: &GdnScratch,
     out: DView<bf16>,
 ) -> Result<DeviceOpVec<()>> {
-    unsafe { gdn_mixer_with(GdnBackend::Tile, plan, proj, w, eps, scratch, out) }
+    unsafe { gdn_mixer_with(plan, proj, w, eps, scratch, out, &GdnOptions::default()) }
 }
 
-/// [`gdn_mixer`] with an explicit implementation of the delta rule.
+/// [`gdn_mixer`] with explicit [`GdnOptions`] (including the [`GdnBackend`]).
 ///
 /// # Safety
 /// As for [`tree_conv1d_silu`].
 pub unsafe fn gdn_mixer_with(
-    backend: GdnBackend,
     plan: &GdnPlan,
     proj: DView<bf16>,
     w: &GdnWeights<'_>,
     eps: f32,
     scratch: &GdnScratch,
     out: DView<bf16>,
+    opts: &GdnOptions,
 ) -> Result<DeviceOpVec<()>> {
     if proj.cols != CONV_DIM + VALUE_DIM + 2 * NUM_V_HEADS {
         bail!("fused projection has {} columns, expected {}", proj.cols, CONV_DIM + VALUE_DIM + 2 * NUM_V_HEADS);
@@ -560,15 +888,19 @@ pub unsafe fn gdn_mixer_with(
     let core = DView::of(&scratch.core)?;
     let mut ops = DeviceOpVec::with_capacity(6);
     unsafe {
-        ops.push(tree_conv1d_silu(plan, qkv, w.conv_w, conv)?);
-        ops.push(match backend {
-            GdnBackend::Tile => gdn_prep(plan, conv, a, b, w, scratch)?,
-            GdnBackend::Simt => simt::gates(plan, a, b, w, scratch)?,
-        });
-        ops.push(match backend {
-            GdnBackend::Tile => gdn_chunk_scan(plan, conv.columns(2 * KEY_DIM, VALUE_DIM)?, scratch, core)?.map(|_| ()).boxed(),
-            GdnBackend::Simt => simt::chunk_scan(plan, conv, scratch, core)?.map(|_| ()).boxed(),
-        });
+        match opts.backend {
+            GdnBackend::Tile => {
+                ops.push(tree_conv1d_silu_inv(plan, qkv, w.conv_w, conv)?);
+                ops.push(gdn_gates(plan, conv, a, b, w, scratch)?);
+                ops.push(gdn_chunk_scan_conv(plan, conv, scratch, core, opts)?.map(|_| ()));
+            }
+            // The SIMT scan normalises q and k itself (no inverse norms needed) and has its own gates kernel.
+            GdnBackend::Simt => {
+                ops.push(tree_conv1d_silu(plan, qkv, w.conv_w, conv)?);
+                ops.push(simt::gates(plan, a, b, w, scratch)?);
+                ops.push(simt::chunk_scan(plan, conv, scratch, core)?.map(|_| ()).boxed());
+            }
+        }
         ops.push(gated_rmsnorm(plan, core, z, w.norm_w, eps, out)?);
     }
     Ok(ops)
