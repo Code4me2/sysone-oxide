@@ -6,6 +6,18 @@
 //!                                                       packs batch n+1      (double buffer)    runs batch n
 //! ```
 //! Each request gets its slot-logit rows back through a oneshot channel.
+//!
+//! - [`Scheduler::submit`] admits requests ([`Packable`], e.g. a [`Plan`]) all or none; a full queue returns
+//!   [`QueueFull`] and the server answers 503.
+//! - [`batcher::run`] packs whole requests into one [`DecisionBatch`] until [`BatchPolicy::token_budget`], or until
+//!   the oldest has waited [`BatchPolicy::max_wait`] *and* the engine is idle. A request is never split; one over
+//!   the budget runs alone; one over the engine's `max_tokens_per_step` is refused.
+//! - [`worker::run`] owns the engine (built on that thread by the [`EngineFactory`]), runs each batch, and sends
+//!   every job its rows as a [`Scored`].
+//! - Around it: [`pool::CpuPool`] (CPU threads for planning and answer assembly), [`metrics::Metrics`]
+//!   (`/metrics`), [`affinity`] (`--pin-cores`).
+//!
+//! See docs/ARCHITECTURE.md §2 and §4.4.
 
 pub mod affinity;
 pub mod batcher;

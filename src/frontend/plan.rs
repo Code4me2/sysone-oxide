@@ -8,7 +8,8 @@
 //! 4. serve.patch's `_split`: under noncausal attention the prefix block (tokens ending at or before the suffix)
 //!    must end exactly at the shared prefix; it also yields each option line's token span.
 //!
-//! Every branch prompt is `head + suffix + tail` (see [`ChatTemplate::frame`]), and the pre-tokenizer always splits
+//! Every branch prompt is `head + suffix + tail` (see
+//! [`ChatTemplate::frame`](crate::frontend::template::ChatTemplate::frame)), and the pre-tokenizer always splits
 //! between the head (which ends with `</state>\n\n`) and a suffix (which starts with `Question:` or `Rate the
 //! state:`), so a branch's tokens are `encode(head) ++ encode(suffix + tail)`. The head, which holds the state, is
 //! therefore rendered and tokenized once per request instead of once per branch. The golden gate checks the result
