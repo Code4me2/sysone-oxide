@@ -14,6 +14,16 @@ serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 half = "2"
 
+# Frontend (DESIGN.md §7, W2): tokenizer.json via HF tokenizers (the 0.23 line, like the reference's Python
+# tokenizers 0.23.3, with onig regex like the Python wheel), chat_template.jinja via minijinja with Python string
+# methods (pycompat), sha256 for the qev meta `prompt_sha256`, and Unicode categories for Python's
+# `str.isprintable` (the `repr` in qev's 404 message).
+tokenizers = { version = "=0.23.2", default-features = false, features = ["onig"] }
+minijinja = { version = "2.24", features = ["json", "loop_controls"] }
+minijinja-contrib = { version = "2.24", features = ["pycompat"] }
+sha2 = "0.10"
+unicode-general-category = "1"
+
 # cuda-rust, by path (DESIGN.md §1). Versions are exact-pinned upstream.
 cuda-core = { path = "../cuda-rust/cuda-core" }
 cuda-async = { path = "../cuda-rust/cuda-async" }
