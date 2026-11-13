@@ -1,0 +1,289 @@
+//! The engine's [`Kernels`] over the W3 cuTile kernels (`crate::kernels`): GDN (W3a), attention, norms,
+//! pointwise ops (W3b). Phase 2a, I1.
+//!
+//! The adapters translate arena views ([`DevTensor`]) into the kernels' own argument types (borrowed cutile
+//! tensors, [`DView`]s, raw device pointers) and launch on the step's execution context, so every launch can be
+//! recorded into a T-bucket CUDA graph. Batch-dependent state lives in fixed device buffers per bucket:
+//! - a [`GdnPlan`] (chunk and segment tables) sized for the bucket's token and segment capacities;
+//! - the [`AttnPlan`] work list, padded to the bucket's maximum item count (the grid of a captured launch).
+//!
+//! [`TileKernels::update`] rewrites both for each batch before the forward runs (eagerly or as a replay).
+//!
+//! GDN scratch (q, k, gates, WY intermediates, prefix states) is one [`GdnScratch`] sized for the largest bucket
+//! and the engine's prefix capacity, shared by all buckets and layers (one step runs at a time). The conv output
+//! and the delta-rule output are arena values instead of scratch fields, so the scratch holds only what the W3
+//! scan reads implicitly.
+
+use crate::contract::DecisionBatch;
+use crate::engine::graph::tensor::{DevTensor, GraphDType};
+use crate::engine::graph::{Bucket, Kernels, LayerWeight, Launch, WeightRef};
+use crate::kernels::attention::{self as attn, AttnPlan, AttnTiles, SegAttnArgs, WORK_FIELDS};
+use crate::kernels::gdn::{self, CHUNK, DView, GdnPlan, GdnScratch, GdnTables, GdnWeights};
+use crate::kernels::{norm, pointwise};
+use anyhow::{Context as _, Result, anyhow, ensure};
+use cuda_async::device_buffer::DevicePointer;
+use cuda_async::device_operation::DeviceOp;
+use cuda_core::{PinnedHostBuffer, Stream};
+use cutile::api;
+use cutile::half::bf16;
+use std::collections::HashMap;
+use std::sync::Arc;
+
+/// Fixed per-bucket device state of the segment-aware kernels.
+struct BucketState {
+    gdn: GdnPlan,
+    /// `[attn_items, WORK_FIELDS]` i32 (an [`AttnPlan`] padded with empty items).
+    attn_work: DevTensor,
+    attn_items: usize,
+    /// Pinned staging for the work list (rewritten only after the previous step has completed).
+    attn_host: PinnedHostBuffer<i32>,
+}
+
+pub struct TileKernels {
+    eps: f32,
+    pub attn_tiles: AttnTiles,
+    /// `inv_freq` of the partial RoPE, `[32]` f32.
+    inv_freq: DevTensor,
+    scratch: GdnScratch,
+    buckets: HashMap<Bucket, BucketState>,
+}
+
+// SAFETY: the cutile tensors and plans hold device allocations only; the engine's single worker thread drives
+// every launch, and `&self` methods only enqueue work.
+unsafe impl Send for TileKernels {}
+unsafe impl Sync for TileKernels {}
+
+fn launch_err(what: &str) -> impl FnOnce(cuda_async::error::DeviceError) -> anyhow::Error + '_ {
+    move |e| anyhow!("{what} launch: {e:?}")
+}
+
+/// A [`DView`] over a rank-2 (possibly column-strided) arena view.
+fn dview<T: cuda_core::DType>(t: &DevTensor, dtype: GraphDType) -> Result<DView<T>> {
+    ensure!(t.dtype == dtype && t.shape.len() == 2, "expected a rank-2 {dtype:?} view, got {t:?}");
+    // SAFETY: the address is a live device allocation held by the view's buffer.
+    let ptr = unsafe { DevicePointer::from_cu_deviceptr(t.ptr()) };
+    Ok(DView { ptr, rows: t.shape[0], cols: t.shape[1], row_stride: t.row_stride })
+}
+
+fn dptr<T>(t: &DevTensor) -> DevicePointer<T> {
+    // SAFETY: as in `dview`.
+    unsafe { DevicePointer::from_cu_deviceptr(t.ptr()) }
+}
+
+impl TileKernels {
+    /// Kernels for an engine whose largest bucket has `max_tokens` tokens and whose batches hold at most
+    /// `max_prefixes` prefix segments (GDN state slots: 2 MiB each).
+    pub fn new(stream: &Arc<Stream>, eps: f32, max_tokens: usize, max_prefixes: usize) -> Result<Self> {
+        ensure!(max_prefixes > 0, "max_prefixes must be > 0");
+        let inv: Vec<u8> = attn::rope_inv_freq().iter().flat_map(|x| x.to_le_bytes()).collect();
+        let inv_freq = DevTensor::alloc(stream.context(), GraphDType::F32, &[attn::ROTARY_DIM / 2])?;
+        inv_freq.copy_from_host(stream, &inv)?;
+        let z32 = |cols: usize| api::zeros::<f32>(&[max_tokens, cols]).sync_on(stream);
+        let scratch = GdnScratch {
+            tokens: max_tokens,
+            slots: max_prefixes,
+            // The conv and delta-rule outputs are arena values; these two fields are never read by the launchers
+            // the engine calls with explicit views.
+            conv: api::zeros::<bf16>(&[1, gdn::CONV_DIM]).sync_on(stream)?,
+            q: z32(gdn::KEY_DIM)?,
+            k: z32(gdn::KEY_DIM)?,
+            g: z32(gdn::NUM_V_HEADS)?,
+            beta: z32(gdn::NUM_V_HEADS)?,
+            w: z32(gdn::VALUE_DIM)?,
+            u: z32(gdn::VALUE_DIM)?,
+            qd: z32(gdn::VALUE_DIM)?,
+            kd: z32(gdn::VALUE_DIM)?,
+            p: z32(gdn::NUM_V_HEADS * CHUNK)?,
+            tinv: z32(gdn::NUM_V_HEADS * CHUNK)?,
+            core: api::zeros::<bf16>(&[1, gdn::VALUE_DIM]).sync_on(stream)?,
+            state: api::zeros::<f32>(&[max_prefixes, gdn::NUM_V_HEADS, gdn::HEAD_DIM, gdn::HEAD_DIM]).sync_on(stream)?,
+        };
+        Ok(Self { eps, attn_tiles: AttnTiles::default(), inv_freq, scratch, buckets: HashMap::new() })
+    }
+
+    /// Prefix segments a batch may hold (GDN state slots).
+    pub fn max_prefixes(&self) -> usize {
+        self.scratch.slots
+    }
+
+    /// Device bytes of the GDN scratch.
+    pub fn scratch_bytes(&self) -> usize {
+        let s = &self.scratch;
+        [&s.q, &s.k, &s.g, &s.beta, &s.w, &s.u, &s.qd, &s.kd, &s.p, &s.tinv, &s.state]
+            .iter()
+            .map(|t| t.shape().iter().map(|&d| d as usize).product::<usize>() * 4)
+            .sum()
+    }
+
+    /// Allocate `b`'s plan buffers (idempotent; never during capture).
+    pub fn prepare(&mut self, b: Bucket, stream: &Arc<Stream>) -> Result<()> {
+        if self.buckets.contains_key(&b) {
+            return Ok(());
+        }
+        ensure!(b.tokens <= self.scratch.tokens, "bucket of {} tokens over the scratch's {}", b.tokens, self.scratch.tokens);
+        let max_chunks = GdnTables::chunk_capacity(b.tokens, b.segments);
+        let gdn = GdnPlan::with_capacity(&[], b.tokens, max_chunks, b.segments, stream)?;
+        let attn_items = AttnPlan::max_items(b.tokens, b.segments, self.attn_tiles.bm);
+        let attn_work = DevTensor::zeros(stream, GraphDType::I32, &[attn_items * WORK_FIELDS])?;
+        let attn_host = PinnedHostBuffer::zeroed(stream.context(), attn_items * WORK_FIELDS)?;
+        self.buckets.insert(b, BucketState { gdn, attn_work, attn_items, attn_host });
+        Ok(())
+    }
+
+    /// Rewrite `b`'s segment tables and attention work list for `batch` (validated; it must fit `b`). The
+    /// previous step must have completed (the work list's pinned staging is reused). Fails, before anything
+    /// runs, when the batch has more prefixes than the GDN scratch has state slots: a replayed scan would
+    /// otherwise write past the state buffer (`GdnPlan::update` does not check the scratch).
+    pub fn update(&mut self, b: Bucket, batch: &DecisionBatch, stream: &Arc<Stream>) -> Result<()> {
+        let slots = self.scratch.slots;
+        let st = self.buckets.get_mut(&b).with_context(|| format!("bucket {b:?} not prepared"))?;
+        let prefixes = batch.segments.iter().filter(|s| s.is_prefix()).count();
+        ensure!(prefixes <= slots, "batch has {prefixes} prefixes; the GDN scratch holds {slots} prefix states");
+        st.gdn.update(&batch.segments, stream)?;
+        ensure!(st.gdn.num_prefixes <= slots, "GDN plan has {} prefixes for {slots} state slots", st.gdn.num_prefixes);
+        let mut plan = AttnPlan::new(&batch.segments, self.attn_tiles.bm);
+        ensure!(plan.num_items() <= st.attn_items, "{} attention items over the bucket's {}", plan.num_items(),
+                st.attn_items);
+        plan.pad_to(st.attn_items);
+        st.attn_host.as_mut_slice().copy_from_slice(&plan.work);
+        stream.context().bind_to_thread()?;
+        unsafe {
+            cuda_core::memory::memcpy_htod_async(st.attn_work.ptr(), st.attn_host.as_ptr(), plan.work.len() * 4,
+                                                 stream.cu_stream())?
+        };
+        Ok(())
+    }
+
+    fn bucket(&self, b: Bucket) -> Result<&BucketState> {
+        self.buckets.get(&b).with_context(|| format!("bucket {b:?} not prepared"))
+    }
+
+    fn gdn_weights<'a>(cx: &'a Launch, layer: usize) -> Result<[&'a DevTensor; 4]> {
+        let w = |s| cx.weights.tensor(WeightRef::Layer(layer, s));
+        Ok([w(LayerWeight::GdnConv)?, w(LayerWeight::GdnALog)?, w(LayerWeight::GdnDtBias)?, w(LayerWeight::GdnNorm)?])
+    }
+}
+
+impl Kernels for TileKernels {
+    fn zc_rmsnorm(&self, cx: &Launch, x: &DevTensor, w: &DevTensor, out: &DevTensor) -> Result<()> {
+        unsafe {
+            let (x, w, mut o) = (x.tile::<bf16>()?, w.tile::<bf16>()?, out.tile::<bf16>()?);
+            norm::zc_rmsnorm(&mut o, &x, &w, self.eps)?.execute(cx.exec).map(|_| ()).map_err(launch_err("zc_rmsnorm"))
+        }
+    }
+
+    fn add_zc_rmsnorm(&self, cx: &Launch, residual: &DevTensor, x: &DevTensor, w: &DevTensor, out: &DevTensor)
+        -> Result<()> {
+        unsafe {
+            let (x, w) = (x.tile::<bf16>()?, w.tile::<bf16>()?);
+            let (mut r, mut o) = (residual.tile::<bf16>()?, out.tile::<bf16>()?);
+            norm::add_zc_rmsnorm(&mut r, &mut o, &x, &w, self.eps)?.execute(cx.exec).map(|_| ()).map_err(launch_err("add_zc_rmsnorm"))
+        }
+    }
+
+    fn silu_mul(&self, cx: &Launch, gu: &DevTensor, out: &DevTensor) -> Result<()> {
+        unsafe {
+            let (gu, mut o) = (gu.tile::<bf16>()?, out.tile::<bf16>()?);
+            pointwise::silu_mul(&mut o, &gu)?.execute(cx.exec).map(|_| ()).map_err(launch_err("silu_mul"))
+        }
+    }
+
+    fn tree_conv1d_silu(&self, cx: &Launch, _layer: usize, x: &DevTensor, conv_w: &DevTensor, out: &DevTensor)
+        -> Result<()> {
+        let st = self.bucket(cx.bucket)?;
+        unsafe {
+            let w = conv_w.tile::<bf16>()?;
+            let op = gdn::tree_conv1d_silu(&st.gdn, dview(x, GraphDType::BF16)?, &w, dview(out, GraphDType::BF16)?)?;
+            op.execute(cx.exec).map_err(launch_err("tree_conv1d_silu"))
+        }
+    }
+
+    fn gdn_prep(&self, cx: &Launch, layer: usize, conv: &DevTensor, a: &DevTensor, b: &DevTensor, _a_log: &DevTensor,
+                _dt_bias: &DevTensor) -> Result<()> {
+        let st = self.bucket(cx.bucket)?;
+        let [cw, al, dt, nw] = Self::gdn_weights(cx, layer)?;
+        unsafe {
+            let (cw, al, dt, nw) = (cw.tile::<bf16>()?, al.tile::<bf16>()?, dt.tile::<bf16>()?, nw.tile::<bf16>()?);
+            let w = GdnWeights { conv_w: &cw, a_log: &al, dt_bias: &dt, norm_w: &nw };
+            let conv = dview(conv, GraphDType::BF16)?;
+            let op = gdn::gdn_prep(&st.gdn, conv, dview(a, GraphDType::BF16)?, dview(b, GraphDType::BF16)?, &w,
+                                   &self.scratch)?;
+            op.execute(cx.exec).map_err(launch_err("gdn_prep"))
+        }
+    }
+
+    fn gdn_chunk_scan(&self, cx: &Launch, _layer: usize, v: &DevTensor, out: &DevTensor) -> Result<()> {
+        let st = self.bucket(cx.bucket)?;
+        ensure!(st.gdn.num_prefixes <= self.scratch.slots, "GDN plan has {} prefixes for {} state slots",
+                st.gdn.num_prefixes, self.scratch.slots);
+        let mut ops = unsafe {
+            gdn::gdn_chunk_scan(&st.gdn, dview(v, GraphDType::BF16)?, &self.scratch, dview(out, GraphDType::BF16)?)?
+        };
+        // tinv, WY, prefix scan, suffix scan (the order gdn_chunk_scan builds them in).
+        for label in ["gdn.chunk_tinv", "gdn.chunk_wy", "gdn.scan_prefix", "gdn.scan_suffix"] {
+            cx.mark(label)?;
+            let op = ops.remove(0);
+            unsafe { op.execute(cx.exec) }.map_err(launch_err(label))?;
+        }
+        Ok(())
+    }
+
+    fn gated_rmsnorm(&self, cx: &Launch, _layer: usize, o: &DevTensor, z: &DevTensor, w: &DevTensor, out: &DevTensor)
+        -> Result<()> {
+        let st = self.bucket(cx.bucket)?;
+        unsafe {
+            let w = w.tile::<bf16>()?;
+            let op = gdn::gated_rmsnorm(&st.gdn, dview(o, GraphDType::BF16)?, dview(z, GraphDType::BF16)?, &w, self.eps,
+                                        dview(out, GraphDType::BF16)?)?;
+            op.execute(cx.exec).map_err(launch_err("gated_rmsnorm"))
+        }
+    }
+
+    fn qk_norm_rope(&self, cx: &Launch, _layer: usize, qg: &DevTensor, kv: &DevTensor, q_norm: &DevTensor,
+                    k_norm: &DevTensor, q: &DevTensor, k: &DevTensor) -> Result<()> {
+        let t = qg.rows();
+        let (hq, hk, d) = (attn::NUM_Q_HEADS, attn::NUM_KV_HEADS, attn::HEAD_DIM);
+        let pos = &cx.meta.positions;
+        // RoPE positions are u32 in the metadata block; the kernel reads them as i32 (all < 2^31).
+        let pos = DevTensor::new(pos.buf().clone(), pos.offset(), GraphDType::I32, vec![t])?;
+        unsafe {
+            let qg = qg.reshape(&[t, hq, 2 * d])?.tile::<bf16>()?;
+            let kv = kv.reshape(&[t, 2 * hk, d])?.tile::<bf16>()?;
+            let mut qo = q.reshape(&[t, hq, d])?.tile::<bf16>()?;
+            let mut ko = k.reshape(&[t, hk, d])?.tile::<bf16>()?;
+            let (pos, qw, kw) = (pos.tile::<i32>()?, q_norm.tile::<bf16>()?, k_norm.tile::<bf16>()?);
+            let inv = self.inv_freq.tile::<f32>()?;
+            attn::qk_norm_rope(&mut qo, &mut ko, &qg, &kv, &pos, &qw, &kw, &inv, self.eps)?
+                .execute(cx.exec)
+                .map(|_| ()).map_err(launch_err("qk_norm_rope"))
+        }
+    }
+
+    fn seg_attn(&self, cx: &Launch, _layer: usize, q: &DevTensor, k: &DevTensor, kv: &DevTensor, qg: &DevTensor,
+                out: &DevTensor) -> Result<()> {
+        let st = self.bucket(cx.bucket)?;
+        let t = q.rows();
+        for (name, x, cols) in [("q", q, 4096), ("k", k, 1024), ("kv", kv, 2048), ("qg", qg, 8192), ("out", out, 4096)] {
+            ensure!(x.dtype == GraphDType::BF16 && x.is_contiguous() && x.rows() == t && x.cols() == cols,
+                    "seg_attn {name}: {x:?}");
+        }
+        let args = SegAttnArgs {
+            out: dptr(out),
+            q: dptr(q),
+            k: dptr(k),
+            kv: dptr(kv),
+            qg: dptr(qg),
+            work: dptr(&st.attn_work),
+            num_items: st.attn_items,
+        };
+        unsafe { attn::seg_attn(args, self.attn_tiles).execute(cx.exec) }.map(|_| ()).map_err(launch_err("seg_attn"))
+    }
+
+    fn gather_rows(&self, cx: &Launch, src: &DevTensor, out: &DevTensor) -> Result<()> {
+        let idx = cx.meta.answer_rows.rows_view(0, out.rows())?;
+        unsafe {
+            let (src, idx, mut o) = (src.tile::<bf16>()?, idx.tile::<u32>()?, out.tile::<bf16>()?);
+            pointwise::gather_rows(&mut o, &src, &idx)?.execute(cx.exec).map(|_| ()).map_err(launch_err("gather_rows"))
+        }
+    }
+}

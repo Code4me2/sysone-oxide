@@ -208,7 +208,7 @@ fn step_graph_eager_and_captured_buckets() {
     {
         let ex = Executor {
             graph: &g, plan: bg.pool(b0).unwrap(), arena: &bg.arena, weights: &store, kernels: &NoKernels,
-            blas: &blas, meta: &up_meta.dev, gdn_state: None, cfg: None,
+            blas: &blas, meta: &up_meta.dev, cfg: None, profiler: None,
         };
         ex.run_eager(&stream).unwrap();
         check_embed(&ex, &eager_batch);
@@ -220,7 +220,7 @@ fn step_graph_eager_and_captured_buckets() {
         let graph = {
             let ex = Executor {
                 graph: &g, plan: bg.pool(b).unwrap(), arena: &bg.arena, weights: &store, kernels: &NoKernels,
-                blas: &blas, meta: &up_meta.dev, gdn_state: None, cfg: None,
+                blas: &blas, meta: &up_meta.dev, cfg: None, profiler: None,
             };
             ex.run_eager(&stream).unwrap(); // warm-up outside capture
             ex.capture(&stream).unwrap()
@@ -239,7 +239,7 @@ fn step_graph_eager_and_captured_buckets() {
         stream.synchronize().unwrap();
         let ex = Executor {
             graph: &g, plan: bg.pool(b).unwrap(), arena: &bg.arena, weights: &store, kernels: &NoKernels,
-            blas: &blas, meta: &up_meta.dev, gdn_state: None, cfg: None,
+            blas: &blas, meta: &up_meta.dev, cfg: None, profiler: None,
         };
         check_embed(&ex, bt);
         let (x2h, yh) = read(&ex, bt.num_tokens());
