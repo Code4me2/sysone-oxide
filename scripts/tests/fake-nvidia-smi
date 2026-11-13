@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Stand-in for nvidia-smi in the script tests: FAKE_GPUS GPUs (default 3) with made-up UUIDs.
+# Only the query gpu.sh makes is supported.
+n="${FAKE_GPUS:-3}"
+case "$*" in
+    *--query-gpu=index,uuid*)
+        for ((i = 0; i < n; i++)); do printf '%d, GPU-%d%d%d%d%d%d%d%d-aaaa-bbbb-cccc-%012d\n' "$i" $i $i $i $i $i $i $i $i "$i"; done ;;
+    *) echo "fake-nvidia-smi: unsupported query: $*" >&2; exit 1 ;;
+esac
