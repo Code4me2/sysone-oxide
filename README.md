@@ -16,8 +16,12 @@ Phase 2a is done ([docs/PHASE2A.md](docs/PHASE2A.md) has the numbers):
 - The bf16 GPU engine (`--engine bf16`) runs the full packed forward with T-bucket CUDA graphs. It passes the
   end-to-end probability gate and the batch-invariance gate. The per-layer hidden-state gate still fails on the last
   layers; a new definition of that gate is pending.
-- NVFP4 kernels and loading exist, but there is no NVFP4 forward yet. `allowed_token_mass` (`?debug=1`) is not
-  computed by the GPU engine. No prefix cache, no images.
+- The NVFP4 engine (`--engine nvfp4` with the NVFP4-MLP checkpoint; N1, [docs/N1.md](docs/N1.md)) runs the MLP
+  GEMMs on FP4 tensor cores with the activation quantization fused into the preceding norm / SiLU·mul. It passes
+  the NVFP4 eval gate, the end-to-end NVFP4 gate and its batch-invariance gate; at 16k packed tokens the forward
+  is 1.48x faster than bf16 (7,850 vs 5,320 tok/s on GB10). Request limits come from a per-checkpoint profile
+  (NVFP4: 16,384 tokens per branch).
+- `allowed_token_mass` (`?debug=1`) is not computed by the GPU engine. No prefix cache, no images.
 - A faster GatedDeltaNet scan on cuda-oxide SIMT kernels (G1, [docs/G1.md](docs/G1.md)) runs in the engine and passes
   every accuracy gate (E2, [docs/E2.md](docs/E2.md)); it is the default on sm_121 (`--gdn-backend auto`), cuTile
   elsewhere. The forward is 18-22% faster with it.
@@ -50,6 +54,9 @@ scripts/gpu.sh cargo test --release --all-targets
 # Serve elephant-1 on the GPU (default listen address 0.0.0.0:8000).
 # --engine defaults to mock: without --engine bf16 the server looks healthy but returns fake logits.
 ./target/release/sysone --model /path/to/elephant-1 --engine bf16
+# The NVFP4-MLP checkpoint (private) on the nvfp4 engine; the engine must match the checkpoint (checked at load),
+# and --max-branch-tokens / --max-request-tokens default to the checkpoint's profile.
+./target/release/sysone --model /path/to/elephant-1-nvfp4-mlp --engine nvfp4
 # GDN delta rule: --gdn-backend auto (default: simt on sm_121, tile elsewhere) | tile | simt; the engine tests
 # and bench_forward read SYSONE_GDN_BACKEND.
 
@@ -62,6 +69,7 @@ scripts/gpu.sh cargo test --release --all-targets
 # Benchmarks refuse to start while another process uses their GPU. On a multi-GPU host pick the GPU with
 # scripts/gpu.sh --gpu N (one lock per GPU); the x86 runners in scripts/x86/ do this per card (docs/x86/AGENT.md).
 scripts/gpu.sh ./target/release/bench_forward --model /path/to/elephant-1 --tokens 1024,4096,16384
+scripts/gpu.sh ./target/release/bench_forward --model /path/to/elephant-1-nvfp4-mlp   # the nvfp4 engine
 scripts/gpu.sh ./target/release/hwprobe
 ```
 
@@ -112,6 +120,7 @@ See [docs/ARCHITECTURE.md §6](docs/ARCHITECTURE.md#6-correctness-and-testing) f
 | [docs/PHASE0.md](docs/PHASE0.md), [docs/PHASE1.md](docs/PHASE1.md), [docs/PHASE2A.md](docs/PHASE2A.md) | Phase reports and measurements |
 | [docs/G1.md](docs/G1.md) | The GDN delta rule in cuda-oxide: results, design, accuracy, the SIMT kernel build and artifact policy |
 | [docs/E2.md](docs/E2.md) | The SIMT GDN backend in the engine: selection, every gate on both backends, forward speed |
+| [docs/N1.md](docs/N1.md) | The nvfp4 engine: fused quantization, checkpoint profiles, NVFP4 gates, forward speed |
 | [reference/README.md](reference/README.md) | The reference harness and golden formats |
 | [reference/eval/README.md](reference/eval/README.md) | The labeled eval set and the statistical gate |
 | `cargo doc --no-deps --open` | Per-module API docs |

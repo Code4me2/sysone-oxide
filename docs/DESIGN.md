@@ -459,7 +459,7 @@ pub trait DecisionEngine: Send {
   - G1 **GDN in cuda-oxide** (docs/G1.md, after Phase 2a): SIMT WY/solve and chunk scan, `GdnBackend::{Tile, Simt}`;
     mixer 2.36 / 8.28 / 32.3 ms (P1 Tile) -> 0.80 / 3.05 / 11.5 ms per layer at 1k / 4k / 16k (~2.7×;
     ~5× against Phase 1). Opt-in until the end-to-end gate; the 16k target (~10 ms) is not met yet.
-- Phase 2b: NVFP4 end to end; fuse the GDN conv into the SIMT kernels (G1's next step); precision choices from the end-to-end
+- Phase 2b: NVFP4 end to end (*done*, N1: docs/N1.md); fuse the GDN conv into the SIMT kernels (G1's next step); precision choices from the end-to-end
   gate; GEMM autotune and fusions guided by I1's profile.
 - Prefix cache (§8).
 
@@ -515,6 +515,8 @@ The cuda-oxide SIMT kernels build with `cargo oxide` on a pinned toolchain (1.99
    faithfully; qualifying it is outside sysone.
 9. **Per-checkpoint request limits.** The NVFP4 checkpoint documents a 16,384-token limit (calibrated to 16,017).
    Proposal: limits come from a per-checkpoint profile, defaulting to the reference values for bf16 and to 16,384
-   total for the NVFP4 checkpoint.
+   total for the NVFP4 checkpoint. *Update (N1, resolved):* `ModelConfig::profile` sets them from
+   `quantization_config`; for the NVFP4 checkpoint the 16,384 bounds each branch (prefix + one question), the way
+   the checkpoint's own evaluation applied it (E1), and the request total keeps qev's 65,536 (docs/N1.md).
 7. **cutile 0.4 → 0.6 API churn** when porting grout kernels. `cutile-kernels` upstream already contains ports of
    most of them.

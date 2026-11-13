@@ -95,16 +95,24 @@ Acceptance:
 Goal: the NVFP4 kernels on sm_120.
 
 - **If the user has provided the private NVFP4 checkpoint on this machine** (never fetch it otherwise):
-  `scripts/x86/run_tests.sh --model $M --nvfp4 <dir>` (adds the NVFP4 loader cases) and bench_nvfp4 per card.
+  `scripts/x86/run_tests.sh --model $M --nvfp4 <dir>` (adds the NVFP4 loader cases and `engine_e2e_nvfp4`: the
+  nvfp4 engine against the NVFP4 goldens, its batch invariance, graph replay, fused == standalone quantize) and
+  bench_nvfp4 per card. Then the nvfp4 engine (docs/N1.md) per card:
+  `scripts/gpu.sh --gpu N ./target/release/bench_forward --model <dir> --tokens 1024,4096,16384` (and
+  `--nvfp4-unfused`), and the server: `scripts/gpu.sh --gpu N ./target/release/sysone --model <dir> --engine nvfp4
+  --listen 127.0.0.1:800N` driven by loadgen as in T3.
 - **Otherwise** kernel-level synthetic tests only: `kernels_nvfp4` minus the layer-0 case (already in `run_tests.sh`:
   bit-exact quantization vs compressed-tensors vectors and the CPU port, small GEMMs vs f64) and `bench_nvfp4`
   (synthetic weights at the MLP shapes).
 
 Acceptance:
-- `kernels_nvfp4` (synthetic cases) pass on all three GPUs, or the failing cases are reported.
+- `kernels_nvfp4` (synthetic cases) and `kernels_nvfp4_fused` pass on all three GPUs, or the failing cases are
+  reported.
 - PR table: NVFP4 GEMM TFLOP/s and quantize GB/s per card vs cuBLAS bf16 at the same shapes (bench_nvfp4 prints
   both); whether FP4 beats bf16 at 1k/4k/16k on each card.
-- Nothing about the checkpoint beyond pass/fail and timings.
+- With the checkpoint: `engine_e2e_nvfp4` pass/fail with its printed dp numbers; a bench_forward table nvfp4 vs
+  bf16 per card and bucket (replay ms, tok/s, per-class split) and the loadgen server table for `--engine nvfp4`.
+- Nothing about the checkpoint beyond pass/fail, gate numbers and timings.
 
 ## T5: vLLM baseline for elephant-1 on one RTX PRO 6000
 
