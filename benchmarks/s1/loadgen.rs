@@ -1,7 +1,8 @@
 //! Closed-loop load generator for `/v1/systemone` (DESIGN.md §10). `--concurrency` clients each keep one
 //! keep-alive connection and send the next request as soon as the previous one returns. Reports requests/s,
 //! decisions/s, latency quantiles and status counts, plus the server's batch statistics from `/metrics`, as one
-//! JSON line on stdout. W6 extends it into the sweep (state length × questions × concurrency) and the baselines.
+//! JSON line on stdout: also the p50 of the responses' `qev.timing` parts (`queue_s` waiting for a batch,
+//! `forward_s` the engine step) and the server's 503s by reason. W6 extends it into the sweep (state length × questions × concurrency) and the baselines.
 //!
 //!     cargo run --release --bin loadgen -- --addr 127.0.0.1:8000 --concurrency 64 --state-tokens 1000 \
 //!         --questions 8 --duration-s 60
@@ -74,6 +75,9 @@ fn body(i: usize, a: &Args) -> String {
 #[derive(Default)]
 struct Tally {
     latencies: Vec<f64>,
+    /// `qev.timing` `queue_s` and `forward_s` of each 200.
+    queue_s: Vec<f64>,
+    forward_s: Vec<f64>,
     status: BTreeMap<u16, u64>,
     decisions: u64,
     input_tokens: u64,
@@ -102,6 +106,12 @@ async fn client(id: usize, a: Args, bodies: std::sync::Arc<Vec<String>>, start: 
             let v = sysone::frontend::pyjson::parse(&r.body).context("response is not JSON")?;
             if let Some(sysone::frontend::pyjson::Json::Int(n)) = v.get("usage").and_then(|u| u.get("input_tokens")) {
                 t.input_tokens += n.parse::<u64>().unwrap_or(0);
+            }
+            let timing = v.get("qev").and_then(|q| q.get("timing"));
+            for (key, out) in [("queue_s", &mut t.queue_s), ("forward_s", &mut t.forward_s)] {
+                if let Some(sysone::frontend::pyjson::Json::Float(x)) = timing.and_then(|tm| tm.get(key)) {
+                    out.push(*x);
+                }
             }
         }
     }
@@ -132,6 +142,8 @@ async fn main() -> Result<()> {
     for t in tasks {
         let t = t.await??;
         all.latencies.extend(t.latencies);
+        all.queue_s.extend(t.queue_s);
+        all.forward_s.extend(t.forward_s);
         for (s, n) in t.status {
             *all.status.entry(s).or_default() += n;
         }
@@ -141,6 +153,8 @@ async fn main() -> Result<()> {
     let after = scrape().await.context("scraping /metrics after the run")?;
     let delta = |n: &str| Some(metric(&after, n)? - metric(&before, n)?);
     all.latencies.sort_by(f64::total_cmp);
+    all.queue_s.sort_by(f64::total_cmp);
+    all.forward_s.sort_by(f64::total_cmp);
     let ok = all.latencies.len() as f64;
     let secs = a.duration_s;
     let batches = delta("sysone_batches_total").unwrap_or(f64::NAN);
@@ -150,6 +164,10 @@ async fn main() -> Result<()> {
     let num = |x: f64| if x.is_finite() { serde_json::json!(x) } else { serde_json::Value::Null };
     let status: serde_json::Map<String, serde_json::Value> =
         all.status.iter().map(|(s, n)| (s.to_string(), serde_json::json!(n))).collect();
+    let overload: serde_json::Map<String, serde_json::Value> = ["queue", "cpu_queue", "body_memory"]
+        .iter()
+        .map(|r| (r.to_string(), num(delta(&format!("sysone_overload_total{{reason=\"{r}\"}}")).unwrap_or(f64::NAN))))
+        .collect();
     let report = serde_json::json!({
         "addr": a.addr,
         "concurrency": a.concurrency,
@@ -164,6 +182,9 @@ async fn main() -> Result<()> {
         "latency_p99_ms": num(quantile(&all.latencies, 0.99) * 1e3),
         "latency_max_ms": num(all.latencies.last().copied().unwrap_or(f64::NAN) * 1e3),
         "status": status,
+        "queue_p50_ms": num(quantile(&all.queue_s, 0.5) * 1e3),
+        "forward_p50_ms": num(quantile(&all.forward_s, 0.5) * 1e3),
+        "server_overload": overload,
         "server_batches": num(batches),
         "server_mean_batch_tokens": num(batch_tokens / batches),
         "server_engine_busy_frac": num(busy / secs),

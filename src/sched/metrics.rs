@@ -55,6 +55,8 @@ struct Inner {
     /// (endpoint, status) → responses.
     requests: BTreeMap<(String, u16), u64>,
     rejected_full: u64,
+    /// 503s by reason ("queue", "cpu_queue", "body_memory").
+    overload: BTreeMap<&'static str, u64>,
     decisions_total: u64,
     branches_total: u64,
     batches_total: u64,
@@ -99,6 +101,7 @@ impl Metrics {
             inner: Mutex::new(Inner {
                 requests: BTreeMap::new(),
                 rejected_full: 0,
+                overload: BTreeMap::new(),
                 decisions_total: 0,
                 branches_total: 0,
                 batches_total: 0,
@@ -123,6 +126,11 @@ impl Metrics {
         if status == 503 {
             m.rejected_full += 1;
         }
+    }
+
+    /// A request turned away for load (its 503 is also counted by [`record_response`](Self::record_response)).
+    pub fn record_overload(&self, reason: &'static str) {
+        *self.inner.lock().unwrap().overload.entry(reason).or_default() += 1;
     }
 
     /// One answered request: its end-to-end latency and the number of questions (decisions) it answered.
@@ -211,7 +219,13 @@ impl Metrics {
         counter(&mut out, "sysone_batches_total", "Engine steps.", m.batches_total as f64);
         counter(&mut out, "sysone_batch_tokens_total", "Tokens packed into engine steps.", m.batch_tokens_total as f64);
         counter(&mut out, "sysone_engine_busy_seconds_total", "Seconds the engine spent in steps.", m.engine_busy_seconds);
-        counter(&mut out, "sysone_rejected_total", "Requests refused with 503 (admission queue full).", m.rejected_full as f64);
+        counter(&mut out, "sysone_rejected_total", "Requests refused with 503 (overload).", m.rejected_full as f64);
+        let _ = writeln!(out, "# HELP sysone_overload_total Requests refused with 503, by the resource that was full.");
+        let _ = writeln!(out, "# TYPE sysone_overload_total counter");
+        for reason in ["queue", "cpu_queue", "body_memory"] {
+            let n = m.overload.get(reason).copied().unwrap_or(0);
+            let _ = writeln!(out, "sysone_overload_total{{reason=\"{reason}\"}} {n}");
+        }
         let _ = writeln!(out, "# HELP sysone_requests_total HTTP responses by endpoint and status.");
         let _ = writeln!(out, "# TYPE sysone_requests_total counter");
         for ((endpoint, status), n) in &m.requests {
@@ -232,6 +246,28 @@ impl Metrics {
     }
 }
 
+/// The HTTP front's own state, rendered after [`Metrics::render`] by the server.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Front {
+    pub cpu_queue_depth: usize,
+    pub cpu_queue_capacity: usize,
+    /// Pool tasks skipped because their client had disconnected.
+    pub skipped: u64,
+    pub body_bytes: usize,
+    pub body_capacity: usize,
+}
+
+pub fn render_front(out: &mut String, f: &Front) {
+    let mut metric = |name: &str, kind: &str, help: &str, v: f64| {
+        let _ = writeln!(out, "# HELP {name} {help}\n# TYPE {name} {kind}\n{name} {v}");
+    };
+    metric("sysone_cpu_queue_depth", "gauge", "New requests waiting for a CPU worker.", f.cpu_queue_depth as f64);
+    metric("sysone_cpu_queue_capacity", "gauge", "CPU new-work queue capacity (503 beyond it).", f.cpu_queue_capacity as f64);
+    metric("sysone_skipped_total", "counter", "CPU tasks skipped because the client had disconnected.", f.skipped as f64);
+    metric("sysone_inflight_body_bytes", "gauge", "Request body bytes held by in-flight requests.", f.body_bytes as f64);
+    metric("sysone_inflight_body_capacity_bytes", "gauge", "Cap on in-flight request body bytes (503 beyond it).", f.body_capacity as f64);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,10 +286,16 @@ mod tests {
         let m = Metrics::new();
         m.record_response("/v1/systemone", 200);
         m.record_response("/v1/systemone", 503);
+        m.record_overload("cpu_queue");
         m.record_decided(Duration::from_millis(10), 3);
         m.record_decided(Duration::from_millis(30), 1);
         m.record_batch(1000, 2, 4, Duration::from_millis(7));
-        let t = m.render(5, 64, 16384);
+        let mut t = m.render(5, 64, 16384);
+        render_front(&mut t, &Front { cpu_queue_depth: 3, skipped: 2, ..Default::default() });
+        assert!(t.contains("sysone_overload_total{reason=\"cpu_queue\"} 1\n"));
+        assert!(t.contains("sysone_overload_total{reason=\"queue\"} 0\n"));
+        assert!(t.contains("sysone_cpu_queue_depth 3\n"));
+        assert!(t.contains("sysone_skipped_total 2\n"));
         assert!(t.contains("sysone_queue_depth 5\n"));
         assert!(t.contains("sysone_requests_total{endpoint=\"/v1/systemone\",status=\"503\"} 1\n"));
         assert!(t.contains("sysone_rejected_total 1\n"));

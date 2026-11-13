@@ -1,23 +1,28 @@
 //! End-to-end HTTP tests of the server on `MockEngine` (DESIGN.md §7, W5): real sockets, the real frontend, the
 //! scheduler and a mock engine. Covers qev's routes and error bodies (replayed from the reference goldens),
 //! batch invariance under concurrency, backpressure, oversize requests and the token budget, and the
-//! `/v1/systemone:batch` extension.
+//! `/v1/systemone:batch` extension. Also the S1 fixes from the W5 review: qev's timing semantics, request ids,
+//! 500s without qev's headers, slash redirects, backpressure before admission (CPU queue, body memory, departed
+//! clients), oversized `:batch` calls, core pinning, and `debug=1` diagnostics byte-identical to qev's (replayed
+//! from the assemble goldens through HTTP).
 //!
 //! Needs the elephant-1 tokenizer and chat template: `$SYSONE_MODEL_DIR`, default
 //! /home/velvet/Desktop/hf_models/elephant-1.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use sysone::api::client::Client;
-use sysone::api::server::{self, AppState, ServerInfo};
-use sysone::contract::{DecisionBatch, DecisionEngine, MockEngine, SlotLogits};
+use sysone::api::server::{self, AppState, ServerInfo, ServerOptions};
+use sysone::contract::{DecisionBatch, DecisionEngine, MAX_SLOTS, MassReadout, MockEngine, SlotLogits};
+use sysone::frontend::assemble::Calibration;
 use sysone::frontend::pyjson::{self, Json};
 use sysone::frontend::{Frontend, Limits};
 use sysone::sched::{EngineFactory, SchedConfig};
+use std::io::{Read, Write};
 use tokio::sync::oneshot;
 
 const SERVED: &str = "elephant-1";
@@ -65,6 +70,11 @@ impl DecisionEngine for TestEngine {
         self.log.lock().unwrap().push((batch.num_tokens(), requests));
         self.inner.run(batch)
     }
+
+    fn run_with_mass(&mut self, batch: &DecisionBatch) -> Result<MassReadout> {
+        let logits = self.run(batch)?;
+        Ok(MassReadout { logits, allowed_mass: self.inner.run_with_mass(batch)?.allowed_mass })
+    }
 }
 
 struct TestServer {
@@ -78,16 +88,30 @@ struct TestServer {
 
 impl TestServer {
     async fn start(sched: SchedConfig, limits: Limits, fork_mode: &str) -> Self {
+        let opts = ServerOptions { cpu_workers: 4, ..Default::default() };
+        Self::start_with(sched, frontend(limits), fork_mode, opts, None).await
+    }
+
+    /// A server on `frontend` with `opts`, running `engine` (default: the gated, recording [`TestEngine`]).
+    async fn start_with(
+        sched: SchedConfig,
+        frontend: Arc<Frontend>,
+        fork_mode: &str,
+        opts: ServerOptions,
+        engine: Option<EngineFactory>,
+    ) -> Self {
         let log: Log = Default::default();
         let gate = Arc::new((Mutex::new(true), Condvar::new()));
         let (l, g) = (log.clone(), gate.clone());
-        let max_tokens = sched.token_budget.max(limits.max_request_tokens);
-        let engine: EngineFactory = Box::new(move || {
-            Ok(Box::new(TestEngine { inner: MockEngine { max_tokens }, log: l, gate: g }) as Box<dyn DecisionEngine>)
+        let max_tokens = sched.token_budget.max(frontend.limits.max_request_tokens);
+        let engine: EngineFactory = engine.unwrap_or_else(|| {
+            Box::new(move || {
+                Ok(Box::new(TestEngine { inner: MockEngine { max_tokens }, log: l, gate: g }) as Box<dyn DecisionEngine>)
+            })
         });
         let mut info = ServerInfo::new(SERVED, "qwen3_5");
         info.fork_mode = fork_mode.into();
-        let state = AppState::start(frontend(limits), info, sched, engine, 4).unwrap();
+        let state = AppState::start_with(frontend, info, sched, engine, opts).unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap().to_string();
         let (stop, rx) = oneshot::channel::<()>();
@@ -245,14 +269,18 @@ async fn routes_and_headers_match_qev() {
     assert_eq!(qkeys, ["prompt_version", "prompt_sha256", "fork_mode", "prefix_tokens", "branches", "timing"]);
     // debias=2: two shifts for each of the three questions.
     assert_eq!(int(qev.get("branches")), Some(6));
+    // qev's three timings, then sysone's queue_s.
     let timing: Vec<&str> = qev.get("timing").unwrap().as_object().unwrap().iter().map(|(k, _)| k.as_str()).collect();
-    assert_eq!(timing, ["render_s", "forward_s", "total_s"]);
+    assert_eq!(timing, ["render_s", "forward_s", "total_s", "queue_s"]);
 
     // debug adds diagnostics (any non-empty value, as `bool(str)`); an empty value does not.
     let r = c.post("/v1/systemone?debug=0", request(2, 30)).await.unwrap();
     let d = parse(&r.body);
     let diag = d.get("qev").unwrap().get("diagnostics").expect("diagnostics with debug=0");
     assert!(diag.get("route").unwrap().get("slot_logits").is_some());
+    // MockEngine reports masses, so the diagnostics carry qev's allowed_token_mass, first as in qev.
+    let keys: Vec<&str> = diag.get("route").unwrap().as_object().unwrap().iter().map(|(k, _)| k.as_str()).collect();
+    assert_eq!(keys, ["allowed_token_mass", "slot_logits", "temperature"]);
     let r = c.post("/v1/systemone?debug=", request(2, 30)).await.unwrap();
     assert!(parse(&r.body).get("qev").unwrap().get("diagnostics").is_none());
 
@@ -262,6 +290,9 @@ async fn routes_and_headers_match_qev() {
     for bad in ["x", "", "1.5"] {
         let r = c.post(&format!("/v1/systemone?debias={bad}"), request(3, 10)).await.unwrap();
         assert_eq!((r.status.as_u16(), r.text().as_str()), (500, "Internal Server Error"), "debias={bad:?}");
+        // Starlette answers unhandled errors outside qev's middleware: no request id, no server time.
+        assert_eq!(r.headers["content-type"], "text/plain; charset=utf-8");
+        assert!(r.headers.get("x-typesafe-request-id").is_none() && r.headers.get("x-qev-server-time-ms").is_none());
     }
     // ... but only after the model check, as in qev.
     let r = c.post("/v1/systemone?debias=x", request(3, 10).replacen('{', r#"{"model": "m", "#, 1)).await.unwrap();
@@ -600,4 +631,352 @@ async fn limits_answer_422() {
     assert_eq!(r.status, 200);
     assert_eq!(srv.batches().len(), 1, "only the accepted request reaches the engine");
     srv.stop().await;
+}
+
+async fn send_with_headers(addr: &str, method: &str, path: &str, headers: &[(&str, &str)], body: String) -> hyper::Response<hyper::body::Incoming> {
+    let mut req = hyper::Request::builder().method(method).uri(path).header("host", addr);
+    for (k, v) in headers {
+        req = req.header(*k, *v);
+    }
+    let req = req.body(http_body_util::Full::new(axum::body::Bytes::from(body))).unwrap();
+    let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let (mut send, conn) = hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(stream)).await.unwrap();
+    tokio::spawn(conn);
+    send.send_request(req).await.unwrap()
+}
+
+fn is_minted_id(rid: &str) -> bool {
+    rid.len() == 20 && rid.starts_with("qev-") && rid[4..].chars().all(|c| c.is_ascii_hexdigit()) && &rid[16..17] == "4"
+}
+
+/// An empty `x-typesafe-request-id` is replaced (qev: `headers.get(...) or f"qev-{uuid}"`), a 307 for a trailing
+/// slash, and the ids of 4xx/2xx responses.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn request_ids_and_slash_redirects_match_qev() {
+    let srv = TestServer::default().await;
+    let r = send_with_headers(&srv.addr, "POST", "/v1/systemone", &[("x-typesafe-request-id", "")], request(1, 10)).await;
+    assert_eq!(r.status(), 200);
+    let rid = r.headers()["x-typesafe-request-id"].to_str().unwrap();
+    assert!(is_minted_id(rid), "{rid:?}");
+    let r = send_with_headers(&srv.addr, "GET", "/nope", &[("x-typesafe-request-id", "keep-me")], String::new()).await;
+    assert_eq!((r.status().as_u16(), &r.headers()["x-typesafe-request-id"]), (404, &axum::http::HeaderValue::from_static("keep-me")));
+
+    let mut c = srv.client().await;
+    let r = c.get("/health/").await.unwrap();
+    assert_eq!(r.status, 307);
+    assert_eq!(r.headers["location"], format!("http://{}/health", srv.addr).as_str());
+    assert!(r.body.is_empty() && r.headers.get("content-type").is_none());
+    assert!(is_minted_id(r.headers["x-typesafe-request-id"].to_str().unwrap()));
+    // Any method, the query kept, several slashes.
+    let r = c.post("/v1/systemone//?debias=2", request(1, 10)).await.unwrap();
+    assert_eq!(r.status, 307);
+    assert_eq!(r.headers["location"], format!("http://{}/v1/systemone?debias=2", srv.addr).as_str());
+    // A path that matches nothing either way stays a 404.
+    let r = c.get("/nope/").await.unwrap();
+    assert_eq!((r.status.as_u16(), r.text().as_str()), (404, r#"{"detail":"Not Found"}"#));
+    srv.stop().await;
+}
+
+fn timing(body: &[u8]) -> (f64, f64, f64, f64) {
+    let v = parse(body);
+    let t = v.get("qev").unwrap().get("timing").unwrap();
+    let f = |k: &str| match t.get(k).unwrap() {
+        Json::Float(x) => *x,
+        other => panic!("{k}: {other:?}"),
+    };
+    (f("render_s"), f("forward_s"), f("total_s"), f("queue_s"))
+}
+
+/// `forward_s` is the engine step only (qev's `t2 - t1`); time spent waiting for the engine is `queue_s`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn timing_separates_queue_from_forward() {
+    let srv = TestServer::default().await;
+    let hold = Duration::from_millis(300);
+    srv.set_gate(false);
+    // A enters the engine and is held there; B waits behind it in the scheduler.
+    let addr = srv.addr.clone();
+    let a = tokio::spawn(async move { Client::connect(&addr).await.unwrap().post("/v1/systemone", request(1, 20)).await.unwrap() });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let addr = srv.addr.clone();
+    let b = tokio::spawn(async move { Client::connect(&addr).await.unwrap().post("/v1/systemone", request(2, 20)).await.unwrap() });
+    tokio::time::sleep(hold).await;
+    srv.set_gate(true);
+    let (a, b) = (a.await.unwrap(), b.await.unwrap());
+    assert_eq!((a.status.as_u16(), b.status.as_u16()), (200, 200));
+    let (ra, fa, ta, qa) = timing(&a.body);
+    let (rb, fb, tb, qb) = timing(&b.body);
+    eprintln!("A: render {ra:.4} queue {qa:.4} forward {fa:.4} total {ta:.4}; B: render {rb:.4} queue {qb:.4} forward {fb:.4} total {tb:.4}");
+    // A's forward holds the gate; B's queue does.
+    assert!(fa >= 0.3 && qa < 0.1, "A");
+    assert!(qb >= 0.2 && fb < 0.1, "B");
+    for (r, f, t, q) in [(ra, fa, ta, qa), (rb, fb, tb, qb)] {
+        assert!(r + q + f <= t + 1e-6 && t < r + q + f + 0.1, "parts {r} + {q} + {f} vs total {t}");
+    }
+    srv.stop().await;
+}
+
+/// A full CPU new-work queue answers 503 before planning; finishing work still gets through.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn full_cpu_queue_answers_503() {
+    let opts = ServerOptions { cpu_workers: 1, cpu_queue_capacity: Some(1), ..Default::default() };
+    let srv = TestServer::start_with(SchedConfig::default(), frontend(Limits::default()), "batched", opts, None).await;
+    let (go, wait) = std::sync::mpsc::channel::<()>();
+    let st = srv.state.clone();
+    let blocker = tokio::spawn(async move { st.pool.run(move || wait.recv().unwrap()).await });
+    while srv.state.pool.queue_depth() > 0 {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let addr = srv.addr.clone();
+    let queued = tokio::spawn(async move { Client::connect(&addr).await.unwrap().post("/v1/systemone", request(1, 10)).await.unwrap() });
+    let t0 = Instant::now();
+    while srv.state.pool.queue_depth() < 1 {
+        assert!(t0.elapsed() < Duration::from_secs(5), "the request never queued");
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    let mut c = srv.client().await;
+    let r = c.post("/v1/systemone", request(2, 10)).await.unwrap();
+    assert_eq!((r.status.as_u16(), r.text().as_str()), (503, r#"{"detail":"admission queue is full"}"#));
+    assert!(is_minted_id(r.headers["x-typesafe-request-id"].to_str().unwrap()));
+    let r = c.post("/v1/systemone:batch", format!("[{}]", request(3, 10))).await.unwrap();
+    assert_eq!(r.status, 503);
+    go.send(()).unwrap();
+    blocker.await.unwrap().unwrap();
+    assert_eq!(queued.await.unwrap().status, 200);
+    let m = c.get("/metrics").await.unwrap().text();
+    assert!(m.contains("sysone_overload_total{reason=\"cpu_queue\"} 2\n"), "{m}");
+    assert!(m.contains("sysone_cpu_queue_capacity 1\n"), "{m}");
+    srv.stop().await;
+}
+
+/// Request bodies in flight are capped (503), and a declared body over the per-request limit is refused (413)
+/// before it is read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn body_memory_is_capped() {
+    let small = request(1, 10);
+    let big = request(2, 2000);
+    let opts = ServerOptions { cpu_workers: 2, max_inflight_body_bytes: small.len() + 100, ..Default::default() };
+    assert!(big.len() > opts.max_inflight_body_bytes);
+    let srv = TestServer::start_with(SchedConfig::default(), frontend(Limits::default()), "batched", opts, None).await;
+    let mut c = srv.client().await;
+    assert_eq!(c.post("/v1/systemone", small.clone()).await.unwrap().status, 200);
+    let r = c.post("/v1/systemone", big).await.unwrap();
+    assert_eq!((r.status.as_u16(), r.text().as_str()), (503, r#"{"detail":"admission queue is full"}"#));
+    // The lease was returned: the small one still fits, again and again.
+    for _ in 0..3 {
+        assert_eq!(c.post("/v1/systemone", small.clone()).await.unwrap().status, 200);
+    }
+    let m = c.get("/metrics").await.unwrap().text();
+    assert!(m.contains("sysone_overload_total{reason=\"body_memory\"} 1\n"), "{m}");
+    assert!(m.contains("sysone_inflight_body_bytes 0\n"), "{m}");
+
+    // A raw socket (std, blocking: a few bytes each way).
+    let mut s = std::net::TcpStream::connect(&srv.addr).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    s.write_all(b"POST /v1/systemone HTTP/1.1\r\nhost: x\r\ncontent-length: 300000000\r\n\r\n{").unwrap();
+    let mut buf = vec![0u8; 4096];
+    let n = s.read(&mut buf).unwrap();
+    let head = String::from_utf8_lossy(&buf[..n]);
+    assert!(head.starts_with("HTTP/1.1 413"), "{head}");
+    assert!(head.ends_with("Failed to buffer the request body: length limit exceeded"), "{head}");
+    srv.stop().await;
+}
+
+/// A request whose client disconnects while it waits for a CPU thread is never planned nor run.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn departed_clients_are_not_planned() {
+    let opts = ServerOptions { cpu_workers: 1, ..Default::default() };
+    let srv = TestServer::start_with(SchedConfig::default(), frontend(Limits::default()), "batched", opts, None).await;
+    let (go, wait) = std::sync::mpsc::channel::<()>();
+    let st = srv.state.clone();
+    let blocker = tokio::spawn(async move { st.pool.run(move || wait.recv().unwrap()).await });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    // Write a whole request on a raw socket, wait until it is queued, and hang up.
+    let body = request(1, 10);
+    let mut s = std::net::TcpStream::connect(&srv.addr).unwrap();
+    let head = format!("POST /v1/systemone HTTP/1.1\r\nhost: x\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n", body.len());
+    s.write_all(head.as_bytes()).unwrap();
+    s.write_all(body.as_bytes()).unwrap();
+    let t0 = Instant::now();
+    while srv.state.pool.queue_depth() < 1 {
+        assert!(t0.elapsed() < Duration::from_secs(5), "the request never queued");
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    drop(s);
+    // hyper notices the closed connection and drops the handler, which drops the pool task's receiver.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    go.send(()).unwrap();
+    blocker.await.unwrap().unwrap();
+    let mut c = srv.client().await;
+    let t0 = Instant::now();
+    loop {
+        let m = c.get("/metrics").await.unwrap().text();
+        if m.contains("sysone_skipped_total 1\n") {
+            break;
+        }
+        assert!(t0.elapsed() < Duration::from_secs(5), "the departed request was planned:\n{m}");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(srv.batches().is_empty(), "{:?}", srv.batches());
+    srv.stop().await;
+}
+
+/// A `:batch` call larger than the admission queue could never be admitted: a 413 with a clear message, decided
+/// before anything is planned.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn batch_over_queue_capacity_is_413() {
+    let cfg = SchedConfig { queue_capacity: 3, ..SchedConfig::default() };
+    let srv = TestServer::start(cfg, Limits::default(), "batched").await;
+    let mut c = srv.client().await;
+    let items = |n: usize| format!("[{}]", (0..n).map(|i| request(i, 5)).collect::<Vec<_>>().join(","));
+    let r = c.post("/v1/systemone:batch", items(4)).await.unwrap();
+    assert_eq!(
+        (r.status.as_u16(), r.text().as_str()),
+        (413, r#"{"detail":"batch of 4 requests exceeds the admission queue capacity of 3; send at most 3 per call"}"#)
+    );
+    assert!(srv.batches().is_empty());
+    let r = c.post("/v1/systemone:batch", items(3)).await.unwrap();
+    assert_eq!(r.status, 200);
+    srv.stop().await;
+}
+
+/// With the threads pinned to the performance cores (where the machine has them) the server works as before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pinned_server_answers() {
+    let pin = sysone::sched::affinity::performance_cores();
+    eprintln!("performance cores: {pin:?}");
+    let opts = ServerOptions { cpu_workers: 2, pin_cores: pin.clone(), ..Default::default() };
+    let srv = TestServer::start_with(SchedConfig::default(), frontend(Limits::default()), "batched", opts, None).await;
+    let mut c = srv.client().await;
+    assert_eq!(c.post("/v1/systemone", request(1, 10)).await.unwrap().status, 200);
+    if let Some(cores) = pin {
+        let got = srv.state.pool.run(sysone::sched::affinity::allowed_cores).await.unwrap();
+        assert_eq!(got, Some(cores));
+    }
+    srv.stop().await;
+}
+
+/// Replays fixed slot logits and masses, one request per step, in order.
+type Feed = Arc<Mutex<VecDeque<(Vec<Vec<f32>>, Option<Vec<f64>>)>>>;
+
+struct Replay {
+    feed: Feed,
+}
+
+impl DecisionEngine for Replay {
+    fn max_tokens_per_step(&self) -> usize {
+        1 << 17
+    }
+
+    fn run(&mut self, batch: &DecisionBatch) -> Result<SlotLogits> {
+        Ok(self.run_with_mass(batch)?.logits)
+    }
+
+    fn run_with_mass(&mut self, batch: &DecisionBatch) -> Result<MassReadout> {
+        let (rows, masses) = self.feed.lock().unwrap().pop_front().expect("no logits queued");
+        anyhow::ensure!(rows.len() == batch.num_branches(), "{} rows for {} branches", rows.len(), batch.num_branches());
+        let mut data = vec![0.0f32; rows.len() * MAX_SLOTS];
+        for (i, r) in rows.iter().enumerate() {
+            data[i * MAX_SLOTS..i * MAX_SLOTS + r.len()].copy_from_slice(r);
+        }
+        Ok(MassReadout { logits: SlotLogits { rows: rows.len(), data }, allowed_mass: masses })
+    }
+}
+
+fn f64_of(v: &Json) -> f64 {
+    match v {
+        Json::Float(f) => *f,
+        Json::Int(s) => s.parse().unwrap(),
+        _ => panic!("not a number: {v:?}"),
+    }
+}
+
+/// `?debug=1` through HTTP, against qev's own `decide()` on the same slot logits and masses
+/// (tests/golden/dev/assemble/answers.jsonl): the answers and the diagnostics, including `allowed_token_mass`
+/// when the engine reports masses, are byte-identical to Starlette's JSON of qev's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn debug_diagnostics_are_byte_identical_to_qev() {
+    let corpus: HashMap<String, Json> = lines(&repo().join("reference/corpus/requests.jsonl"))
+        .into_iter()
+        .map(|l| {
+            let v = parse(l.as_bytes());
+            (v.get("id").unwrap().as_str().unwrap().to_string(), v)
+        })
+        .collect();
+    // One server per (max_slots, calibration): the frontend holds both.
+    let mut groups: Vec<((usize, String), Vec<Json>)> = Vec::new();
+    for line in lines(&repo().join("tests/golden/dev/assemble/answers.jsonl")) {
+        let r = parse(line.as_bytes());
+        if r.get("engine_direct") == Some(&Json::Bool(true)) || r.get("error").is_some() {
+            continue;
+        }
+        let key = (f64_of(r.get("max_slots").unwrap()) as usize, r.get("calibration").unwrap().dumps_compact().unwrap());
+        match groups.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, v)) => v.push(r),
+            None => groups.push((key, vec![r])),
+        }
+    }
+    let (mut with_mass, mut without) = (0, 0);
+    let mut failures = Vec::new();
+    for ((max_slots, _), recs) in &groups {
+        let mut fe = Frontend::load(&model_dir(), Limits::default()).unwrap();
+        fe.max_slots = *max_slots;
+        let mut cal = Calibration::none();
+        for (k, v) in recs[0].get("calibration").unwrap().as_object().unwrap() {
+            cal.temperatures.insert(k.clone(), f64_of(v));
+        }
+        fe.calibration = cal;
+        let feed: Feed = Default::default();
+        let f = feed.clone();
+        let engine: EngineFactory = Box::new(move || Ok(Box::new(Replay { feed: f }) as Box<dyn DecisionEngine>));
+        let opts = ServerOptions { cpu_workers: 2, ..Default::default() };
+        let srv = TestServer::start_with(SchedConfig::default(), Arc::new(fe), "batched", opts, Some(engine)).await;
+        let mut c = srv.client().await;
+        for r in recs {
+            let id = r.get("id").unwrap().as_str().unwrap();
+            let case = &corpus[r.get("case").unwrap().as_str().unwrap()];
+            let logits: Vec<Vec<f32>> = r
+                .get("logits")
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| row.as_array().unwrap().iter().map(|x| f64_of(x) as f32).collect())
+                .collect();
+            let masses: Option<Vec<f64>> = match r.get("masses").unwrap() {
+                Json::Null => None,
+                m => Some(m.as_array().unwrap().iter().map(f64_of).collect()),
+            };
+            if masses.is_some() {
+                with_mass += 1;
+            } else {
+                without += 1;
+            }
+            feed.lock().unwrap().push_back((logits, masses));
+            let debias = f64_of(r.get("debias").unwrap()) as i64;
+            let body = case.get("body").unwrap().dumps_compact().unwrap();
+            let resp = c.post(&format!("/v1/systemone?debias={debias}&debug=1"), body).await.unwrap();
+            if resp.status != 200 {
+                failures.push(format!("{id}: status {}: {:.300}", resp.status, resp.text()));
+                continue;
+            }
+            let text = resp.text();
+            let answers = format!("\"answers\":{},\"usage\":", r.get("answers_json").unwrap().as_str().unwrap());
+            let diag = format!(",\"diagnostics\":{}}}}}", r.get("diagnostics_json").unwrap().as_str().unwrap());
+            if !text.contains(&answers) {
+                failures.push(format!("{id}: answers differ: {text:.600}"));
+            }
+            if !text.ends_with(&diag) {
+                failures.push(format!("{id}: diagnostics differ:\n got {text:.2000}\nwant ...{diag:.2000}"));
+            }
+            let usage = parse(&resp.body).get("usage").cloned();
+            if usage.as_ref() != r.get("usage") {
+                failures.push(format!("{id}: usage {usage:?}"));
+            }
+        }
+        srv.stop().await;
+    }
+    eprintln!("{with_mass} cases with masses, {without} without, in {} server configurations", groups.len());
+    assert!(failures.is_empty(), "{} mismatches:\n{}", failures.len(), failures.join("\n"));
+    assert!(with_mass >= 150 && without >= 150, "{with_mass} / {without}");
 }

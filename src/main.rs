@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use sysone::api::query::py_int;
-use sysone::api::server::{self, AppState, ServerInfo};
-use sysone::contract::{DecisionBatch, DecisionEngine, MockEngine, SlotLogits};
+use sysone::api::server::{self, AppState, ServerInfo, ServerOptions};
+use sysone::contract::{DecisionBatch, DecisionEngine, MassReadout, MockEngine, SlotLogits};
 use sysone::engine::config::ModelConfig;
 use sysone::frontend::{Frontend, Limits};
 use sysone::sched::{EngineFactory, SchedConfig};
@@ -26,7 +26,15 @@ struct Args {
     /// Address to listen on (qev: --host 0.0.0.0 --port 8000).
     #[arg(long, default_value = "0.0.0.0:8000")]
     listen: String,
-    /// Model name reported by the API (default: the model directory's name, as qev).
+    /// Model name reported by the API. Default: the last component of the model directory after resolving it
+    /// (`canonicalize`, so symlinks and `..` are followed).
+    ///
+    /// qev's `serve` (cli.py) instead derives the default from the `--model` *argument string*: it splits it on
+    /// "/" and, if that gives more than two parts, joins all parts but the first with "-"; otherwise it takes
+    /// `Path(arg).name`. So both agree for `elephant-1`, `./elephant-1` and `baselabs/elephant-1`, but differ for
+    /// absolute or deeper paths (qev: `/home/u/m/elephant-1` → `home-u-m-elephant-1`, `a/b/c` → `b-c`), for a
+    /// trailing slash (qev: `m/elephant-1/` → `elephant-1-`), and for symlinks (qev keeps the link's name).
+    /// Pass `--name` to pin the name a client expects.
     #[arg(long)]
     name: Option<String>,
     /// Engine. Only the mock exists until the real engine lands (DESIGN.md §11, W4).
@@ -41,9 +49,23 @@ struct Args {
     /// Requests the admission queue holds; more are refused with 503.
     #[arg(long, default_value_t = 1024)]
     queue_capacity: usize,
-    /// CPU threads for rendering, tokenization and answer assembly (default: available cores minus 2).
+    /// CPU threads for rendering, tokenization and answer assembly (default: available cores minus 2; with
+    /// --pin-cores, performance cores minus 2).
     #[arg(long)]
     cpu_workers: Option<usize>,
+    /// New requests that may wait for a CPU thread; more are refused with 503 (default: 16 per CPU thread).
+    #[arg(long)]
+    cpu_queue_capacity: Option<usize>,
+    /// Request body memory held by in-flight requests, in MiB; more are refused with 503.
+    #[arg(long, default_value_t = 1024)]
+    max_inflight_body_mb: usize,
+    /// Pin the GPU worker, the batcher and the CPU threads to the performance cores (read from sysfs
+    /// `cpu_capacity` or `cpuinfo_max_freq`; docs/PLATFORM.md P7). Does nothing where all cores look alike.
+    /// Costs CPU-pool throughput when the frontend is the bottleneck: on GB10 with the zero-latency mock engine,
+    /// 8 pinned workers served ~4.9k req/s of 1k tokens against ~7.6k for 18 unpinned ones (2026-11-13), far
+    /// above what the real engine consumes.
+    #[arg(long)]
+    pin_cores: bool,
     /// Longest state plus one question accepted (qev default).
     #[arg(long, default_value_t = 32768)]
     max_branch_tokens: usize,
@@ -84,6 +106,12 @@ impl DecisionEngine for SimulatedEngine {
         }
         self.inner.run(batch)
     }
+
+    fn run_with_mass(&mut self, batch: &DecisionBatch) -> Result<MassReadout> {
+        let logits = self.run(batch)?;
+        let allowed_mass = self.inner.run_with_mass(batch)?.allowed_mass;
+        Ok(MassReadout { logits, allowed_mass })
+    }
 }
 
 fn main() -> Result<()> {
@@ -120,10 +148,27 @@ fn main() -> Result<()> {
         max_wait: Duration::from_micros(args.max_wait_us),
         queue_capacity: args.queue_capacity,
     };
+    let pin_cores = if args.pin_cores {
+        let cores = sysone::sched::affinity::performance_cores();
+        match &cores {
+            Some(c) => eprintln!("sysone: pinning the GPU worker, batcher and CPU threads to cores {c:?}"),
+            None => eprintln!("sysone: --pin-cores: no performance/efficiency core split detected; not pinning"),
+        }
+        cores
+    } else {
+        None
+    };
     let cpu = args.cpu_workers.unwrap_or_else(|| {
-        std::thread::available_parallelism().map_or(4, |n| n.get()).saturating_sub(2).max(1)
+        let cores = pin_cores.as_ref().map(Vec::len);
+        cores.unwrap_or_else(|| std::thread::available_parallelism().map_or(4, |n| n.get())).saturating_sub(2).max(1)
     });
-    let state = AppState::start(frontend, info, sched, engine, cpu)?;
+    let opts = ServerOptions {
+        cpu_workers: cpu,
+        cpu_queue_capacity: args.cpu_queue_capacity,
+        max_inflight_body_bytes: args.max_inflight_body_mb.saturating_mul(1 << 20),
+        pin_cores,
+    };
+    let state = AppState::start_with(frontend, info, sched, engine, opts)?;
     let policy = state.sched.policy();
     eprintln!(
         "sysone: serving {} ({} layers, engine {:?}) on {} — token budget {}, max wait {} us, queue {}, {} CPU workers",

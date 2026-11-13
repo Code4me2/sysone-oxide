@@ -131,6 +131,44 @@ pub trait DecisionEngine: Send {
 
     /// Score every branch of `batch`. The batch has passed [`DecisionBatch::validate`].
     fn run(&mut self, batch: &DecisionBatch) -> Result<SlotLogits>;
+
+    /// [`run`](Self::run), plus each answer row's `allowed_token_mass` (qev's debug diagnostic, DESIGN.md §4.4):
+    /// the share of the full-vocabulary softmax that falls on the row's `answer_slots[i]` slot tokens,
+    /// `exp(logsumexp(slot logits) - logsumexp(all vocab logits))`. [`allowed_mass`] computes it the way qev does
+    /// from the slot logits and the full-vocabulary logsumexp.
+    ///
+    /// The scheduler calls this instead of `run` only for batches that hold a `debug` request, because it needs
+    /// the full LM head at the answer rows. The default implementation reports no masses (`None`), so an engine
+    /// that does not implement it still serves debug requests, without `allowed_token_mass`.
+    fn run_with_mass(&mut self, batch: &DecisionBatch) -> Result<MassReadout> {
+        Ok(MassReadout { logits: self.run(batch)?, allowed_mass: None })
+    }
+}
+
+/// What [`DecisionEngine::run_with_mass`] returns.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MassReadout {
+    pub logits: SlotLogits,
+    /// One `allowed_token_mass` per answer row, or None when the engine cannot compute it. f64 because qev
+    /// reports a Python float; an engine computing in f32 (as qev does) widens exactly.
+    pub allowed_mass: Option<Vec<f64>>,
+}
+
+/// qev's `allowed_token_mass` for one answer row: `float((logsumexp(sel) - logsumexp(v)).exp())` in fp32, where
+/// `sel` are the row's slot logits (its first `answer_slots[i]` entries) and `vocab_lse` the logsumexp of the
+/// row's full-vocabulary logits (`qev.engine.DecisionEngine._readout`).
+pub fn allowed_mass(slot_logits: &[f32], vocab_lse: f32) -> f64 {
+    (logsumexp_f32(slot_logits) - vocab_lse).exp() as f64
+}
+
+/// `torch.logsumexp` in fp32: `max + log(sum(exp(x - max)))` (summed in order; the GPU's reduction order may
+/// differ in the last bits).
+pub fn logsumexp_f32(x: &[f32]) -> f32 {
+    let m = x.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    if !m.is_finite() {
+        return m;
+    }
+    m + x.iter().map(|&v| (v - m).exp()).sum::<f32>().ln()
 }
 
 /// A deterministic stand-in engine for scheduler and server work (W5) before the real one exists.
@@ -160,6 +198,21 @@ impl DecisionEngine for MockEngine {
             }
         }
         Ok(SlotLogits { rows: batch.num_branches(), data })
+    }
+
+    /// Masses from a made-up full-vocabulary logsumexp: the slot logsumexp plus a per-row offset in [0.05, 3)
+    /// that depends only on the row's logits, so masses are batch-invariant like the logits.
+    fn run_with_mass(&mut self, batch: &DecisionBatch) -> Result<MassReadout> {
+        let logits = self.run(batch)?;
+        let mass = (0..logits.rows)
+            .map(|i| {
+                let row = logits.row(i, batch.answer_slots[i] as usize);
+                let h = row.iter().fold(0x84222325u32, |h, v| (h ^ v.to_bits()).wrapping_mul(0x01000193));
+                let offset = 0.05 + (h >> 8) as f32 / (1u32 << 24) as f32 * 2.95;
+                allowed_mass(row, logsumexp_f32(row) + offset)
+            })
+            .collect();
+        Ok(MassReadout { logits, allowed_mass: Some(mass) })
     }
 }
 
@@ -197,6 +250,46 @@ mod tests {
         let mut b = two_requests();
         b.token_ids.push(0);
         assert!(b.validate().is_err());
+    }
+
+    #[test]
+    fn allowed_mass_matches_qev_formula() {
+        // All of the vocabulary on the slots: mass 1. Two equal slots among four equal tokens: 1/2.
+        assert_eq!(allowed_mass(&[0.0], 0.0), 1.0);
+        let lse4 = logsumexp_f32(&[1.0, 1.0, 1.0, 1.0]);
+        assert!((allowed_mass(&[1.0, 1.0], lse4) - 0.5).abs() < 1e-6);
+        // Large logits do not overflow.
+        assert!((logsumexp_f32(&[1000.0, 1000.0]) - (1000.0 + 2f32.ln())).abs() < 1e-3);
+        assert_eq!(logsumexp_f32(&[]), f32::NEG_INFINITY);
+    }
+
+    #[test]
+    fn mock_engine_masses_are_batch_invariant_and_in_range() {
+        let mut alone = DecisionBatch::default();
+        alone.push_request(&[4, 5], &[(&[20, 21, 22], 3)]).unwrap();
+        let mut e = MockEngine { max_tokens: 1 << 16 };
+        let a = e.run_with_mass(&alone).unwrap();
+        let both = e.run_with_mass(&two_requests()).unwrap();
+        assert_eq!(both.logits, e.run(&two_requests()).unwrap());
+        let (ma, mb) = (a.allowed_mass.unwrap(), both.allowed_mass.unwrap());
+        assert_eq!((ma.len(), mb.len()), (1, 3));
+        assert_eq!(ma[0], mb[2]);
+        assert!(mb.iter().all(|&m| m > 0.04 && m < 0.96), "{mb:?}");
+    }
+
+    #[test]
+    fn default_run_with_mass_reports_none() {
+        struct Plain;
+        impl DecisionEngine for Plain {
+            fn max_tokens_per_step(&self) -> usize {
+                100
+            }
+            fn run(&mut self, batch: &DecisionBatch) -> Result<SlotLogits> {
+                Ok(SlotLogits { rows: batch.num_branches(), data: vec![0.0; batch.num_branches() * MAX_SLOTS] })
+            }
+        }
+        let r = Plain.run_with_mass(&two_requests()).unwrap();
+        assert_eq!((r.logits.rows, r.allowed_mass), (3, None));
     }
 
     #[test]
