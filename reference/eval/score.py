@@ -10,15 +10,16 @@ answer-level probability vectors (evalset.py), the representation the committed 
 
   * accuracy per source and overall (bootstrap 95% CI), Brier, ECE; next to every reference run of the tier;
   * the gate of stats.py against EVERY reference path of the tier (nvfp4: the NVFP4 QDQ paths; bf16: the bf16
-    qev paths), with the thresholds of tests/tolerances.toml [eval.<tier>].
+    qev paths and the fp32 qev path), with the thresholds of tests/tolerances.toml [eval.<tier>].
 
 A subset run (--limit/--only/--sources) is compared on the records it answered only. The committed thresholds
 were calibrated on the full set, and the two CI-based checks are not subset-invariant (a 28-record CI is ~3x
 wider than a 278-record one, so even a reference path fails them on a subset). For a subset the verdict therefore
 uses SUBSET-CALIBRATED limits: the same rule (stats.thresholds: max(factor x envelope, floor)) applied to the
 reference paths' pairwise envelope on exactly the candidate's records. The committed-limit checks are still
-printed. A subset verdict is indicative; only a full-set run is the gate.
-Exit status: 0 gate passed, 1 gate failed, 2 errors/incomplete (a non-200 answer counts as an error).
+printed. A subset verdict is indicative; only a full-set run is the gate, so a subset PASS has its own exit code.
+Exit status: 0 gate passed on the full set, 1 gate failed, 2 errors/incomplete (a non-200 answer counts as an
+error), 4 subset passed with subset-calibrated limits (indicative only, NOT a gate pass).
 Stdlib only; the server needs no GPU access from here.
 """
 from __future__ import annotations
@@ -151,10 +152,10 @@ def main() -> None:
     verdicts = [(f"limits from tests/tolerances.toml [eval.{args.tier}]", g)]
     if partial:
         names = list(sub_refs)
-        pairs = {f"{a}~{b}": stats.compare(sub_refs[a], sub_refs[b]) for i, a in enumerate(names) for b in names[i + 1:]}
+        pairs = stats.tier_pairs(sub_refs, names, args.tier)
         anyc = next(iter(pairs.values()))
         th = stats.thresholds(stats.envelope(pairs), anyc["questions"], anyc["records"], args.tier)
-        sub_limits = {k: d["limit"] for k, d in th.items()}
+        sub_limits = stats.tier_limits(args.tier, th)
         verdicts.append((f"subset-calibrated limits on these {len(ids)} records: "
                          + ", ".join(f"{k}={v:.4g}" for k, v in sub_limits.items()),
                          stats.gate(cand, sub_refs, sub_limits)))
@@ -164,7 +165,7 @@ def main() -> None:
     verdict = "PASS" if g["pass"] else "FAIL"
     print(f"\nGATE {verdict}" + (" (subset-calibrated; indicative only)" if partial else "")
           + (f"; {len(errors)} request errors" if errors else ""))
-    sys.exit(2 if errors else (0 if g["pass"] else 1))
+    sys.exit(2 if errors else (1 if not g["pass"] else (4 if partial else 0)))
 
 
 def show(tier: str, refs: list[str], title: str, g: dict) -> None:
@@ -173,7 +174,8 @@ def show(tier: str, refs: list[str], title: str, g: dict) -> None:
         if c["metric"] == "info":
             v = c["value"]
             lo, hi = v["acc_diff_ci95"]
-            print(f"   {c['ref']:18s} info: labeled agreement {100 * v['agreement_labeled']:.2f}%, max|dp| "
+            print(f"   {c['ref']:18s} info: labeled agreement {100 * v['agreement_labeled']:.2f}%, top-1 changes"
+                  f" {v['disagree_all_count']} (any margin), max|dp| "
                   f"{v['dp_max']:.3f}, dAcc {100 * v['acc_diff']:+.2f}pp [{100 * lo:+.2f},{100 * hi:+.2f}],"
                   f" gains {v['gains']} losses {v['losses']}")
         else:

@@ -142,7 +142,8 @@ fn parse_value(v: &str) -> Result<Value> {
 
 /// Thresholds of the statistical end-to-end gate on the labeled eval set (`[eval.<tier>]`, DESIGN §9.2),
 /// derived by `reference/eval/stats.py`. A candidate passes iff, against every reference path of the tier:
-/// top-1 disagreement (all questions), mean |dp| and p99 |dp| are at most the limits; the lower bound of the
+/// top-1 disagreement (over all questions, counting only those where the reference's top-1 margin exceeds
+/// `disagree_margin`), mean |dp| and p99 |dp| are at most the limits; the lower bound of the
 /// paired-bootstrap 95% CI of `acc(candidate) - acc(ref)` is at least `-acc_drop`; and the upper bound of the
 /// paired-bootstrap 95% CI of `Brier(candidate) - Brier(ref)` is at most `brier_rise`. `reference/eval/score.py` applies it to a live server.
 #[derive(Clone, Debug, PartialEq)]
@@ -150,6 +151,9 @@ pub struct EvalGate {
     pub tier: String,
     /// The reference paths whose pairwise envelope the limits come from (`+`-separated in the file).
     pub paths: Vec<String>,
+    /// A top-1 change counts as a disagreement only where the reference's top-1 margin exceeds this
+    /// (0 = every question; bf16 uses `[e2e.bf16].top1_margin`, DESIGN §9.2's near-tie allowance).
+    pub disagree_margin: f64,
     pub disagree: f64,
     pub dp_mean: f64,
     pub dp_p99: f64,
@@ -160,6 +164,8 @@ pub struct EvalGate {
 /// One candidate-vs-reference comparison, as `reference/eval/stats.py compare()` computes it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EvalComparison {
+    /// Fraction of all questions whose top-1 differs while the reference's top-1 margin exceeds
+    /// `EvalGate::disagree_margin`.
     pub disagree: f64,
     pub dp_mean: f64,
     pub dp_p99: f64,
@@ -182,6 +188,7 @@ impl EvalGate {
         Ok(Self {
             tier: tier.to_string(),
             paths,
+            disagree_margin: t.f64(&k("disagree_margin"))?,
             disagree: t.f64(&k("disagree"))?,
             dp_mean: t.f64(&k("dp_mean"))?,
             dp_p99: t.f64(&k("dp_p99"))?,
@@ -322,19 +329,79 @@ strict = true
                 assert!(v > 0.0 && v <= 1.0, "eval.{tier}.{name} = {v} is not a rate in (0, 1]");
             }
             assert!(g.dp_mean <= g.dp_p99 || g.dp_p99 == 0.0, "eval.{tier}: mean |dp| above its p99");
+            // The generator writes measured_/floor_ at full precision and rounds limits UP, so the rule holds
+            // exactly here (no tolerance): a limit never sits below max(factor x measured, floor).
+            for m in ["disagree", "dp_mean", "dp_p99", "acc_drop", "brier_rise"] {
+                let limit = t.f64(&format!("eval.{tier}.{m}")).unwrap();
+                let measured = t.f64(&format!("eval.{tier}.measured_{m}")).unwrap();
+                let floor = t.f64(&format!("eval.{tier}.floor_{m}")).unwrap_or(0.0);
+                assert!(limit >= (factor * measured).max(floor),
+                        "eval.{tier}.{m} = {limit} is below max(factor x {measured}, {floor})");
+            }
         }
         assert!(EvalGate::load(&t, "nvfp4").unwrap().paths.len() >= 3, "NVFP4 envelope needs >= 3 QDQ paths");
+        assert_eq!(EvalGate::load(&t, "nvfp4").unwrap().disagree_margin, 0.0, "NVFP4 counts every top-1 change");
+        let bf16 = EvalGate::load(&t, "bf16").unwrap();
+        assert_eq!(bf16.disagree_margin, t.f64("e2e.bf16.top1_margin").unwrap(),
+                   "eval.bf16.disagree_margin must be the end-to-end near-tie allowance [e2e.bf16].top1_margin");
+        assert!(bf16.paths.iter().any(|p| p.starts_with("fp32")),
+                "the bf16 envelope must include the fp32 truth path (DESIGN §9.2 binding rule)");
+    }
+
+    /// Cross-language check: `reference/eval/stats.py` records, for its validation candidates, the comparison
+    /// values against every reference path and which checks failed under the limits it wrote. `EvalGate`
+    /// (loaded from the committed file) must reach the same verdict on every one of them.
+    #[test]
+    fn eval_gate_matches_stats_py() {
+        let t = Tolerances::load_default().unwrap();
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/dev/eval/report.json");
+        let report: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let rows = report["rust_fixture"].as_array().expect("report.json lacks rust_fixture; rerun stats.py");
+        assert!(rows.len() >= 20, "only {} fixture rows", rows.len());
+        let (mut passes, mut fails) = (0, 0);
+        for row in rows {
+            let tier = row["tier"].as_str().unwrap();
+            let g = EvalGate::load(&t, tier).unwrap();
+            let lim = |k: &str| row["limits"][k].as_f64().unwrap();
+            assert_eq!(
+                (g.disagree, g.dp_mean, g.dp_p99, g.acc_drop, g.brier_rise, g.disagree_margin),
+                (lim("disagree"), lim("dp_mean"), lim("dp_p99"), lim("acc_drop"), lim("brier_rise"),
+                 lim("disagree_margin")),
+                "report.json was generated with other [eval.{tier}] limits than the committed ones"
+            );
+            let v = |k: &str| row["values"][k].as_f64().unwrap();
+            let c = EvalComparison {
+                disagree: v("disagree"),
+                dp_mean: v("dp_mean"),
+                dp_p99: v("dp_p99"),
+                acc_diff_ci_lo: v("acc_ci_lo"),
+                brier_diff_ci_hi: v("brier_ci_hi"),
+            };
+            let mut got: Vec<String> = g
+                .failures(&c)
+                .iter()
+                .map(|f| f.split_whitespace().next().unwrap().trim_start_matches('-').to_string())
+                .collect();
+            got.sort();
+            let mut want: Vec<String> =
+                row["failed"].as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect();
+            want.sort();
+            assert_eq!(got, want, "{} vs {} ({tier})", row["candidate"], row["ref"]);
+            if want.is_empty() { passes += 1 } else { fails += 1 }
+        }
+        assert!(passes > 0 && fails > 0, "the fixture must hold both passing and failing comparisons");
     }
 
     #[test]
     fn eval_gate_applies_its_rule() {
         let t = Tolerances::parse(
-            "[eval.bf16]\npaths = \"a+b\"\ndisagree = 0.01\ndp_mean = 0.001\ndp_p99 = 0.01\nacc_drop = 0.02\n\
+            "[eval.bf16]\npaths = \"a+b\"\ndisagree_margin = 0.02\ndisagree = 0.01\ndp_mean = 0.001\ndp_p99 = 0.01\nacc_drop = 0.02\n\
              brier_rise = 0.005\n[eval.nvfp4]\npaths = \"a\"\ndisagree = 0.1\ndp_mean = 0.1\ndp_p99 = 0.1\nacc_drop = 0.1\n",
         )
         .unwrap();
         let g = EvalGate::load(&t, "bf16").unwrap();
         assert_eq!(g.paths, ["a", "b"]);
+        assert_eq!(g.disagree_margin, 0.02);
         let ok =
             EvalComparison { disagree: 0.01, dp_mean: 5e-4, dp_p99: 0.009, acc_diff_ci_lo: -0.02, brier_diff_ci_hi: 0.0 };
         assert!(g.failures(&ok).is_empty());

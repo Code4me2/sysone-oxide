@@ -25,6 +25,24 @@
    "sha256": "cf51a7e3b8e62d0900ec5c78399f24863a8154be309fc53b02c5bb1aaaa62dd4"
   }
  },
+ "fp32_batched": {
+  "eval/runs/fp32_batched/part-000.json": {
+   "bytes": 1113205,
+   "sha256": "e1acf9193378463ceae8f6d5a936428f22bb6b30120d763810d8feca606dd16c"
+  },
+  "eval/runs/fp32_batched/part-001.json": {
+   "bytes": 1225377,
+   "sha256": "f12e5ab0640defeee7e3ad9926d9909b418f20689007a7ebca9eecbf15e96e35"
+  },
+  "eval/runs/fp32_batched/part-002.json": {
+   "bytes": 147018,
+   "sha256": "029352fc6ac4e212a48339b557d000cc49ce6a482aab00f4430b4b71d4e38919"
+  },
+  "eval/runs/fp32_batched/part-003.json": {
+   "bytes": 12556,
+   "sha256": "6ad0ace3e5b4cff8272216a4c99b8fabaf662a31fa99b11f45498e1266c05282"
+  }
+ },
  "nvfp4_batched": {
   "eval/runs/nvfp4_batched/part-000.json": {
    "bytes": 2351717,
