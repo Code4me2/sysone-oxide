@@ -18,6 +18,14 @@ use sysone::kernels::gdn::simt;
 const PROJ_COLS: usize = CONV_DIM + VALUE_DIM + 2 * NUM_V_HEADS;
 const EPS: f32 = 1e-6;
 
+/// The delta-rule backends every test runs against (`GDN_BACKENDS=tile,simt` to restrict).
+fn backends() -> Vec<GdnBackend> {
+    match std::env::var("GDN_BACKENDS") {
+        Ok(v) => v.split(',').map(|b| b.trim().parse().unwrap()).collect(),
+        Err(_) => GdnBackend::ALL.to_vec(),
+    }
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Helpers
 
@@ -369,7 +377,7 @@ struct Run {
 }
 
 /// Run the whole mixer on `proj` with the given plan capacities and download every intermediate.
-fn run_gpu(proj: &[f64], segs: &[Segment], w: &GpuWeights, caps: Option<(usize, usize)>, s: &Arc<Stream>) -> Run {
+fn run_gpu(backend: GdnBackend, proj: &[f64], segs: &[Segment], w: &GpuWeights, caps: Option<(usize, usize)>, s: &Arc<Stream>) -> Run {
     let t = proj.len() / PROJ_COLS;
     let plan = match caps {
         None => GdnPlan::new(segs, t, s).unwrap(),
@@ -379,7 +387,7 @@ fn run_gpu(proj: &[f64], segs: &[Segment], w: &GpuWeights, caps: Option<(usize, 
     let scratch = GdnScratch::new(t, plan.num_prefixes, s).unwrap();
     let out = api::zeros::<bf16>(&[t, VALUE_DIM]).sync_on(s).unwrap();
     let ops = unsafe {
-        gdn_mixer(&plan, DView::of(&proj_t).unwrap(), &w.view(), EPS, &scratch, DView::of(&out).unwrap()).unwrap()
+        gdn_mixer_with(backend, &plan, DView::of(&proj_t).unwrap(), &w.view(), EPS, &scratch, DView::of(&out).unwrap()).unwrap()
     };
     ops.sync_on(s).unwrap();
     Run {
@@ -417,7 +425,13 @@ fn tree_batch() -> DecisionBatch {
 /// tree batch; plus the prefix final states and the whole chain from the projection output.
 #[test]
 fn gdn_kernels_match_f64_references_on_a_tree_batch() {
-    on_test_thread(|| {
+    for backend in backends() {
+        on_test_thread(move || kernels_match_f64_references(backend));
+    }
+}
+
+fn kernels_match_f64_references(backend: GdnBackend) {
+    {
         let ctx = Context::new(0).unwrap();
         let s = ctx.new_stream().unwrap();
         let mut rng = Rng(0x2545f4914f6cdd1d);
@@ -427,8 +441,8 @@ fn gdn_kernels_match_f64_references_on_a_tree_batch() {
         let w = weights(&mut rng);
         let gw = GpuWeights::new(&w, &s);
         let proj = projection(t, &mut rng);
-        println!("tree batch: {t} tokens, {} segments", segs.len());
-        let run = run_gpu(&proj, segs, &gw, None, &s);
+        println!("[{}] tree batch: {t} tokens, {} segments", backend.name(), segs.len());
+        let run = run_gpu(backend, &proj, segs, &gw, None, &s);
         let mut fails = Vec::new();
         let mut check = |name: &str, over: usize| {
             if over > 0 {
@@ -503,15 +517,22 @@ fn gdn_kernels_match_f64_references_on_a_tree_batch() {
                 4.0 * ulp16(r) + 1e-2 * out_rms
             }),
         );
-        assert!(fails.is_empty(), "failures: {fails:#?}");
-    });
+        assert!(fails.is_empty(), "[{}] failures: {fails:#?}", backend.name());
+    }
 }
 
 /// Each branch of the tree batch, run alone as one causal sequence (prefix + suffix in a single prefix segment,
 /// so the conv and the chunking see one contiguous stream), against the tree-batched run's rows.
 #[test]
 fn tree_batched_matches_each_branch_alone() {
-    on_test_thread(|| {
+    for backend in backends() {
+        on_test_thread(move || tree_batched_matches_alone(backend));
+    }
+}
+
+fn tree_batched_matches_alone(backend: GdnBackend) {
+    {
+        println!("[{}]", backend.name());
         let ctx = Context::new(0).unwrap();
         let s = ctx.new_stream().unwrap();
         let mut rng = Rng(0x9e3779b97f4a7c15);
@@ -523,14 +544,14 @@ fn tree_batched_matches_each_branch_alone() {
         let proj = projection(t, &mut rng);
         // Spare capacity in the plan: unused chunk and segment entries must be no-ops.
         let caps = (GdnTables::chunk_capacity(t, segs.len()) + 5, segs.len() + 3);
-        let tree = run_gpu(&proj, segs, &gw, Some(caps), &s);
+        let tree = run_gpu(backend, &proj, segs, &gw, Some(caps), &s);
         let (mut got_core, mut want_core, mut got_out, mut want_out) = (vec![], vec![], vec![], vec![]);
         let mut scale = Vec::new(); // (suffix, head) rms of the alone run's scan output, per (row, head)
         for (i, seg) in segs.iter().enumerate().filter(|(_, s)| !s.is_prefix()) {
             let (rows, own) = history(segs, i);
             let alone_proj: Vec<f64> = rows.iter().flat_map(|&r| proj[r * PROJ_COLS..][..PROJ_COLS].to_vec()).collect();
             let alone_segs = [Segment { start: 0, len: rows.len() as u32, parent: -1, pos0: 0 }];
-            let alone = run_gpu(&alone_proj, &alone_segs, &gw, None, &s);
+            let alone = run_gpu(backend, &alone_proj, &alone_segs, &gw, None, &s);
             assert_eq!(rows.len() - own, seg.len as usize);
             let suffix_only = [Segment { start: own as u32, len: seg.len, parent: -1, pos0: 0 }];
             let shr = segment_head_rms(&alone.core, &suffix_only, rows.len());
@@ -562,15 +583,21 @@ fn tree_batched_matches_each_branch_alone() {
         let b = report("suffix mixer out: tree vs alone", &got_out, &want_out, "4 bf16 ulp + 1e-2 * out rms", |_, r| {
             4.0 * ulp16(r) + 1e-2 * out_rms
         });
-        assert_eq!(a + b, 0, "tree-batched suffix rows differ from the branches run alone");
-    });
+        assert_eq!(a + b, 0, "[{}] tree-batched suffix rows differ from the branches run alone", backend.name());
+    }
 }
 
 /// Replaying a plan through `update` with a different tree (same capacities) gives the same result as a fresh
 /// plan; segments of one request are independent of the others in the batch.
 #[test]
 fn plan_update_and_batch_invariance() {
-    on_test_thread(|| {
+    for backend in backends() {
+        on_test_thread(move || plan_update_invariance(backend));
+    }
+}
+
+fn plan_update_invariance(backend: GdnBackend) {
+    {
         let ctx = Context::new(0).unwrap();
         let s = ctx.new_stream().unwrap();
         let mut rng = Rng(0xdeadbeefcafef00d);
@@ -585,7 +612,7 @@ fn plan_update_and_batch_invariance() {
         let proj = projection(t, &mut rng);
         let off = 300 + 40 + 129;
         let small_proj = proj[off * PROJ_COLS..].to_vec();
-        let alone = run_gpu(&small_proj, &small.segments, &gw, None, &s);
+        let alone = run_gpu(backend, &small_proj, &small.segments, &gw, None, &s);
 
         // Plan sized for `big`, first used for `small` padded to the same T, then updated to `big`.
         let caps = (GdnTables::chunk_capacity(t, 8), 8);
@@ -600,17 +627,17 @@ fn plan_update_and_batch_invariance() {
                 plan.update(&b.segments, &s).unwrap();
             }
             let pt = upload(to_bf16(p), &[t, PROJ_COLS], &s);
-            unsafe { gdn_mixer(&plan, DView::of(&pt).unwrap(), &wv, EPS, &scratch, DView::of(&out).unwrap()).unwrap() }
+            unsafe { gdn_mixer_with(backend, &plan, DView::of(&pt).unwrap(), &wv, EPS, &scratch, DView::of(&out).unwrap()).unwrap() }
                 .sync_on(&s)
                 .unwrap();
             let got = bf16_to_f64(&download(&out, &s));
             let base = if step == 0 { 0 } else { off };
             let n = small.num_tokens() * VALUE_DIM;
             let same = got[base * VALUE_DIM..][..n] == alone.out[..n];
-            println!("plan step {step}: request rows bit-identical to a fresh single-request plan: {same}");
-            assert!(same, "step {step}: request output depends on the rest of the batch or on plan reuse");
+            println!("[{}] plan step {step}: request rows bit-identical to a fresh single-request plan: {same}", backend.name());
+            assert!(same, "[{}] step {step}: request output depends on the rest of the batch or on plan reuse", backend.name());
         }
-    });
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------------------

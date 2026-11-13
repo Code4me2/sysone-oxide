@@ -50,6 +50,40 @@ pub const VALUE_DIM: usize = NUM_V_HEADS * HEAD_DIM;
 /// One prefix's recurrent state, `[32, 128, 128]` f32 elements.
 pub const STATE_ELEMS: usize = NUM_V_HEADS * HEAD_DIM * HEAD_DIM;
 
+/// Which implementation runs the chunked delta rule (the conv, gate and norm kernels are cuTile in both).
+///
+/// `Simt` is the cuda-oxide path (`simt.rs`, docs/G1.md): tensor-core `mma.sync` with split-bf16 operands,
+/// recomputing the WY operands inside the scan instead of storing them. `Tile` is the cuTile path, kept as the
+/// fallback and as the test reference.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GdnBackend {
+    #[default]
+    Tile,
+    Simt,
+}
+
+impl GdnBackend {
+    pub const ALL: [GdnBackend; 2] = [GdnBackend::Tile, GdnBackend::Simt];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            GdnBackend::Tile => "tile",
+            GdnBackend::Simt => "simt",
+        }
+    }
+}
+
+impl std::str::FromStr for GdnBackend {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "tile" => Ok(GdnBackend::Tile),
+            "simt" => Ok(GdnBackend::Simt),
+            _ => bail!("unknown GDN backend {s:?} (tile | simt)"),
+        }
+    }
+}
+
 /// Channel block of the conv kernel.
 const CONV_BC: usize = 512;
 /// Row block of `gdn_prep` and `gated_rmsnorm`.
@@ -485,6 +519,22 @@ pub unsafe fn gdn_mixer(
     scratch: &GdnScratch,
     out: DView<bf16>,
 ) -> Result<DeviceOpVec<()>> {
+    unsafe { gdn_mixer_with(GdnBackend::Tile, plan, proj, w, eps, scratch, out) }
+}
+
+/// [`gdn_mixer`] with an explicit implementation of the delta rule.
+///
+/// # Safety
+/// As for [`tree_conv1d_silu`].
+pub unsafe fn gdn_mixer_with(
+    backend: GdnBackend,
+    plan: &GdnPlan,
+    proj: DView<bf16>,
+    w: &GdnWeights<'_>,
+    eps: f32,
+    scratch: &GdnScratch,
+    out: DView<bf16>,
+) -> Result<DeviceOpVec<()>> {
     if proj.cols != CONV_DIM + VALUE_DIM + 2 * NUM_V_HEADS {
         bail!("fused projection has {} columns, expected {}", proj.cols, CONV_DIM + VALUE_DIM + 2 * NUM_V_HEADS);
     }
@@ -498,7 +548,10 @@ pub unsafe fn gdn_mixer(
     unsafe {
         ops.push(tree_conv1d_silu(plan, qkv, w.conv_w, conv)?);
         ops.push(gdn_prep(plan, conv, a, b, w, scratch)?);
-        ops.push(gdn_chunk_scan(plan, conv.columns(2 * KEY_DIM, VALUE_DIM)?, scratch, core)?.map(|_| ()));
+        ops.push(match backend {
+            GdnBackend::Tile => gdn_chunk_scan(plan, conv.columns(2 * KEY_DIM, VALUE_DIM)?, scratch, core)?.map(|_| ()).boxed(),
+            GdnBackend::Simt => simt::chunk_scan(plan, conv, scratch, core)?.map(|_| ()).boxed(),
+        });
         ops.push(gated_rmsnorm(plan, core, z, w.norm_w, eps, out)?);
     }
     Ok(ops)
