@@ -4,5 +4,17 @@
    "bytes": 1313907,
    "sha256": "ef8299558da7901263c8d0107dc59f77aa7ea6ecad0bca6ea37258e2296f9487"
   }
+ },
+ "sysone_bf16_e2e_simt": {
+  "golden/dev/eval/candidates/sysone_bf16_e2e_simt/part-000.json": {
+   "bytes": 1314167,
+   "sha256": "b86c7aa9e4a1c94c67b803151cc5f2cc3b5c9b85349364ef05b94edc53ad97e9"
+  }
+ },
+ "sysone_bf16_e2e_tile": {
+  "golden/dev/eval/candidates/sysone_bf16_e2e_tile/part-000.json": {
+   "bytes": 1313978,
+   "sha256": "489173f74ee26b8cd7399d18bfc63d57d7a8b17c3b23325d89d5695fe6c0d1be"
+  }
  }
 }

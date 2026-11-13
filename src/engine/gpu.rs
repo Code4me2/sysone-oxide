@@ -420,6 +420,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn gdn_backend_choice_parses() {
+        assert_eq!(parse_gdn_backend("auto").unwrap(), None);
+        assert_eq!(parse_gdn_backend("tile").unwrap(), Some(GdnBackend::Tile));
+        assert_eq!(parse_gdn_backend("simt").unwrap(), Some(GdnBackend::Simt));
+        assert!(parse_gdn_backend("SIMT").is_err());
+    }
+
+    #[test]
     fn split_keeps_answer_order_and_refuses_oversize_requests() {
         let mut b = DecisionBatch::default();
         b.push_request(&[1; 10], &[(&[2; 3], 2), (&[3; 4], 3)]).unwrap();

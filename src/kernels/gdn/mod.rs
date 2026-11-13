@@ -90,8 +90,11 @@ impl GdnBackend {
     /// there. Never a fallback: an engine that resolves to SIMT without a kernel artifact for its architecture
     /// fails to load.
     pub fn default_for_arch(major: i32, minor: i32) -> GdnBackend {
-        let _ = (major, minor);
-        GdnBackend::Tile
+        match (major, minor) {
+            // GB10: every engine gate and the eval gate pass with SIMT (E2, 2026-11-13).
+            (12, 1) => GdnBackend::Simt,
+            _ => GdnBackend::Tile,
+        }
     }
 }
 
@@ -944,6 +947,16 @@ pub unsafe fn gdn_mixer_with(
 mod tests {
     use super::*;
     use crate::contract::DecisionBatch;
+
+    #[test]
+    fn backend_defaults_per_arch() {
+        assert_eq!(GdnBackend::default_for_arch(12, 1), GdnBackend::Simt);
+        for (major, minor) in [(12, 0), (10, 0), (10, 3), (9, 0), (8, 9)] {
+            assert_eq!(GdnBackend::default_for_arch(major, minor), GdnBackend::Tile, "sm_{major}{minor}");
+        }
+        assert_eq!("simt".parse::<GdnBackend>().unwrap(), GdnBackend::Simt);
+        assert!("cuda".parse::<GdnBackend>().is_err());
+    }
 
     #[test]
     fn tables_follow_the_tree() {

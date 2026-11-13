@@ -18,8 +18,9 @@ Phase 2a is done ([docs/PHASE2A.md](docs/PHASE2A.md) has the numbers):
   layers; a new definition of that gate is pending.
 - NVFP4 kernels and loading exist, but there is no NVFP4 forward yet. `allowed_token_mass` (`?debug=1`) is not
   computed by the GPU engine. No prefix cache, no images.
-- A faster GatedDeltaNet scan on cuda-oxide SIMT kernels (G1, [docs/G1.md](docs/G1.md)) is implemented and passes the
-  kernel-level gates; it is opt-in (`GdnBackend::Simt`) until the end-to-end gate has run with it.
+- A faster GatedDeltaNet scan on cuda-oxide SIMT kernels (G1, [docs/G1.md](docs/G1.md)) runs in the engine and passes
+  every accuracy gate (E2, [docs/E2.md](docs/E2.md)); it is the default on sm_121 (`--gdn-backend auto`), cuTile
+  elsewhere. The forward is 18-22% faster with it.
 
 ## Prerequisites
 
@@ -48,6 +49,8 @@ scripts/gpu.sh cargo test --release --all-targets
 # Serve elephant-1 on the GPU (default listen address 0.0.0.0:8000).
 # --engine defaults to mock: without --engine bf16 the server looks healthy but returns fake logits.
 ./target/release/sysone --model /path/to/elephant-1 --engine bf16
+# GDN delta rule: --gdn-backend auto (default: simt on sm_121, tile elsewhere) | tile | simt; the engine tests
+# and bench_forward read SYSONE_GDN_BACKEND.
 
 # Serve with the deterministic mock engine (real frontend and scheduler, fake logits; no GPU needed).
 ./target/release/sysone --model /path/to/elephant-1 --engine mock
@@ -103,6 +106,7 @@ See [docs/ARCHITECTURE.md §6](docs/ARCHITECTURE.md#6-correctness-and-testing) f
 | [docs/PLATFORM.md](docs/PLATFORM.md) | GB10 vs discrete x86 GPUs, prerequisites |
 | [docs/PHASE0.md](docs/PHASE0.md), [docs/PHASE1.md](docs/PHASE1.md), [docs/PHASE2A.md](docs/PHASE2A.md) | Phase reports and measurements |
 | [docs/G1.md](docs/G1.md) | The GDN delta rule in cuda-oxide: results, design, accuracy, the SIMT kernel build and artifact policy |
+| [docs/E2.md](docs/E2.md) | The SIMT GDN backend in the engine: selection, every gate on both backends, forward speed |
 | [reference/README.md](reference/README.md) | The reference harness and golden formats |
 | [reference/eval/README.md](reference/eval/README.md) | The labeled eval set and the statistical gate |
 | `cargo doc --no-deps --open` | Per-module API docs |
