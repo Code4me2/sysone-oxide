@@ -447,6 +447,10 @@ pub enum GdnPrecision {
     /// bf16 operands (fp32 accumulation) in the sequential scan; TF32 for the chunk inverse and the intra-chunk
     /// attention, where bf16 would compound through the triangular solve.
     Bf16Operands,
+    /// Split TF32 for every product that feeds the recurrent state (`(k*beta) k^T` and the chunk inverse,
+    /// `k S`, `Tinv (..)`, `k^T v_new`) and one TF32 product for the output-only ones (`q k^T`, `q S`,
+    /// `p v_new`): output errors do not compound across chunks.
+    Fp32StateTf32Output,
 }
 
 impl GdnPrecision {
@@ -457,6 +461,7 @@ impl GdnPrecision {
             Self::Fp32Split3 => (["tf32", "3", "tf32", "3"], ["tf32", "3", "tf32", "3"]),
             Self::Tf32 => (["tf32", "1", "tf32", "1"], ["tf32", "1", "tf32", "1"]),
             Self::Bf16Operands => (["tf32", "1", "tf32", "1"], ["bf16", "1", "bf16", "1"]),
+            Self::Fp32StateTf32Output => (["tf32", "3", "tf32", "1"], ["tf32", "3", "tf32", "1"]),
         }
     }
 }
@@ -486,9 +491,9 @@ impl Default for GdnOptions {
         Self {
             precision: GdnPrecision::default(),
             prefix_bv: 32,
-            suffix_bv: 64,
+            suffix_bv: 32,
             prefix_warps: 8,
-            suffix_warps: 4,
+            suffix_warps: 8,
             tp_warps: 8,
             tp_fsb: 16,
         }
@@ -509,10 +514,10 @@ pub unsafe fn gdn_chunk_scan(
     unsafe { gdn_chunk_scan_with(plan, v, scratch, out, &GdnOptions::default()) }
 }
 
-/// The chunked gated delta rule over the plan's segment tree, as three launches: the chunk inverse `Tinv` and
-/// masked intra-chunk attention `p` (parallel over chunks, into `scratch.{tinv,p}`), then the inter-chunk scan
-/// for prefixes (writing their final states into `scratch.state`), then for suffixes (starting from their
-/// parent's state). Reads `scratch.{q,k,g,beta}` and v (`[T, 4096]` bf16 view, normally columns 4096.. of the
+/// The chunked gated delta rule over the plan's segment tree, as four operations: the chunk inverse `Tinv` and
+/// masked intra-chunk attention `p` (parallel over chunks, into `scratch.{tinv,p}`), an empty operation in the
+/// slot of the Phase 1 WY launch (now fused into the scans), then the inter-chunk scan for prefixes (writing
+/// their final states into `scratch.state`), then for suffixes (starting from their parent's state). Reads `scratch.{q,k,g,beta}` and v (`[T, 4096]` bf16 view, normally columns 4096.. of the
 /// conv output); writes bf16 `[T, 4096]` into `out`.
 ///
 /// # Safety
@@ -535,7 +540,7 @@ pub unsafe fn gdn_chunk_scan_with(
     }
     let sp = |t: &Tensor<f32>| t.device_pointer();
     let (tp_gen, scan_gen) = opts.precision.generics();
-    let mut ops = DeviceOpVec::with_capacity(3);
+    let mut ops = DeviceOpVec::with_capacity(4);
     let tp = unsafe {
         gdn_tile::gdn_chunk_tp(
             sp(&scratch.q),
@@ -552,6 +557,9 @@ pub unsafe fn gdn_chunk_scan_with(
     .compile_options(CompileOptions::default().num_worker_warps_per_cta(opts.tp_warps))
     .grid(grid(plan.max_chunks, NUM_V_HEADS, 1));
     ops.push(tp.map(|_| ()));
+    // The Phase 1 WY launch is fused into the scans; an empty op keeps the four-launch shape
+    // (inverse, WY, prefix scan, suffix scan) that callers label and replay.
+    ops.push(value(()).boxed());
     for (phase, bv, warps) in [(0i32, opts.prefix_bv, opts.prefix_warps), (1, opts.suffix_bv, opts.suffix_warps)] {
         let scan = unsafe {
             gdn_tile::gdn_chunk_scan_fused(

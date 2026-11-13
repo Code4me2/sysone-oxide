@@ -784,31 +784,30 @@ pub mod gdn_tile {
                 let kbe_s: Tile<f32, { [64, 32] }> = (bt * ecum).broadcast(const_shape![64, 32]);
                 let qd_s: Tile<f32, { [64, 32] }> = ecum.broadcast(const_shape![64, 32]);
 
-                // x = (k*beta*exp(cum)) S and o = (q*exp(cum)) S, one 32-row block of S at a time.
+                // x = (k*beta*exp(cum)) S, then v_new, then o = (q*exp(cum)) S + p v_new (x first: fewer live tiles).
                 let k0: Tile<f32, { [64, 32] }> = k_part.load([c, kc]);
                 let x: Tile<f32, { [64, BV] }> = mma_p::<E, SPLIT, 64, BV, 32>(k0 * kbe_s, s0, zero_o);
-                let q0: Tile<f32, { [64, 32] }> = q_part.load([c, kc]);
-                let o: Tile<f32, { [64, BV] }> = mma_p::<EO, SPLIT_O, 64, BV, 32>(q0 * qd_s, s0, zero_o);
                 let k1: Tile<f32, { [64, 32] }> = k_part.load([c, kc + 1i32]);
                 let x: Tile<f32, { [64, BV] }> = mma_p::<E, SPLIT, 64, BV, 32>(k1 * kbe_s, s1, x);
-                let q1: Tile<f32, { [64, 32] }> = q_part.load([c, kc + 1i32]);
-                let o: Tile<f32, { [64, BV] }> = mma_p::<EO, SPLIT_O, 64, BV, 32>(q1 * qd_s, s1, o);
                 let k2: Tile<f32, { [64, 32] }> = k_part.load([c, kc + 2i32]);
                 let x: Tile<f32, { [64, BV] }> = mma_p::<E, SPLIT, 64, BV, 32>(k2 * kbe_s, s2, x);
-                let q2: Tile<f32, { [64, 32] }> = q_part.load([c, kc + 2i32]);
-                let o: Tile<f32, { [64, BV] }> = mma_p::<EO, SPLIT_O, 64, BV, 32>(q2 * qd_s, s2, o);
                 let k3: Tile<f32, { [64, 32] }> = k_part.load([c, kc + 3i32]);
                 let x: Tile<f32, { [64, BV] }> = mma_p::<E, SPLIT, 64, BV, 32>(k3 * kbe_s, s3, x);
-                let q3: Tile<f32, { [64, 32] }> = q_part.load([c, kc + 3i32]);
-                let o: Tile<f32, { [64, BV] }> = mma_p::<EO, SPLIT_O, 64, BV, 32>(q3 * qd_s, s3, o);
-
                 let vt: Tile<bf16, { [64, BV] }> = v_part.load([c, vcol]);
                 let vt: Tile<f32, { [64, BV] }> = convert_tile(vt);
                 let y: Tile<f32, { [64, BV] }> = vt * bt.broadcast(const_shape![64, BV]) - x;
                 let tt: Tile<f32, { [64, 64] }> = tinv_part.load([c, h]);
                 let v_new: Tile<f32, { [64, BV] }> = mma_p::<E, SPLIT, 64, BV, 64>(tt, y, zero_o);
                 let pt: Tile<f32, { [64, 64] }> = p_part.load([c, h]);
-                let o: Tile<f32, { [64, BV] }> = mma_p::<EO, SPLIT_O, 64, BV, 64>(pt, v_new, o);
+                let o: Tile<f32, { [64, BV] }> = mma_p::<EO, SPLIT_O, 64, BV, 64>(pt, v_new, zero_o);
+                let q0: Tile<f32, { [64, 32] }> = q_part.load([c, kc]);
+                let o: Tile<f32, { [64, BV] }> = mma_p::<EO, SPLIT_O, 64, BV, 32>(q0 * qd_s, s0, o);
+                let q1: Tile<f32, { [64, 32] }> = q_part.load([c, kc + 1i32]);
+                let o: Tile<f32, { [64, BV] }> = mma_p::<EO, SPLIT_O, 64, BV, 32>(q1 * qd_s, s1, o);
+                let q2: Tile<f32, { [64, 32] }> = q_part.load([c, kc + 2i32]);
+                let o: Tile<f32, { [64, BV] }> = mma_p::<EO, SPLIT_O, 64, BV, 32>(q2 * qd_s, s2, o);
+                let q3: Tile<f32, { [64, 32] }> = q_part.load([c, kc + 3i32]);
+                let o: Tile<f32, { [64, BV] }> = mma_p::<EO, SPLIT_O, 64, BV, 32>(q3 * qd_s, s3, o);
                 let o_bf: Tile<bf16, { [64, BV] }> = convert_tile(o);
                 out_part.store(o_bf, [c, vcol]);
 

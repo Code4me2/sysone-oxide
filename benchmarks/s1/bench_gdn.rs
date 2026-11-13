@@ -109,7 +109,7 @@ struct Args {
     shapes: Vec<String>,
     #[arg(long, default_value_t = 10)]
     iters: usize,
-    /// Scan precision: fp32 (3xTF32, default), tf32, bf16.
+    /// Scan precision: fp32 (3xTF32, default), tf32, bf16, mixed (3xTF32 state, TF32 output).
     #[arg(long, default_value = "fp32")]
     precision: String,
     /// Override the prefix / suffix scan value-column blocks, the warps per CTA and the forward-substitution
@@ -208,6 +208,7 @@ fn main() -> Result<()> {
         "fp32" => GdnPrecision::Fp32Split3,
         "tf32" => GdnPrecision::Tf32,
         "bf16" => GdnPrecision::Bf16Operands,
+        "mixed" => GdnPrecision::Fp32StateTf32Output,
         p => anyhow::bail!("unknown precision {p}"),
     };
     let or = |v: &Vec<usize>, d: usize| if v.is_empty() { vec![d] } else { v.clone() };
@@ -295,14 +296,12 @@ fn main() -> Result<()> {
             let t_prep = time(args.iters, &s, &|| {
                 one(unsafe { if w3a { gdn_prep(&plan, conv, a, b, &w, &scratch) } else { gdn_gates(&plan, conv, a, b, &w, &scratch) }.unwrap() })
             })?;
-            // The scan is several launches (W3a: inverse, WY, prefix scan, suffix scan; P1: inverse + p, prefix scan,
-            // suffix scan); time each alone by replaying the full sequence and dropping the others (inputs stay valid
-            // from the mixer run above).
-            let n_ops = if w3a { 4 } else { 3 };
+            // The scan is four operations (W3a: inverse, WY, prefix scan, suffix scan; P1: inverse + p, an empty
+            // op in the WY slot, prefix scan, suffix scan); time each alone by replaying the full sequence and
+            // dropping the others (inputs stay valid from the mixer run above).
             let mut parts = [0f64; 4];
-            for k in 0..n_ops {
-                let slot = if n_ops == 3 && k > 0 { k + 1 } else { k };
-                parts[slot] = time(args.iters, &s, &|| {
+            for k in 0..4 {
+                parts[k] = time(args.iters, &s, &|| {
                     let mut ops = scan(&plan, v, &scratch, core);
                     let keep = ops.remove(k);
                     let mut v = DeviceOpVec::with_capacity(1);
