@@ -101,7 +101,7 @@ def compare(a: dict, b: dict) -> dict:
     rb = {r["id"]: r for r in b["results"]}
     dp, dbr, dl, dans = [], [], [], []
     flips, mism, n_br, n_req = [], [], 0, 0
-    for rid in ra.keys() & rb.keys():
+    for rid in sorted(ra.keys() & rb.keys()):
         x, y = ra[rid], rb[rid]
         if x["status"] != y["status"]:
             mism.append(f"{rid}: status {x['status']} vs {y['status']}")
@@ -127,7 +127,7 @@ def compare(a: dict, b: dict) -> dict:
                 top = sorted(v["probs"], reverse=True)
                 flips.append({"id": rid, "branch": i, "ref_margin": top[0] - top[1], "dp_max": max(d)})
         pa, pb = answer_probs(x["response"]), answer_probs(y["response"])
-        dans += [abs(pa[k] - pb[k]) for k in pa.keys() & pb.keys()]
+        dans += [abs(pa[k] - pb[k]) for k in sorted(pa.keys() & pb.keys())]
     return {"requests": n_req, "branches": n_br, "dp_option": quantiles(dp), "dp_branch_max": quantiles(dbr),
             "dp_answer": quantiles(dans), "dlogit": quantiles(dl), "top1_flips": len(flips),
             "top1_flip_max_ref_margin": max((f["ref_margin"] for f in flips), default=0.0),

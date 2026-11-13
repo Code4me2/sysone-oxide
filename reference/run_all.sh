@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Regenerate every W1b model-side dev golden run (DESIGN.md §9.1). Correctness only: no timing, no GPU lock.
-# Two queues run side by side: bf16-sized processes (~20 GB each) and fp32 (~36 GB weights). Logs go next to
-# the binary goldens. Usage: bash reference/run_all.sh [bf16|fp32|all]
+# Two queues: bf16-sized processes (~19-23 GiB peak allocated) and fp32 (up to 39.4 GiB = 42.3 GB allocated,
+# plus CUDA context). They run one after the other by default; `all-parallel` overlaps them (~62 GiB) and is
+# only for a box with nothing else on the GPU. Logs go next to
+# the binary goldens. Usage: bash reference/run_all.sh [bf16|fp32|all|all-parallel]
 set -euo pipefail
 cd "$(dirname "$0")/.."
 PY=${PY:-/home/velvet/Desktop/sysone-ref/venv/bin/python}
@@ -27,7 +29,8 @@ bf16_queue() {
 }
 
 fp32_queue() {
-  # Full corpus: measured peak 39.3 GB at a 16k-token prefix (fp32 weights alone are 35.8 GB). On a box where
+  # Full corpus: measured peak 39.37 GiB allocated (torch max_memory_allocated; 42.3 GB) at a 16k-token prefix
+  # (fp32 weights alone are ~33 GiB). On a box where
   # that is too much, set FP32_MAX_PREFIX; dropped requests are listed in each run's "dropped" field.
   local cap=()
   [[ -n "${FP32_MAX_PREFIX:-}" ]] && cap=(--max-prefix-tokens "$FP32_MAX_PREFIX")
@@ -38,5 +41,7 @@ fp32_queue() {
 case "${1:-all}" in
   bf16) bf16_queue ;;
   fp32) fp32_queue ;;
-  all) bf16_queue & fp32_queue & wait ;;
+  all) bf16_queue; fp32_queue ;;
+  all-parallel) bf16_queue & fp32_queue & wait ;;
+  *) echo "usage: $0 [bf16|fp32|all|all-parallel]" >&2; exit 2 ;;
 esac

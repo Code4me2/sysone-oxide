@@ -210,8 +210,10 @@ strict = true
         assert!(Stats::of(&[]).is_none());
     }
 
-    /// The committed file parses, and no threshold sits below the reference noise it derives from: a gate
-    /// tighter than the reference's own spread could never pass.
+    /// The committed file parses, and every threshold is exactly what the documented rule derives from its
+    /// measurement: `limit = max(factor x measured, floor)` (to the 4 significant digits the generator writes),
+    /// where `floor` is an optional `floor_<name>` design value. So no gate sits below the reference noise it
+    /// derives from (it could never pass), and no gate is hand-loosened beyond the rule.
     #[test]
     fn repository_tolerances_are_consistent() {
         let t = Tolerances::load_default().unwrap();
@@ -227,10 +229,15 @@ strict = true
             let measured = t.f64(key).unwrap();
             assert!(measured >= 0.0, "{key} = {measured}");
             assert!(limit >= measured, "{threshold} = {limit} is below its measured envelope {measured}");
+            let floor = t.f64(&format!("{table}.floor_{base}")).unwrap_or(0.0);
+            let rule = (factor * measured).max(floor);
+            assert!((limit - rule).abs() <= 1e-3 * rule.max(f64::MIN_POSITIVE),
+                    "{threshold} = {limit} is not max(factor x {key}, floor) = {rule}");
             checked += 1;
         }
+        assert!(t.f64("e2e.bf16.measured_top1_margin").is_ok(), "top1_margin must carry its measurement");
         for gate in ["e2e.bf16.dp_p99", "e2e.bf16.dp_max", "e2e.fp32_truth.dp_max", "batch_invariance.dp_max",
-                     "nvfp4.dp_p99", "nvfp4.dp_max"] {
+                     "nvfp4.dp_p99", "nvfp4.dp_max", "e2e.bf16.top1_margin"] {
             assert!(t.f64(gate).is_ok(), "missing {gate}");
         }
         assert!(checked >= 10, "only {checked} thresholds carry a measurement");

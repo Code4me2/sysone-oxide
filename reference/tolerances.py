@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime
 
+TOP1_MARGIN_FLOOR = 0.02  # DESIGN §9.2 starting value for the top-1 agreement margin
 FACTOR = 1.5  # §9.2: "no worse than bf16-reference vs fp32 truth x 1.5", applied to every envelope below
 
 
@@ -63,15 +64,19 @@ def render(report: dict) -> str:
     e2e = [("dp_p99", "dp_option", "p99"), ("dp_max", "dp_option", "max"),
            ("dlogit_p99", "dlogit", "p99"), ("dlogit_max", "dlogit", "max")]
     bf16_env = ["bf16_vs_fp32", "bf16_fork"]
-    dpmax = FACTOR * _env(report, bf16_env, "dp_option", "max")[0]
+    flip_margin = max((g.get(x) or {}).get("top1_flip_max_ref_margin", 0) for x in bf16_env)
+    top1 = max(FACTOR * flip_margin, TOP1_MARGIN_FLOOR)
     gate("e2e.bf16", ["sysone bf16 vs the bf16 reference (qev batched): slot logits and per-option probabilities.",
-                      "top1_margin: the top choice must agree wherever the reference's top-1 margin exceeds it",
-                      "(2 x dp_max: a flip at a larger margin would also break dp_max)."],
-         bf16_env, e2e, [f"top1_margin = {_num(2 * dpmax)}",
+                      "top1_margin: the top choice must agree wherever the reference's top-1 margin exceeds it.",
+                      "It is max(FACTOR x measured_top1_margin, floor_top1_margin): the largest reference margin at",
+                      "which any reference pair in the envelope flipped its top choice, x FACTOR, but never below",
+                      "the DESIGN §9.2 starting value (floor), because a handful of flips over the dev corpus is too",
+                      "few to bound the flip margin tightly."],
+         bf16_env, e2e, [f"top1_margin = {_num(top1)}",
+                         f"measured_top1_margin = {_num(flip_margin)}  # {'+'.join(bf16_env)}: top1_flip_max_ref_margin",
+                         f"floor_top1_margin = {_num(TOP1_MARGIN_FLOOR)}  # DESIGN §9.2 starting value",
                          "# flips summed over the envelope's pairs (the same branch can flip in several pairs)",
                          f"measured_top1_flips = {sum((g.get(x) or {}).get('top1_flips', 0) for x in bf16_env)}",
-                         "measured_top1_flip_max_margin = "
-                         f"{_num(max((g.get(x) or {}).get('top1_flip_max_ref_margin', 0) for x in bf16_env))}",
                          f"design_start_dp_p99 = 0.01",
                          f"design_start_dp_max = 0.05"])
     gate("e2e.fp32_truth", ["sysone (bf16) vs the fp32 reference: within FACTOR x the bf16 reference's own error vs",
