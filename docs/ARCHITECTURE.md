@@ -419,7 +419,7 @@ tests check that the file is internally consistent and that the Rust gate agrees
 | `tests/` | Integration tests (§6) and goldens (`tests/golden/dev/`), `tests/tolerances.toml`. |
 | `benchmarks/s1/` | Benchmark and probe binaries (§7). Outputs go to `benchmarks/results/` (git-ignored). |
 | `reference/` | Python harness around the reference (qev @ OneJev 81ce62f + `serve.patch`) that produces every golden; see `reference/README.md` and `reference/eval/README.md`. |
-| `scripts/` | `gpu.sh` (GPU lock), `doctor.sh` (prerequisites). |
+| `scripts/` | `gpu.sh` (per-GPU lock), `doctor.sh` (prerequisites, incl. the pinned cuda-rust revision in `CUDA_RUST_REV`), `x86/` (runners for the x86 host), `tests/` (the scripts' own tests, run by `tests/scripts.rs`). |
 | `profiles/` | Platform profiles written by `hwprobe --profile-out` (`sm_121-gb10.json`). |
 | `legacy/grout/` | grout's Qwen3 engine, read-only, kept as porting reference. Not built. |
 
@@ -514,11 +514,16 @@ cargo test --release --test cpu_ref -- --ignored --nocapture # minutes of CPU, r
 ```
 
 - **GPU lock rule:** every command that touches the GPU (GPU tests, benchmarks, reference/golden runs) runs through
-  `scripts/gpu.sh`, which holds `/tmp/sysone-gpu.lock` (`flock`) and sets `SYSONE_GPU_LOCKED=1`.
+  `scripts/gpu.sh`, which holds the GPU's lock (`flock`) and sets `SYSONE_GPU_LOCKED=1`: `/tmp/sysone-gpu.lock` on
+  a single-GPU host (GB10), `/tmp/sysone-gpu<N>.lock` per selected GPU on a multi-GPU host (`--gpu N` or
+  `CUDA_VISIBLE_DEVICES`; see the script's header and docs/x86/AGENT.md §4).
 - **Data prerequisites:** the checkpoint directory is read from `$SYSONE_MODEL_DIR` (frontend, server and engine
   tests; default `/home/velvet/Desktop/hf_models/elephant-1`); `tests/engine_loader.rs` uses `SYSONE_BF16_DIR` /
   `SYSONE_NVFP4_DIR`. `tests/engine_layers.rs` needs the hidden-state dumps under `../sysone-ref`. The NVFP4 layer-0
   test needs `reference/nvfp4/data`, which is generated (`reference/nvfp4/gen_layer0.py`), not committed.
+- **Tooling tests:** `tests/scripts.rs` runs the shell tests of `scripts/gpu.sh` and `scripts/x86/check_outgoing.sh`
+  (no GPU; bash, flock, git); `tests/platform_gpu.rs` checks on a real GPU that CUDA device 0 is the GPU gpu.sh
+  selected. `scripts/x86/run_tests.sh` groups every test by its data needs (docs/x86/AGENT.md §7).
 - **Ignored tests:** `tests/cpu_ref.rs` (both tests) and `tests/engine_layers.rs::hidden_state_row_profile` (a
   diagnostic driven by `SYSONE_DUMP` / `SYSONE_DUMP_ID`). Run them with `-- --ignored`.
 - Some tests skip with a message when their data is missing (`engine_loader`, the chat template unit test); others
@@ -546,7 +551,8 @@ Scripts:
 
 | Script | Does |
 |---|---|
-| `scripts/gpu.sh CMD...` | Runs `CMD` under `flock /tmp/sysone-gpu.lock` (override with `SYSONE_GPU_LOCK`), with `SYSONE_GPU_LOCKED=1`. |
+| `scripts/gpu.sh [--gpu N] CMD...` | Runs `CMD` holding the selected GPU's lock (`flock`; `/tmp/sysone-gpu.lock` on a single-GPU host, `/tmp/sysone-gpu<N>.lock` per GPU otherwise; `SYSONE_GPU_LOCK` overrides), with `SYSONE_GPU_LOCKED=1`, `CUDA_DEVICE_ORDER=PCI_BUS_ID` and `CUDA_VISIBLE_DEVICES` set to the selection. `require_idle_gpu` only looks at the process's own GPU (CUDA device 0, matched to nvidia-smi by PCI address). |
+| `scripts/x86/*` | Runners and the pre-push leak check for the x86 host: [docs/x86/AGENT.md](x86/AGENT.md). |
 | `scripts/doctor.sh [--simt]` | Checks build and run prerequisites (CUDA toolkit and tileiras, driver, clang headers, rustup, `../cuda-rust`, Docker, HF auth, ...) and prints the fix for each missing one. `--simt` also checks the cuda-oxide toolchain. |
 | `reference/*.py`, `reference/eval/*` | Golden and eval-set generation; see their READMEs. GPU runs go through `scripts/gpu.sh`. |
 

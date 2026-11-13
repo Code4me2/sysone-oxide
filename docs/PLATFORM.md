@@ -22,7 +22,18 @@ the cutile-examples requirement table (`cutile-examples/src/requirements.rs`).
 | P7 | **CPU:** 20 Arm cores (performance + efficiency). The desktop session shares the GPU. | Many x86 cores; usually headless. | Pin the GPU worker and tokenizer pool to performance cores. Benchmark with the desktop idle; record it in run metadata. |
 | P8 | **aarch64 software gaps:** no pinned `torch==2.8.0+cu128` wheel; fla/causal-conv1d build from source; DGX OS ships CUDA 13.0 and libclang without resource headers. | The reference image runs as-is (`pytorch/pytorch:2.8.0-cuda12.8-cudnn9-devel`). | Two golden tiers (DESIGN §9.1): dev goldens on GB10 (NGC `pytorch:26.10-py3` arm64, or a venv with an aarch64 CUDA torch), authoritative goldens on x86 with the pinned image. Prerequisites are installed, never patched around. |
 | P9 | **Driver R580** (CUDA 13.0 driver API) on DGX OS with toolkit 13.4. Tile IR emits native sm_121 code, so no newer driver is needed. | Varies; usually newer. | R580 is the minimum supported driver. Driver-API bindings (cudarc `cuda-13000`) target 13.0; the engine uses cuda-core for contexts and streams. |
-| P10 | **Single GPU,** no MIG, no NVLink peers. | Possibly several GPUs. | v1 is one engine per GPU. Multi-GPU means one process per GPU behind a router; no tensor parallelism. |
+| P10 | **Single GPU,** no MIG, no NVLink peers. | Possibly several GPUs. | v1 is one engine per GPU. Multi-GPU means one process per GPU behind a router; no tensor parallelism. GPU jobs lock and check only their own GPU (`scripts/gpu.sh --gpu N`, per-GPU lock files). |
+
+## The x86 host
+
+The user's x86 workstation (2x RTX PRO 6000 Blackwell 96 GB and 1x RTX 5090 32 GB, all sm_120) is where throughput
+for bulk tagging is measured and tuned. It holds sensitive material, so the GB10 side has no access to it: a
+separate Claude Code agent works there and collaborates only through GitHub issues and PRs.
+[docs/x86/AGENT.md](x86/AGENT.md) is its operating manual (setup, per-GPU lock discipline, data hygiene, the
+GitHub protocol) and [docs/x86/TASKS.md](x86/TASKS.md) its task list. Multi-GPU support so far is the discipline
+(P10: one process per GPU): `scripts/gpu.sh --gpu N` takes a per-GPU lock and `require_idle_gpu` checks only its
+own GPU. sysone is pinned to one cuda-rust revision (`CUDA_RUST_REV`, checked by `scripts/doctor.sh`) so both
+machines build the same code. The SIMT GDN artifact for sm_120 is checked in but has not run yet.
 
 ## Toolkit upgrades
 

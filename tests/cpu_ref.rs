@@ -12,14 +12,18 @@
 use std::path::Path;
 use sysone::engine::cpu_ref::{CpuRefEngine, check, slot_ids_from_tokenizer};
 
-const MODEL: &str = "/home/velvet/Desktop/hf_models/elephant-1";
 const RECORDED: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/reference/hf_check/out/qev_fp32.json");
+
+/// The checkpoint: `$SYSONE_MODEL_DIR`, default the GB10 path.
+fn model() -> std::path::PathBuf {
+    std::env::var_os("SYSONE_MODEL_DIR").map(Into::into).unwrap_or_else(|| "/home/velvet/Desktop/hf_models/elephant-1".into())
+}
 
 #[test]
 #[ignore = "needs the elephant-1 checkpoint and minutes of CPU"]
 fn cpu_ref_matches_qev_fp32() {
     let rec = check::Recorded::load(Path::new(RECORDED)).unwrap();
-    let mut engine = CpuRefEngine::load(Path::new(MODEL)).unwrap();
+    let mut engine = CpuRefEngine::load(&model()).unwrap();
     let rep = check::compare(&mut engine, &rec, true).unwrap();
     rep.print();
     assert!(rep.packed_vs_alone_bitwise, "packed and alone differ: {}", rep.packed_vs_alone_logit);
@@ -32,6 +36,6 @@ fn cpu_ref_matches_qev_fp32() {
 #[ignore = "needs the elephant-1 checkpoint"]
 fn slot_ids_match_qev() {
     let rec = check::Recorded::load(Path::new(RECORDED)).unwrap();
-    let ids = slot_ids_from_tokenizer(Path::new(MODEL)).unwrap();
+    let ids = slot_ids_from_tokenizer(&model()).unwrap();
     assert_eq!(ids, rec.slot_ids);
 }

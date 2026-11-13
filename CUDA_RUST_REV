@@ -1,0 +1,4 @@
+# The cuda-rust commit sysone is built and tested against (checked by scripts/doctor.sh).
+# Upstream: https://github.com/NVIDIA/cuda-rust (clone it next to this repository as ../cuda-rust).
+# The first non-comment line is the revision. Change it only together with a build and test run on the new revision.
+11edcb6b153914bedc76643866d98babfd24b7c9
