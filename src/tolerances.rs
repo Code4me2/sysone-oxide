@@ -143,8 +143,8 @@ fn parse_value(v: &str) -> Result<Value> {
 /// Thresholds of the statistical end-to-end gate on the labeled eval set (`[eval.<tier>]`, DESIGN §9.2),
 /// derived by `reference/eval/stats.py`. A candidate passes iff, against every reference path of the tier:
 /// top-1 disagreement (all questions), mean |dp| and p99 |dp| are at most the limits; the lower bound of the
-/// paired-bootstrap 95% CI of `acc(candidate) - acc(ref)` is at least `-acc_drop`; and (bf16 only)
-/// `Brier(candidate) - Brier(ref) <= brier_rise`. `reference/eval/score.py` applies it to a live server.
+/// paired-bootstrap 95% CI of `acc(candidate) - acc(ref)` is at least `-acc_drop`; and the upper bound of the
+/// paired-bootstrap 95% CI of `Brier(candidate) - Brier(ref)` is at most `brier_rise`. `reference/eval/score.py` applies it to a live server.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EvalGate {
     pub tier: String,
@@ -154,7 +154,7 @@ pub struct EvalGate {
     pub dp_mean: f64,
     pub dp_p99: f64,
     pub acc_drop: f64,
-    pub brier_rise: Option<f64>,
+    pub brier_rise: f64,
 }
 
 /// One candidate-vs-reference comparison, as `reference/eval/stats.py compare()` computes it.
@@ -165,7 +165,8 @@ pub struct EvalComparison {
     pub dp_p99: f64,
     /// Lower bound of the paired-bootstrap 95% CI of acc(candidate) - acc(reference).
     pub acc_diff_ci_lo: f64,
-    pub brier_diff: f64,
+    /// Upper bound of the paired-bootstrap 95% CI of Brier(candidate) - Brier(reference).
+    pub brier_diff_ci_hi: f64,
 }
 
 impl EvalGate {
@@ -178,7 +179,6 @@ impl EvalGate {
         if paths.len() < 2 || paths.iter().any(String::is_empty) {
             bail!("eval.{tier}.paths needs at least two reference paths");
         }
-        let brier_rise = if t.get(&k("brier_rise")).is_some() { Some(t.f64(&k("brier_rise"))?) } else { None };
         Ok(Self {
             tier: tier.to_string(),
             paths,
@@ -186,7 +186,7 @@ impl EvalGate {
             dp_mean: t.f64(&k("dp_mean"))?,
             dp_p99: t.f64(&k("dp_p99"))?,
             acc_drop: t.f64(&k("acc_drop"))?,
-            brier_rise,
+            brier_rise: t.f64(&k("brier_rise"))?,
         })
     }
 
@@ -202,9 +202,7 @@ impl EvalGate {
         le("dp_mean", c.dp_mean, self.dp_mean);
         le("dp_p99", c.dp_p99, self.dp_p99);
         le("-acc_ci_lo", -c.acc_diff_ci_lo, self.acc_drop);
-        if let Some(b) = self.brier_rise {
-            le("brier_diff", c.brier_diff, b);
-        }
+        le("brier_ci_hi", c.brier_diff_ci_hi, self.brier_rise);
         out
     }
 }
@@ -316,16 +314,11 @@ strict = true
         // envelope spans at least three QDQ kernel shapes, and rates stay rates.
         for tier in EvalGate::TIERS {
             let g = EvalGate::load(&t, tier).unwrap_or_else(|e| panic!("[eval.{tier}]: {e:#}"));
-            let mut gated = vec!["disagree", "dp_mean", "dp_p99", "acc_drop"];
-            if tier == "bf16" {
-                assert!(g.brier_rise.is_some(), "eval.bf16 needs brier_rise");
-                gated.push("brier_rise");
-            }
-            for m in gated {
+            for m in ["disagree", "dp_mean", "dp_p99", "acc_drop", "brier_rise"] {
                 assert!(t.f64(&format!("eval.{tier}.measured_{m}")).is_ok(), "eval.{tier}.{m} lacks its measurement");
             }
             for (name, v) in [("disagree", g.disagree), ("acc_drop", g.acc_drop), ("dp_mean", g.dp_mean),
-                              ("dp_p99", g.dp_p99)] {
+                              ("dp_p99", g.dp_p99), ("brier_rise", g.brier_rise)] {
                 assert!(v > 0.0 && v <= 1.0, "eval.{tier}.{name} = {v} is not a rate in (0, 1]");
             }
             assert!(g.dp_mean <= g.dp_p99 || g.dp_p99 == 0.0, "eval.{tier}: mean |dp| above its p99");
@@ -342,9 +335,10 @@ strict = true
         .unwrap();
         let g = EvalGate::load(&t, "bf16").unwrap();
         assert_eq!(g.paths, ["a", "b"]);
-        let ok = EvalComparison { disagree: 0.01, dp_mean: 5e-4, dp_p99: 0.009, acc_diff_ci_lo: -0.02, brier_diff: 0.0 };
+        let ok =
+            EvalComparison { disagree: 0.01, dp_mean: 5e-4, dp_p99: 0.009, acc_diff_ci_lo: -0.02, brier_diff_ci_hi: 0.0 };
         assert!(g.failures(&ok).is_empty());
-        let bad = EvalComparison { acc_diff_ci_lo: -0.03, brier_diff: 0.01, ..ok };
+        let bad = EvalComparison { acc_diff_ci_lo: -0.03, brier_diff_ci_hi: 0.01, ..ok };
         assert_eq!(g.failures(&bad).len(), 2);
         let nan = EvalComparison { dp_p99: f64::NAN, ..ok };
         assert_eq!(g.failures(&nan).len(), 1, "NaN must fail");

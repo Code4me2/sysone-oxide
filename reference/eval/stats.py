@@ -6,7 +6,8 @@ Per run (labeled question of each record):
 Per pair of runs (a, b), over the records both answered:
   top-1 agreement over ALL questions (labeled + support) and over the labeled ones; |dp| = |p_a - p_b| per option
   of every question (answer-level vectors, see evalset.py): mean, p50, p99 (nearest rank), max; accuracy
-  difference a - b with a paired record-bootstrap 95% CI; Brier difference.
+  difference a - b with a paired record-bootstrap 95% CI; Brier difference a - b with a paired record-bootstrap
+  95% CI (labeled questions).
 
 THE GATE (one rule for both tiers; thresholds live in tests/tolerances.toml [eval.*]):
   The reference paths R = {r_1..r_k} of a tier are compared pairwise; the ENVELOPE of each metric is its worst
@@ -16,13 +17,17 @@ THE GATE (one rule for both tiers; thresholds live in tests/tolerances.toml [eva
     dp_p99     p99 |dp|                                          (max over pairs)
     acc_drop   max(0, -lo) of the paired-bootstrap 95% CI of acc(r_i) - acc(r_j), both orders (max over pairs):
                the largest accuracy drop the reference's own path noise cannot rule out
-    brier_rise (bf16 only) max(0, Brier(r_i) - Brier(r_j)) over ordered pairs
+    brier_rise max(0, hi, -lo) of the paired-bootstrap 95% CI of Brier(r_i) - Brier(r_j) (max over pairs):
+               the largest calibration loss the reference's own path noise cannot rule out
   threshold = max(FACTOR x envelope, floor) with FACTOR = tolerances.toml `factor` (1.5), floors only where a
   discrete count makes the envelope too coarse (documented next to each floor).
   A candidate C PASSES iff for EVERY reference path r in R:
     disagree(C, r) <= disagree;  dp_mean(C, r) <= dp_mean;  dp_p99(C, r) <= dp_p99;
     lower bound of the paired-bootstrap 95% CI of acc(C) - acc(r) >= -acc_drop      (non-inferiority);
-    (bf16) Brier(C) - Brier(r) <= brier_rise.
+    upper bound of the paired-bootstrap 95% CI of Brier(C) - Brier(r) <= brier_rise.
+  (The first version gated the point Brier difference on bf16 only; its leave-one-out validation failed because
+  two bf16 paths had identical point Briers, an envelope of 0. The CI form is robust to that and applies to both
+  tiers.)
   Tiers: nvfp4 (R = the NVFP4 QDQ paths; C = sysone NVFP4) and bf16 (R = the bf16 qev paths; C = sysone bf16).
   NVFP4 vs bf16 is reported as quality information only.
 
@@ -46,7 +51,20 @@ import evalset  # noqa: E402
 
 SEED = 20261113
 B = 10_000
-FACTOR = 1.5
+REPO_TOL = evalset.REPO / "tests" / "tolerances.toml"
+
+
+def _top_level_factor() -> float:
+    for raw in REPO_TOL.read_text().split("\n"):
+        line = raw.split("#", 1)[0].strip()
+        if line.startswith("["):
+            break
+        if line.startswith("factor") and "=" in line:
+            return float(line.split("=", 1)[1])
+    raise SystemExit("tests/tolerances.toml lacks the top-level `factor`")
+
+
+FACTOR = _top_level_factor()
 TIERS = {
     "nvfp4": ["nvfp4_perq", "nvfp4_perq_bN", "nvfp4_batched", "nvfp4_sequential"],
     "bf16": ["bf16_batched", "bf16_sequential", "bf16_perq"],
@@ -145,15 +163,17 @@ def compare(a: dict, b: dict) -> dict:
     rb = {r["id"]: r for r in labeled_rows(b)}
     diffs = [ra[i]["correct"] - rb[i]["correct"] for i in ids]
     rng = random.Random(f"{SEED}:{a['name']}:{b['name']}")
+    rng_b = random.Random(f"{SEED}:brier:{a['name']}:{b['name']}")
+    bd = [ra[i]["brier"] - rb[i]["brier"] for i in ids]
     n = len(ids)
     return {
         "records": n, "questions": n_q,
-        "agreement": agree / n_q, "disagree": 1 - agree / n_q, "disagree_count": n_q - agree,
+        "agreement": agree / n_q, "disagree": (n_q - agree) / n_q, "disagree_count": n_q - agree,
         "agreement_labeled": agree_l / n, "disagree_labeled_count": n - agree_l,
         "dp_mean": sum(dp) / len(dp), "dp_p50": q_nearest(dp, 0.5), "dp_p99": q_nearest(dp, 0.99), "dp_max": max(dp),
         "acc_diff": sum(diffs) / n, "acc_diff_ci95": boot_ci(diffs, rng),
         "gains": sum(d > 0 for d in diffs), "losses": sum(d < 0 for d in diffs),
-        "brier_diff": sum(ra[i]["brier"] - rb[i]["brier"] for i in ids) / n,
+        "brier_diff": sum(bd) / n, "brier_diff_ci95": boot_ci(bd, rng_b),
     }
 
 
@@ -172,7 +192,7 @@ def envelope(pairs: dict[str, dict]) -> dict:
     worst("dp_p99", lambda c: c["dp_p99"])
     # both orders: the CI of b - a is the negation of a - b's (same resamples)
     worst("acc_drop", lambda c: max(0.0, -c["acc_diff_ci95"][0], c["acc_diff_ci95"][1]))
-    worst("brier_rise", lambda c: abs(c["brier_diff"]))
+    worst("brier_rise", lambda c: max(0.0, -c["brier_diff_ci95"][0], c["brier_diff_ci95"][1]))
     return env
 
 
@@ -181,8 +201,6 @@ def thresholds(env: dict, n_questions: int, n_records: int, tier: str) -> dict:
     floors = {"disagree": 2.0 / n_questions, "acc_drop": 1.0 / n_records}
     out = {}
     for k, (v, src) in env.items():
-        if k == "brier_rise" and tier != "bf16":
-            continue
         fl = floors.get(k, 0.0)
         out[k] = {"limit": max(FACTOR * v, fl), "measured": v, "source": src, "floor": fl if k in floors else None}
     return out
@@ -197,14 +215,14 @@ def gate(candidate: dict, refs: dict[str, dict], limits: dict) -> dict:
                  ("dp_mean", c["dp_mean"], limits["dp_mean"]),
                  ("dp_p99", c["dp_p99"], limits["dp_p99"]),
                  ("acc_ci_lo", c["acc_diff_ci95"][0], -limits["acc_drop"])]
-        if "brier_rise" in limits:
-            items.append(("brier_diff", c["brier_diff"], limits["brier_rise"]))
+        items.append(("brier_ci_hi", c["brier_diff_ci95"][1], limits["brier_rise"]))
         for metric, val, lim in items:
             passed = val >= lim if metric == "acc_ci_lo" else val <= lim
             ok &= passed
             checks.append({"ref": name, "metric": metric, "value": val, "limit": lim, "pass": passed})
         checks.append({"ref": name, "metric": "info", "value": {k: c[k] for k in (
-            "records", "agreement_labeled", "dp_max", "acc_diff", "acc_diff_ci95", "gains", "losses")}})
+            "records", "agreement_labeled", "dp_max", "acc_diff", "acc_diff_ci95", "gains", "losses",
+            "brier_diff")}})
     return {"pass": ok, "checks": checks}
 
 
@@ -220,7 +238,7 @@ def load_limits(tier: str) -> dict:
             k, v = (x.strip() for x in line.split("=", 1))
             if not v.startswith('"') and v not in ("true", "false"):
                 vals[k] = float(v)
-    keys = ["disagree", "dp_mean", "dp_p99", "acc_drop"] + (["brier_rise"] if tier == "bf16" else [])
+    keys = ["disagree", "dp_mean", "dp_p99", "acc_drop", "brier_rise"]
     missing = [k for k in keys if k not in vals]
     if missing:
         raise SystemExit(f"tolerances.toml [eval.{tier}] lacks {missing}; run stats.py --write-tolerances")
@@ -240,7 +258,8 @@ def render_tolerances(report: dict) -> str:
          "# Envelope = worst value over all pairs of the tier's reference paths; limit = max(factor x measured, floor).",
          "# A candidate passes iff, against EVERY reference path of the tier: disagree, dp_mean, dp_p99 <= limit;",
          "# the paired-bootstrap (B=10000, records) 95% CI lower bound of acc(candidate) - acc(ref) >= -acc_drop;",
-         "# (bf16) Brier(candidate) - Brier(ref) <= brier_rise. dp is per option of every question (answer level).",
+         "# the paired-bootstrap 95% CI upper bound of Brier(candidate) - Brier(ref) <= brier_rise.",
+         "# dp is per option of every question (answer level); acc and Brier are over the labeled questions.",
          "# floor_disagree = 2 questions of the set; floor_acc_drop = 1 labeled record (discreteness)."]
     for tier in ("nvfp4", "bf16"):
         t = report["tiers"].get(tier)
@@ -266,6 +285,17 @@ def write_tolerances(report: dict) -> None:
     else:
         text = text.rstrip("\n") + "\n\n" + block
     TOLERANCES.write_text(text)
+
+
+def tempered(run: dict, temp: float) -> dict:
+    """A copy of `run` with every answer vector re-softmaxed at temperature `temp` (p ** (1/T), renormalized)."""
+    def t(v):
+        w = [x ** (1.0 / temp) if x > 0 else 0.0 for x in v]
+        z = sum(w)
+        return [x / z for x in w] if z > 0 else v
+    res = [{**r, "answers": {q: t(v) for q, v in r["answers"].items()}} if "answers" in r else r
+           for r in run["results"]]
+    return {**run, "name": f"{run['name']}@T={temp}", "results": res}
 
 
 def main() -> None:
@@ -313,6 +343,46 @@ def main() -> None:
             print(f"\n[info] {a} vs {b}: agree {100 * c['agreement']:.2f}% (labeled {100 * c['agreement_labeled']:.2f}%),"
                   f" |dp| mean {c['dp_mean']:.2e} p99 {c['dp_p99']:.3f} max {c['dp_max']:.3f},"
                   f" dAcc {100 * c['acc_diff']:+.2f}pp [{100 * lo:+.2f},{100 * hi:+.2f}] gains {c['gains']} losses {c['losses']}")
+    # Validation of the gate itself (reported, not gated):
+    #  leave-one-out: rebuild a tier's envelope without path p and gate p against the rest: does a new kernel
+    #    shape of the same reference pass? (it should; if not, FACTOR is too tight)
+    #  cross-tier sensitivity: gate the other precision's run as a candidate: does the gate tell bf16 from NVFP4?
+    report["validation"] = {"leave_one_out": {}, "cross_tier": {}}
+    for tier, t in report["tiers"].items():
+        paths = t["paths"]
+        if len(paths) < 3:
+            continue
+        for p in paths:
+            rest = [x for x in paths if x != p]
+            pairs = {k: v for k, v in t["pairs"].items() if p not in k.split("~")}
+            anyc = next(iter(pairs.values()))
+            th = thresholds(envelope(pairs), anyc["questions"], anyc["records"], tier)
+            g = gate(runs[p], {r: runs[r] for r in rest}, {k: d["limit"] for k, d in th.items()})
+            fails = [f"{c['ref']}:{c['metric']}" for c in g["checks"] if c["metric"] != "info" and not c["pass"]]
+            report["validation"]["leave_one_out"][f"{tier}:{p}"] = {"pass": g["pass"], "failed": fails}
+            print(f"[validate] leave-one-out {tier}: {p:18s} vs {rest}: {'PASS' if g['pass'] else 'FAIL ' + str(fails)}")
+    for tier, cand in [("nvfp4", "bf16_batched"), ("nvfp4", "bf16_perq"), ("bf16", "nvfp4_batched"),
+                       ("bf16", "nvfp4_perq")]:
+        t = report["tiers"].get(tier)
+        if not t or cand not in runs:
+            continue
+        g = gate(runs[cand], {r: runs[r] for r in t["paths"]}, {k: d["limit"] for k, d in t["thresholds"].items()})
+        fails = [f"{c['ref']}:{c['metric']}" for c in g["checks"] if c["metric"] != "info" and not c["pass"]]
+        report["validation"]["cross_tier"][f"{tier}:{cand}"] = {"pass": g["pass"], "failed": fails}
+        print(f"[validate] {cand} as a {tier} candidate: {'PASS' if g['pass'] else 'FAIL'} {fails}")
+    # Synthetic sensitivity: distort a reference run (tempered answer vectors, T != 1) and gate it as a candidate
+    # of its own tier: which distortions does the gate catch? (A rough minimum-detectable-degradation probe.)
+    report["validation"]["synthetic"] = {}
+    for tier, base in [("nvfp4", "nvfp4_batched"), ("bf16", "bf16_batched")]:
+        t = report["tiers"].get(tier)
+        if not t or base not in runs:
+            continue
+        for temp in (0.97, 1.03, 1.1, 1.25, 1.5):
+            cand = tempered(runs[base], temp)
+            g = gate(cand, {r: runs[r] for r in t["paths"]}, {k: d["limit"] for k, d in t["thresholds"].items()})
+            fails = sorted({c["metric"] for c in g["checks"] if c["metric"] != "info" and not c["pass"]})
+            report["validation"]["synthetic"][f"{tier}:{base}@T={temp}"] = {"pass": g["pass"], "failed_metrics": fails}
+            print(f"[validate] {base} tempered T={temp} as a {tier} candidate: {'PASS' if g['pass'] else 'FAIL'} {fails}")
     REPORT.write_text(json.dumps(report, indent=1) + "\n")
     print(f"\nwrote {REPORT}")
     if args.write_tolerances:
