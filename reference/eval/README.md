@@ -250,3 +250,27 @@ python3 -I reference/eval/score.py --run-file tests/golden/dev/eval/candidates/s
 
 Protocol, fixed before the run: the full 278-record set, the committed `[eval.bf16]` limits unchanged, against all
 four bf16-tier paths (`bf16_batched`, `bf16_sequential`, `bf16_perq`, `fp32_batched`).
+
+**Result (2026-11-13, `candidates/sysone_bf16.json`; engine at 7198c65 = main bb5e6aa's `src/`, binary sha256
+`919e1c1f…`, model.safetensors `682f0234…`, GB10 driver 580.178.04): GATE PASS**, 278/278 records HTTP 200, no
+missing records, answers = softmax(debug slot logits) to 5e-7. `score.py` output: `candidates/sysone_bf16.score.txt`;
+`diagnose.py` output: `candidates/sysone_bf16.diagnose.json`.
+
+| vs | disagree (≤ 0.002398) | dp_mean (≤ 2.203e-4) | dp_p99 (≤ 0.00582) | acc CI lo (≥ −0.01079) | Brier CI hi (≤ 0.002364) | max \|dp\| |
+|---|---|---|---|---|---|---|
+| `bf16_batched` | 0.001199 (1/834) | 1.536e-4 | 0.004127 | 0 | −2.2e-5 | 0.034 |
+| `bf16_sequential` | 0.001199 | 1.528e-4 | 0.004033 | 0 | 6.0e-4 | 0.032 |
+| `bf16_perq` | 0.001199 | 1.431e-4 | 0.003702 | 0 | 4.2e-4 | 0.030 |
+| `fp32_batched` | 0.001199 | 1.360e-4 | 0.003483 | 0 | 3.5e-4 | 0.029 |
+
+Accuracy 228/278 = 82.0% [77.7, 86.3] (BANKING77 116/128, LEDGAR 103/128, LongBench-v2 9/22) vs 227/278 for every
+bf16-tier reference path; dAcc +0.36pp, paired CI [0, +1.08]pp; Brier 0.2471, ECE 0.058. One top-1 change counts
+against the gate: `ledgar-04056` (labeled task; reference margin 0.025–0.046 depending on the path, sysone margin
+0.013), where sysone picks the gold heading the references miss. Against `fp32_batched` there is a second change,
+`ledgar-04431` (support question, fp32 margin 0.0012: a near tie the gate exempts). It uses half of the
+`disagree` limit (the 2-question floor); the dp metrics use 61–71% of theirs.
+
+Throughput (information; one request at a time, server batching idle): 278 records in 181.4 s of request time
+(sum of per-request seconds; chunk wall 181.5 s after an 18.1 s server start incl. 13.4 s JIT warm-up), 550,538
+rendered tokens, 3,034 tok/s; BANKING77 37.2 s, LEDGAR 53.0 s, LongBench-v2 91.2 s (22 records, 3,279 tok/s).
+The `bf16_batched` reference (HF eager) took 492 s for the same records.

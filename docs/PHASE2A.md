@@ -13,6 +13,15 @@ review blocked (E1), and merged into `main`. G1 (GDN on cuda-oxide) started afte
 | P2 attention | p_split=3 reaches ~38 useful TFLOP/s (target 50 missed; ~59 is the arithmetic ceiling of the 3-part P split). The engine uses one tile config at every T (bit-exact across buckets); `AttnTiles::for_tokens` is an opt-in documented as not bit-identical. Attention is 1.3% of the forward, so this matters little. |
 | E1 eval set | 278 labeled records (128 BANKING77, 128 LEDGAR, 22 LongBench-v2; 834 questions) with 8 reference runs (incl. fp32). Paired-bootstrap gate in reference/eval/stats.py, limits in tests/tolerances.toml [eval.bf16]/[eval.nvfp4], validated by leave-one-out, cross-tier, tempering and minimal-flip probes. |
 
+## Follow-up: sysone bf16 on the E1 eval gate (A2, ws/a2-eval-sysone)
+
+The full 278-record set through the real sysone server (`--engine bf16`, default buckets 256…65,536 with CUDA graphs,
+one request at a time over HTTP; `reference/eval/run_sysone.sh`) passes the committed `[eval.bf16]` gate against all
+four bf16-tier paths: 1/834 top-1 change above the 0.02 reference margin (limit 2/834; `ledgar-04056`, a labeled gain),
+mean |dp| 1.36-1.54e-4 (limit 2.20e-4), p99 |dp| 3.48e-3-4.13e-3 (limit 5.82e-3), accuracy 228/278 vs 227/278 (paired CI
+lower bound 0, limit -1.08pp), Brier CI upper bound <= 6.0e-4 (limit 2.36e-3). 181 s of request time for 550k rendered
+tokens (3,034 tok/s at concurrency 1; the HF eager reference took 492 s). Details: reference/eval/README.md.
+
 ## Merged tree
 
 `cargo test --release --all-targets` (via scripts/gpu.sh): everything passes except `engine_layers::hidden_states_vs_fp32_truth`
