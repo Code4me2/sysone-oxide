@@ -8,3 +8,4 @@ pub mod loader;
 pub mod meta;
 pub mod platform;
 pub mod weights;
+pub mod cpu_ref;
