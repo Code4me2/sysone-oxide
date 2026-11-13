@@ -26,6 +26,8 @@ cutile-kernels = { path = "../cuda-rust/cutile-rs/cutile-kernels" }
 # panics on R580 with `cuda-13010`. The engine uses cuda-core for contexts and streams and cudarc only
 # for cuBLAS handles.
 cudarc = { version = "0.19.2", default-features = false, features = ["std", "cublas", "cublaslt", "f16", "dynamic-loading", "cuda-13000"] }
+rayon = "1.12.0"
+memmap2 = "0.9.12"
 
 [[bin]]
 name = "sysone"
@@ -38,3 +40,7 @@ path = "benchmarks/s1/hwprobe.rs"
 [[bin]]
 name = "tile_gemm_probe"
 path = "benchmarks/s1/tile_gemm_probe.rs"
+
+[[bin]]
+name = "cpu_ref_check"
+path = "src/engine/cpu_ref/check_main.rs"

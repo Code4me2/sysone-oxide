@@ -2,3 +2,4 @@
 //! graphs, readout. Owner: W4.
 
 pub mod config;
+pub mod cpu_ref;
