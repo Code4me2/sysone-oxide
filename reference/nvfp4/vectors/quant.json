@@ -1,0 +1,106 @@
+{
+ "generator": "compressed-tensors 0.20.1 (eager)",
+ "torch": "2.13.0+cu132",
+ "cases": [
+  {
+   "name": "random_gateup_igs628",
+   "t": 32,
+   "k": 4096,
+   "igs": 628.0,
+   "x_bf16": 0,
+   "packed_u8": 262144,
+   "scales_u8": 327680,
+   "qdq_bf16": 335872
+  },
+  {
+   "name": "random_down_igs692",
+   "t": 8,
+   "k": 12288,
+   "igs": 692.0,
+   "x_bf16": 598016,
+   "packed_u8": 794624,
+   "scales_u8": 843776,
+   "qdq_bf16": 849920
+  },
+  {
+   "name": "random_wide_range_igs628",
+   "t": 32,
+   "k": 1024,
+   "igs": 628.0,
+   "x_bf16": 1046528,
+   "packed_u8": 1112064,
+   "scales_u8": 1128448,
+   "qdq_bf16": 1130496
+  },
+  {
+   "name": "random_igs1",
+   "t": 16,
+   "k": 512,
+   "igs": 1.0,
+   "x_bf16": 1196032,
+   "packed_u8": 1212416,
+   "scales_u8": 1216512,
+   "qdq_bf16": 1217024
+  },
+  {
+   "name": "random_igs_huge",
+   "t": 16,
+   "k": 512,
+   "igs": 1073741824.0,
+   "x_bf16": 1233408,
+   "packed_u8": 1249792,
+   "scales_u8": 1253888,
+   "qdq_bf16": 1254400
+  },
+  {
+   "name": "random_igs_tiny",
+   "t": 16,
+   "k": 512,
+   "igs": 0.001,
+   "x_bf16": 1270784,
+   "packed_u8": 1287168,
+   "scales_u8": 1291264,
+   "qdq_bf16": 1291776
+  },
+  {
+   "name": "ties_igs1",
+   "t": 14,
+   "k": 256,
+   "igs": 1.0,
+   "x_bf16": 1308160,
+   "packed_u8": 1315328,
+   "scales_u8": 1317120,
+   "qdq_bf16": 1317344
+  },
+  {
+   "name": "ties_igs256",
+   "t": 8,
+   "k": 256,
+   "igs": 256.0,
+   "x_bf16": 1324512,
+   "packed_u8": 1328608,
+   "scales_u8": 1329632,
+   "qdq_bf16": 1329760
+  },
+  {
+   "name": "special_igs628",
+   "t": 7,
+   "k": 256,
+   "igs": 628.0,
+   "x_bf16": 1333856,
+   "packed_u8": 1337440,
+   "scales_u8": 1338336,
+   "qdq_bf16": 1338448
+  },
+  {
+   "name": "special_igs1",
+   "t": 7,
+   "k": 256,
+   "igs": 1.0,
+   "x_bf16": 1342032,
+   "packed_u8": 1345616,
+   "scales_u8": 1346512,
+   "qdq_bf16": 1346624
+  }
+ ]
+}

@@ -70,3 +70,7 @@ path = "benchmarks/s1/bench_gdn.rs"
 [[bin]]
 name = "bench_attn"
 path = "benchmarks/s1/bench_attn.rs"
+
+[[bin]]
+name = "bench_nvfp4"
+path = "benchmarks/s1/bench_nvfp4.rs"

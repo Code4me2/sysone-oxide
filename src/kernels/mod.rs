@@ -5,3 +5,5 @@ pub mod attention;
 pub mod norm;
 pub mod pointwise;
 pub mod readout;
+
+pub mod nvfp4;
