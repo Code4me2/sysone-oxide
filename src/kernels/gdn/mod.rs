@@ -436,15 +436,20 @@ pub enum GdnPrecision {
     /// bf16 operands (fp32 accumulation) in the sequential scan; TF32 for the chunk inverse and the intra-chunk
     /// attention, where bf16 would compound through the triangular solve.
     Bf16Operands,
+    /// Split TF32 for everything that feeds the recurrent state (the chunk inverse, `k S`, `Tinv (..)`,
+    /// `k^T v_new`) and one TF32 product for the output-only products (`q k^T`, `q S`, `p v_new`).
+    Fp32StateTf32Output,
 }
 
 impl GdnPrecision {
-    /// `(element type, split)` generics of the scan kernels for the inverse and for the scan.
-    fn generics(self) -> ((&'static str, i32), (&'static str, i32)) {
+    /// `[element type, split, output element type, output split]` generics of the chunk-inverse kernel and of
+    /// the scan kernel.
+    fn generics(self) -> ([&'static str; 4], [&'static str; 4]) {
         match self {
-            Self::Fp32Split3 => (("tf32", 3), ("tf32", 3)),
-            Self::Tf32 => (("tf32", 1), ("tf32", 1)),
-            Self::Bf16Operands => (("tf32", 1), ("bf16", 1)),
+            Self::Fp32Split3 => (["tf32", "3", "tf32", "3"], ["tf32", "3", "tf32", "3"]),
+            Self::Tf32 => (["tf32", "1", "tf32", "1"], ["tf32", "1", "tf32", "1"]),
+            Self::Bf16Operands => (["tf32", "1", "tf32", "1"], ["bf16", "1", "bf16", "1"]),
+            Self::Fp32StateTf32Output => (["tf32", "3", "tf32", "1"], ["tf32", "3", "tf32", "1"]),
         }
     }
 }
@@ -459,20 +464,27 @@ pub struct GdnOptions {
     pub prefix_bv: usize,
     /// Value columns per program of the suffix scan (phase 1: many short segments).
     pub suffix_bv: usize,
-    /// Warps per CTA of the scan kernels.
-    pub scan_warps: i32,
+    /// Warps per CTA of the prefix and suffix scans.
+    pub prefix_warps: i32,
+    pub suffix_warps: i32,
     /// Warps per CTA of the chunk-inverse kernel.
     pub tp_warps: i32,
     /// Block size of the chunk inverse solved by forward substitution before block doubling takes over (a
     /// power of two, 2..=64; 2 = doubling only, 64 = forward substitution only).
     pub tp_fsb: i32,
-    /// Compute `(k*beta*exp(cum)) S` and `(q*exp(cum)) S` as one stacked `[128, 32]` product per state block.
-    pub scan_merge_xo: bool,
 }
 
 impl Default for GdnOptions {
     fn default() -> Self {
-        Self { precision: GdnPrecision::default(), prefix_bv: 32, suffix_bv: 64, scan_warps: 4, tp_warps: 4, tp_fsb: 16, scan_merge_xo: false }
+        Self {
+            precision: GdnPrecision::default(),
+            prefix_bv: 32,
+            suffix_bv: 64,
+            prefix_warps: 4,
+            suffix_warps: 4,
+            tp_warps: 8,
+            tp_fsb: 16,
+        }
     }
 }
 
@@ -515,7 +527,7 @@ pub unsafe fn gdn_chunk_scan_with(
         ensure!(matches!(bv, 16 | 32 | 64 | 128), "scan block of {bv} value columns (16, 32, 64 or 128)");
     }
     let sp = |t: &Tensor<f32>| t.device_pointer();
-    let ((tp_ty, tp_split), (scan_ty, scan_split)) = opts.precision.generics();
+    let (tp_gen, scan_gen) = opts.precision.generics();
     let mut ops = DeviceOpVec::with_capacity(3);
     let tp = unsafe {
         gdn_tile::gdn_chunk_tp(
@@ -529,11 +541,11 @@ pub unsafe fn gdn_chunk_scan_with(
             value(plan.max_chunks as i32),
         )
     }
-    .generics(vec![tp_ty.to_string(), tp_split.to_string(), opts.tp_fsb.to_string()])
+    .generics(tp_gen.iter().map(|g| g.to_string()).chain([opts.tp_fsb.to_string()]).collect())
     .compile_options(CompileOptions::default().num_worker_warps_per_cta(opts.tp_warps))
     .grid(grid(plan.max_chunks, NUM_V_HEADS, 1));
     ops.push(tp.map(|_| ()));
-    for (phase, bv) in [(0i32, opts.prefix_bv), (1, opts.suffix_bv)] {
+    for (phase, bv, warps) in [(0i32, opts.prefix_bv, opts.prefix_warps), (1, opts.suffix_bv, opts.suffix_warps)] {
         let scan = unsafe {
             gdn_tile::gdn_chunk_scan_fused(
                 sp(&scratch.q),
@@ -553,8 +565,8 @@ pub unsafe fn gdn_chunk_scan_with(
                 value(phase),
             )
         }
-        .generics(vec![scan_ty.to_string(), scan_split.to_string(), bv.to_string(), (opts.scan_merge_xo as i32).to_string()])
-        .compile_options(CompileOptions::default().num_worker_warps_per_cta(opts.scan_warps))
+        .generics(scan_gen.iter().map(|g| g.to_string()).chain([bv.to_string()]).collect())
+        .compile_options(CompileOptions::default().num_worker_warps_per_cta(warps))
         .grid(grid(plan.max_segs, NUM_V_HEADS, HEAD_DIM / bv));
         ops.push(scan.map(|_| ()));
     }

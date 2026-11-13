@@ -109,7 +109,7 @@ struct Args {
     shapes: Vec<String>,
     #[arg(long, default_value_t = 10)]
     iters: usize,
-    /// Scan precision: fp32 (3xTF32, default), tf32, bf16.
+    /// Scan precision: fp32 (3xTF32, default), tf32, bf16, mixed (3xTF32 state, TF32 output).
     #[arg(long, default_value = "fp32")]
     precision: String,
     /// Override the prefix / suffix scan value-column blocks, the warps per CTA and the forward-substitution
@@ -119,14 +119,13 @@ struct Args {
     #[arg(long, value_delimiter = ',')]
     suffix_bv: Vec<usize>,
     #[arg(long, value_delimiter = ',')]
-    scan_warps: Vec<i32>,
+    prefix_warps: Vec<i32>,
+    #[arg(long, value_delimiter = ',')]
+    suffix_warps: Vec<i32>,
     #[arg(long, value_delimiter = ',')]
     tp_warps: Vec<i32>,
     #[arg(long, value_delimiter = ',')]
     tp_fsb: Vec<i32>,
-    /// Scan variants with the stacked x/o product: comma-separated 0/1.
-    #[arg(long, value_delimiter = ',')]
-    merge_xo: Vec<i32>,
     /// Time the Phase 1 (W3a) four-launch scan instead (inverse, WY, prefix scan, suffix scan).
     #[arg(long)]
     w3a: bool,
@@ -209,6 +208,7 @@ fn main() -> Result<()> {
         "fp32" => GdnPrecision::Fp32Split3,
         "tf32" => GdnPrecision::Tf32,
         "bf16" => GdnPrecision::Bf16Operands,
+        "mixed" => GdnPrecision::Fp32StateTf32Output,
         p => anyhow::bail!("unknown precision {p}"),
     };
     let or = |v: &Vec<usize>, d: usize| if v.is_empty() { vec![d] } else { v.clone() };
@@ -216,13 +216,13 @@ fn main() -> Result<()> {
     let mut configs = Vec::new();
     for prefix_bv in or(&args.prefix_bv, base.prefix_bv) {
         for suffix_bv in or(&args.suffix_bv, base.suffix_bv) {
-            for scan_warps in ori(&args.scan_warps, base.scan_warps) {
+            for (prefix_warps, suffix_warps) in ori(&args.prefix_warps, base.prefix_warps)
+                .into_iter()
+                .flat_map(|p| ori(&args.suffix_warps, base.suffix_warps).into_iter().map(move |s| (p, s)))
+            {
                 for tp_warps in ori(&args.tp_warps, base.tp_warps) {
                     for tp_fsb in ori(&args.tp_fsb, base.tp_fsb) {
-                        for xo in ori(&args.merge_xo, base.scan_merge_xo as i32) {
-                            let scan_merge_xo = xo != 0;
-                            configs.push(GdnOptions { prefix_bv, suffix_bv, scan_warps, tp_warps, tp_fsb, scan_merge_xo, ..base });
-                        }
+                        configs.push(GdnOptions { prefix_bv, suffix_bv, prefix_warps, suffix_warps, tp_warps, tp_fsb, ..base });
                     }
                 }
             }
