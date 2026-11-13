@@ -252,7 +252,7 @@ Readout: `hs = gather(x, answer_rows)` → `zc_rmsnorm(hs, final_norm)` → `log
 | `seg_attn_gqa_d256` | Tile | Adapt `fmha_prefill_gqa`: non-causal, segment table, D=256 (check smem; may need BN=32/64), gate epilogue. |
 | `tree_conv1d_silu` | SIMT | Gather via the parent table; 8192 channels, kernel 4. |
 | `gdn_prep` | Tile | split/repeat/l2norm/softplus/sigmoid, f32 out. |
-| `gdn_chunk_scan` | Tile (matmul parts) + SIMT if needed | WY/UT form as in `torch_chunk_gated_delta_rule`: per 64-chunk, `A = (k_β kᵀ)⊙decay`, unit-lower-triangular solve, then the inter-chunk scan. The triangular solve may be easiest in SIMT (cuda-oxide). fp32 throughout. Varlen over segments, initial state from the parent. |
+| `gdn_chunk_scan` | Tile, or SIMT (`GdnBackend`) | WY/UT form as in `torch_chunk_gated_delta_rule`: per 64-chunk, `A = (k_β kᵀ)⊙decay`, unit-lower-triangular solve, then the inter-chunk scan. Varlen over segments, initial state from the parent. Tile: 3xTF32 matmuls, WY operands stored in fp32. SIMT (G1, cuda-oxide, `kernels-simt/`, docs/G1.md): `gdn_simt_tinv` (exact bf16 Gram + blocked 16×16 fp32 solve, only Tinv stored) and `gdn_simt_scan` (recomputes every WY operand per chunk; `mma.sync` bf16 with raw bf16 q/k rows as the exact operand and fp32 operands split hi+lo; state transposed in registers), plus `gdn_simt_gates` replacing `gdn_prep` (q, k normalised in the scan). ~5× faster; Tile stays the default until the end-to-end gate (§9.2) has run with SIMT. |
 | `gated_rmsnorm` | Tile | Per 128-head; plain `w`; silu(z). |
 | `gather_rows`, slot readout GEMM | Tile | Small. |
 
@@ -427,7 +427,9 @@ pub trait DecisionEngine: Send {
   - E1 **eval set:** the labeled set and statistical NVFP4 gate (§9.2), plus a scorer for any `/v1/systemone`
     server.
   - S1 **server fixes** from the W5 review.
-- Phase 2b: NVFP4 end to end; the SIMT GDN scan (cuda-oxide, needs LLVM 21); precision choices from the end-to-end
+  - G1 **GDN in cuda-oxide** (done 2026-11-13, docs/G1.md): SIMT WY/solve and chunk scan, `GdnBackend::{Tile, Simt}`;
+    mixer 3.9/14.9/58 ms -> 0.76/2.96/11.2 ms per layer at 1k/4k/16k.
+- Phase 2b: NVFP4 end to end; fuse the GDN conv into the SIMT kernels (G1's next step); precision choices from the end-to-end
   gate; GEMM autotune and fusions guided by I1's profile.
 - Prefix cache (§8).
 
@@ -452,8 +454,10 @@ benchmarks/s1/       loadgen, baselines, sweep scripts
 reference/           python harness (pinned OneJev + serve.patch), golden generator
 ```
 
-The cuda-oxide SIMT kernels build with `cargo oxide` on a pinned toolchain (1.99.1). They live in a separate
-workspace crate whose PTX is embedded into the main crate at build time, so the main crate stays on stable Rust.
+The cuda-oxide SIMT kernels build with `cargo oxide` on a pinned toolchain (1.99.1) in the standalone crate
+`kernels-simt/`. Its PTX is a checked-in artifact with a hash manifest (`kernels-simt/build.sh <arch>`), embedded by
+`build.rs` only when it matches the sources, so the main crate stays on stable Rust and never needs cargo-oxide
+(docs/G1.md, "Build").
 
 ## 13. Open questions and risks
 
