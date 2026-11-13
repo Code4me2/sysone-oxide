@@ -1,0 +1,9942 @@
+{
+ "root": "/home/velvet/Desktop/sysone-ref/golden/dev/hidden_dense",
+ "about": "Dense per-layer hidden-state dumps for gate (a); reference/hidden_dense.py (layout of reference/layer_dump.py, f32 upcasts of the model dtype).",
+ "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+ "runs": {
+  "fp32_served": {
+   "dtype": "float32",
+   "mode": "served",
+   "degrade": null
+  },
+  "bf16_served": {
+   "dtype": "bfloat16",
+   "mode": "served",
+   "degrade": null
+  },
+  "bf16_perq": {
+   "dtype": "bfloat16",
+   "mode": "per_question",
+   "degrade": null
+  },
+  "bf16_norm_llama": {
+   "dtype": "bfloat16",
+   "mode": "served",
+   "degrade": "norm_llama"
+  },
+  "bf16_norm_bf16": {
+   "dtype": "bfloat16",
+   "mode": "served",
+   "degrade": "norm_bf16"
+  },
+  "bf16_perm1": {
+   "dtype": "bfloat16",
+   "mode": "served",
+   "degrade": null,
+   "permute": 1
+  },
+  "bf16_perm2": {
+   "dtype": "bfloat16",
+   "mode": "served",
+   "degrade": null,
+   "permute": 2
+  },
+  "bf16_perm3": {
+   "dtype": "bfloat16",
+   "mode": "served",
+   "degrade": null,
+   "permute": 3
+  }
+ },
+ "provenance": {
+  "tier": "dev (GB10)",
+  "arch": "aarch64",
+  "python": "3.12.3",
+  "torch": "2.13.0+cu132",
+  "cuda_runtime": "13.2",
+  "gpu": "NVIDIA GB10",
+  "transformers": "5.19.0",
+  "compressed_tensors": "0.20.1",
+  "gdn_backend": "fla=no (torch_chunk_gated_delta_rule), causal_conv1d=no (torch conv1d)",
+  "attn_implementation": "sdpa (transformers default)",
+  "onejev": "81ce62f1597c91e46767d4d02d6ac2e18534fe94 + serve.patch",
+  "serve_patch_sha256": "f234c125f1d38d82104b9e1f24e75bde51e4401928acfba2fbf5c59ef2fb46b8",
+  "numerics": {
+   "cuda.matmul.allow_tf32": false,
+   "cudnn.allow_tf32": false,
+   "float32_matmul_precision": "highest",
+   "cuda.matmul.allow_bf16_reduced_precision_reduction": true
+  }
+ },
+ "files": {
+  "bf16_norm_bf16/hidden_m000_noul_default.safetensors": {
+   "sha256": "fa77282248e906c01d4c61b2cd2ac1b759e34cced558af164a9dc72a8afcd9b9",
+   "bytes": 5803632,
+   "metadata": {
+    "dtype": "bfloat16",
+    "request": "m000_noul_default",
+    "layers": "[0, 3, 4, 15, 31]",
+    "degrade": "norm_bf16",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "run": "bf16_norm_bf16",
+    "mode": "served"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    }
+   }
+  },
+  "bf16_norm_bf16/hidden_m005_choice_5.safetensors": {
+   "sha256": "143a2ccf7a5be0e92a3129cb1d9c227d4f357a4a9b1f34f949d212dc9352a5c1",
+   "bytes": 5803904,
+   "metadata": {
+    "dtype": "bfloat16",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "request": "m005_choice_5",
+    "degrade": "norm_bf16",
+    "layers": "[0, 3, 4, 15, 31]",
+    "run": "bf16_norm_bf16",
+    "mode": "served"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      95
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    }
+   }
+  },
+  "bf16_norm_bf16/hidden_m008_choice_27.safetensors": {
+   "sha256": "84d8d0c67cd6ffb0a39a8543bd4872d383819a5ff41e37fcf6fc9c426bad6005",
+   "bytes": 6298008,
+   "metadata": {
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "layers": "[0, 3, 4, 15, 31]",
+    "request": "m008_choice_27",
+    "degrade": "norm_bf16",
+    "run": "bf16_norm_bf16",
+    "dtype": "bfloat16",
+    "mode": "served"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      63
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      407
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      63
+     ]
+    }
+   }
+  },
+  "bf16_norm_bf16/hidden_m010_choice_255.safetensors": {
+   "sha256": "58ec9e8d75d9334ee67a9c58cc6aea1b4f3b67f6191698004692c147dae47282",
+   "bytes": 6618584,
+   "metadata": {
+    "dtype": "bfloat16",
+    "degrade": "norm_bf16",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "mode": "served",
+    "run": "bf16_norm_bf16",
+    "layers": "[0, 3, 4, 15, 31]",
+    "request": "m010_choice_255"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      66
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      3608
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      66
+     ]
+    }
+   }
+  },
+  "bf16_norm_bf16/hidden_m013_score_3.safetensors": {
+   "sha256": "2f2e3b95c121d7755937b50ee41391908273e23339407f0a22c12f6d44d60b7d",
+   "bytes": 5803616,
+   "metadata": {
+    "request": "m013_score_3",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "mode": "served",
+    "degrade": "norm_bf16",
+    "run": "bf16_norm_bf16",
+    "dtype": "bfloat16",
+    "layers": "[0, 3, 4, 15, 31]"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      59
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    }
+   }
+  },
+  "bf16_norm_bf16/hidden_m019_state_json.safetensors": {
+   "sha256": "eb7d486f4313085bb974f5c6aacb612a37252f89ead2bd9456248a83b4e55e1d",
+   "bytes": 11409200,
+   "metadata": {
+    "dtype": "bfloat16",
+    "mode": "served",
+    "layers": "[0, 3, 4, 15, 31]",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "degrade": "norm_bf16",
+    "run": "bf16_norm_bf16",
+    "request": "m019_state_json"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      113
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      72
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      79
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      113
+     ]
+    }
+   }
+  },
+  "bf16_norm_bf16/hidden_m026_unicode_state.safetensors": {
+   "sha256": "f7b37c973c8f0e8cb2a4ef0663b5361e98cfd8b8a9b352d399b553f89ea69881",
+   "bytes": 21437776,
+   "metadata": {
+    "run": "bf16_norm_bf16",
+    "dtype": "bfloat16",
+    "degrade": "norm_bf16",
+    "layers": "[0, 3, 4, 15, 31]",
+    "mode": "served",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "request": "m026_unicode_state"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      215
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      72
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      69
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      215
+     ]
+    }
+   }
+  },
+  "bf16_norm_bf16/hidden_m037_len1024_debias1.safetensors": {
+   "sha256": "ed4471947507889e95e3dc0b886f55d5cd6f413010ce762eb9d194abacc6b234",
+   "bytes": 105403376,
+   "metadata": {
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "layers": "[0, 3, 4, 15, 31]",
+    "degrade": "norm_bf16",
+    "request": "m037_len1024_debias1",
+    "run": "bf16_norm_bf16",
+    "dtype": "bfloat16",
+    "mode": "served"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      1069
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      109
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      69
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      1069
+     ]
+    }
+   }
+  },
+  "bf16_norm_bf16/hidden_m040_len4096_debias1.safetensors": {
+   "sha256": "f9cee18689c9aabb43384c47027c50387fc9b5f8642a1f019c9929a7e1566208",
+   "bytes": 102281616,
+   "metadata": {
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "layers": "[0, 3, 4, 15, 31]",
+    "run": "bf16_norm_bf16",
+    "request": "m040_len4096_debias1",
+    "dtype": "bfloat16",
+    "mode": "served",
+    "degrade": "norm_bf16"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      4141
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      74
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      59
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      1037
+     ]
+    }
+   }
+  },
+  "bf16_norm_bf16/hidden_m044_len16000_debias1.safetensors": {
+   "sha256": "a5abb7aa87a8cefd4f52a22f9cc0afa6218cb559d7f4cdfd67f82584729f58ce",
+   "bytes": 105818152,
+   "metadata": {
+    "run": "bf16_norm_bf16",
+    "request": "m044_len16000_debias1",
+    "layers": "[0, 3, 4, 15, 31]",
+    "dtype": "bfloat16",
+    "degrade": "norm_bf16",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "mode": "served"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      16044
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      102
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      79
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      1072
+     ]
+    }
+   }
+  },
+  "bf16_norm_llama/hidden_m000_noul_default.safetensors": {
+   "sha256": "3da7e3cb9f64ff0ec67be5f6dd169272e51fe3c855919b62097d23dbd4066e4a",
+   "bytes": 5803632,
+   "metadata": {
+    "dtype": "bfloat16",
+    "layers": "[0, 3, 4, 15, 31]",
+    "run": "bf16_norm_llama",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "degrade": "norm_llama",
+    "mode": "served",
+    "request": "m000_noul_default"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    }
+   }
+  },
+  "bf16_norm_llama/hidden_m005_choice_5.safetensors": {
+   "sha256": "21473832c064b0f0054c3945548b32ee8033ab73b98f5f51dfa6dda954fdc5e5",
+   "bytes": 5803912,
+   "metadata": {
+    "run": "bf16_norm_llama",
+    "mode": "served",
+    "dtype": "bfloat16",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "degrade": "norm_llama",
+    "request": "m005_choice_5",
+    "layers": "[0, 3, 4, 15, 31]"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      95
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    }
+   }
+  },
+  "bf16_norm_llama/hidden_m008_choice_27.safetensors": {
+   "sha256": "02daf4f327cca53c6d22b78c24a8e5ae2baa8fb905547d4162e7386a9997a913",
+   "bytes": 6298008,
+   "metadata": {
+    "degrade": "norm_llama",
+    "layers": "[0, 3, 4, 15, 31]",
+    "dtype": "bfloat16",
+    "mode": "served",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "request": "m008_choice_27",
+    "run": "bf16_norm_llama"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      63
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      407
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      63
+     ]
+    }
+   }
+  },
+  "bf16_norm_llama/hidden_m010_choice_255.safetensors": {
+   "sha256": "2595ef7d100490c16d8c72053afb50cf6d369026132b2ed253b7739d467f005e",
+   "bytes": 6618584,
+   "metadata": {
+    "degrade": "norm_llama",
+    "layers": "[0, 3, 4, 15, 31]",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "mode": "served",
+    "dtype": "bfloat16",
+    "request": "m010_choice_255",
+    "run": "bf16_norm_llama"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      66
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      3608
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      66
+     ]
+    }
+   }
+  },
+  "bf16_norm_llama/hidden_m013_score_3.safetensors": {
+   "sha256": "01abae1485007f03854a73682db6ad7f1d09d27dd0215a391743a3b3eb2a064e",
+   "bytes": 5803616,
+   "metadata": {
+    "mode": "served",
+    "run": "bf16_norm_llama",
+    "layers": "[0, 3, 4, 15, 31]",
+    "degrade": "norm_llama",
+    "request": "m013_score_3",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "dtype": "bfloat16"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      59
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    }
+   }
+  },
+  "bf16_norm_llama/hidden_m019_state_json.safetensors": {
+   "sha256": "89636eedcf78a935bc3ce4308ca0c709cad520330ba073e337549f7ec2bb9659",
+   "bytes": 11409200,
+   "metadata": {
+    "request": "m019_state_json",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "layers": "[0, 3, 4, 15, 31]",
+    "mode": "served",
+    "dtype": "bfloat16",
+    "run": "bf16_norm_llama",
+    "degrade": "norm_llama"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      113
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      72
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      79
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      113
+     ]
+    }
+   }
+  },
+  "bf16_norm_llama/hidden_m026_unicode_state.safetensors": {
+   "sha256": "829cc230d5c7854159eba564a280329147f2554dd2d89a313100cdd4e53e0c02",
+   "bytes": 21437776,
+   "metadata": {
+    "dtype": "bfloat16",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "degrade": "norm_llama",
+    "run": "bf16_norm_llama",
+    "request": "m026_unicode_state",
+    "layers": "[0, 3, 4, 15, 31]",
+    "mode": "served"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      215
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      72
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      69
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      215
+     ]
+    }
+   }
+  },
+  "bf16_norm_llama/hidden_m037_len1024_debias1.safetensors": {
+   "sha256": "7c683353be70cf0bf3a92857c09ba30c46555f7651128cf857cee14fe72ba58c",
+   "bytes": 105403376,
+   "metadata": {
+    "degrade": "norm_llama",
+    "dtype": "bfloat16",
+    "layers": "[0, 3, 4, 15, 31]",
+    "mode": "served",
+    "request": "m037_len1024_debias1",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "run": "bf16_norm_llama"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      1069
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      109
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      69
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      1069
+     ]
+    }
+   }
+  },
+  "bf16_norm_llama/hidden_m040_len4096_debias1.safetensors": {
+   "sha256": "93cfc880d4a48498d7322afd74a5ed46b46594973ea20d8fa085dc75a5aa3a0a",
+   "bytes": 102281616,
+   "metadata": {
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "degrade": "norm_llama",
+    "request": "m040_len4096_debias1",
+    "layers": "[0, 3, 4, 15, 31]",
+    "mode": "served",
+    "run": "bf16_norm_llama",
+    "dtype": "bfloat16"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      4141
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      74
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      59
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      1037
+     ]
+    }
+   }
+  },
+  "bf16_norm_llama/hidden_m044_len16000_debias1.safetensors": {
+   "sha256": "f296167fc7e66b6df5d9ecad0eb490a20bb26a21092bd02c2ef7064b8082b879",
+   "bytes": 105818160,
+   "metadata": {
+    "degrade": "norm_llama",
+    "dtype": "bfloat16",
+    "layers": "[0, 3, 4, 15, 31]",
+    "mode": "served",
+    "request": "m044_len16000_debias1",
+    "run": "bf16_norm_llama",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      16044
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      102
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      79
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      1072
+     ]
+    }
+   }
+  },
+  "bf16_perm1/hidden_m000_noul_default.safetensors": {
+   "sha256": "ee02fd3dd57042c376df167be4bc77870355d54934ea81ffab1413dec1d6a78c",
+   "bytes": 5803632,
+   "metadata": {
+    "dtype": "bfloat16",
+    "permute": "1",
+    "run": "bf16_perm1",
+    "request": "m000_noul_default",
+    "layers": "[0, 3, 4, 15, 31]",
+    "mode": "served",
+    "degrade": "null",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    }
+   }
+  },
+  "bf16_perm1/hidden_m005_choice_5.safetensors": {
+   "sha256": "c9bc64289d255cdcb32ac2a7c37ad4d1c6f833c4457a8d90400bd966e6556ba2",
+   "bytes": 5803912,
+   "metadata": {
+    "degrade": "null",
+    "request": "m005_choice_5",
+    "layers": "[0, 3, 4, 15, 31]",
+    "mode": "served",
+    "dtype": "bfloat16",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "run": "bf16_perm1",
+    "permute": "1"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      95
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    }
+   }
+  },
+  "bf16_perm1/hidden_m008_choice_27.safetensors": {
+   "sha256": "65b9044b2b48d6e2c2f69e8fa1bcc1ab73b6ca46e820055df1fe2aecae5fb335",
+   "bytes": 6298016,
+   "metadata": {
+    "mode": "served",
+    "permute": "1",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "layers": "[0, 3, 4, 15, 31]",
+    "request": "m008_choice_27",
+    "degrade": "null",
+    "dtype": "bfloat16",
+    "run": "bf16_perm1"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      63
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      407
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      63
+     ]
+    }
+   }
+  },
+  "bf16_perm1/hidden_m010_choice_255.safetensors": {
+   "sha256": "fd5e5f4b099c03b853048c67e6c8fe2a37922867a57723bb8b7c3014b12b18a0",
+   "bytes": 6618592,
+   "metadata": {
+    "dtype": "bfloat16",
+    "permute": "1",
+    "degrade": "null",
+    "request": "m010_choice_255",
+    "run": "bf16_perm1",
+    "layers": "[0, 3, 4, 15, 31]",
+    "mode": "served",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      66
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      3608
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      66
+     ]
+    }
+   }
+  },
+  "bf16_perm1/hidden_m013_score_3.safetensors": {
+   "sha256": "e86a1c20a3394f099cfa1deea84772346231cf95f6138440914cc49d7d4269e6",
+   "bytes": 5803624,
+   "metadata": {
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "mode": "served",
+    "layers": "[0, 3, 4, 15, 31]",
+    "run": "bf16_perm1",
+    "permute": "1",
+    "degrade": "null",
+    "dtype": "bfloat16",
+    "request": "m013_score_3"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      59
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    }
+   }
+  },
+  "bf16_perm1/hidden_m019_state_json.safetensors": {
+   "sha256": "3e65c875cf0ec39f48a9620761f3c31d92636b429656b112080fee5fddf76c10",
+   "bytes": 11409200,
+   "metadata": {
+    "degrade": "null",
+    "request": "m019_state_json",
+    "mode": "served",
+    "run": "bf16_perm1",
+    "layers": "[0, 3, 4, 15, 31]",
+    "permute": "1",
+    "dtype": "bfloat16",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      113
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      72
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      79
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      113
+     ]
+    }
+   }
+  },
+  "bf16_perm1/hidden_m026_unicode_state.safetensors": {
+   "sha256": "8cae2e412df091604d6fd0de4433cca1eab18101665840ff0899a163f0d9609a",
+   "bytes": 21437784,
+   "metadata": {
+    "layers": "[0, 3, 4, 15, 31]",
+    "degrade": "null",
+    "run": "bf16_perm1",
+    "mode": "served",
+    "dtype": "bfloat16",
+    "request": "m026_unicode_state",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "permute": "1"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      215
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      72
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      69
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      215
+     ]
+    }
+   }
+  },
+  "bf16_perm1/hidden_m037_len1024_debias1.safetensors": {
+   "sha256": "0db30ac3e7840c1a2d6906fb2e5a15dcd20b231d1f3f814297bb65911a8da198",
+   "bytes": 105403384,
+   "metadata": {
+    "run": "bf16_perm1",
+    "permute": "1",
+    "layers": "[0, 3, 4, 15, 31]",
+    "mode": "served",
+    "request": "m037_len1024_debias1",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "dtype": "bfloat16",
+    "degrade": "null"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      1069
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      109
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      69
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      1069
+     ]
+    }
+   }
+  },
+  "bf16_perm1/hidden_m040_len4096_debias1.safetensors": {
+   "sha256": "829a50a9dcc4f9061008f05dd9ef203734566ab37322f125eb28aacae9df8c26",
+   "bytes": 102281616,
+   "metadata": {
+    "layers": "[0, 3, 4, 15, 31]",
+    "permute": "1",
+    "dtype": "bfloat16",
+    "request": "m040_len4096_debias1",
+    "run": "bf16_perm1",
+    "mode": "served",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "degrade": "null"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      4141
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      74
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      59
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      1037
+     ]
+    }
+   }
+  },
+  "bf16_perm1/hidden_m044_len16000_debias1.safetensors": {
+   "sha256": "9b10d7b96b20fccf6e0ede105e97c812216d6c790dcc8925fd5e41e3b5794a6e",
+   "bytes": 105818160,
+   "metadata": {
+    "mode": "served",
+    "dtype": "bfloat16",
+    "layers": "[0, 3, 4, 15, 31]",
+    "run": "bf16_perm1",
+    "permute": "1",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "request": "m044_len16000_debias1",
+    "degrade": "null"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      16044
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      102
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      79
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      1072
+     ]
+    }
+   }
+  },
+  "bf16_perm2/hidden_m000_noul_default.safetensors": {
+   "sha256": "47183f503dcf75d0713336ef903c29a3c1ce785b943b80ff4786d3e5eeae1c6e",
+   "bytes": 5803632,
+   "metadata": {
+    "permute": "2",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "run": "bf16_perm2",
+    "request": "m000_noul_default",
+    "dtype": "bfloat16",
+    "mode": "served",
+    "degrade": "null",
+    "layers": "[0, 3, 4, 15, 31]"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    }
+   }
+  },
+  "bf16_perm2/hidden_m005_choice_5.safetensors": {
+   "sha256": "00f8289f49658d38b44ec3d3d7dc19292c33ee542633738d20c1e4ce033c53ee",
+   "bytes": 5803912,
+   "metadata": {
+    "degrade": "null",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "request": "m005_choice_5",
+    "mode": "served",
+    "layers": "[0, 3, 4, 15, 31]",
+    "dtype": "bfloat16",
+    "run": "bf16_perm2",
+    "permute": "2"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      95
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    }
+   }
+  },
+  "bf16_perm2/hidden_m008_choice_27.safetensors": {
+   "sha256": "db04689fe9c87d028c13f16539f1634b1d4172007ab3307b55ae65d8560aea95",
+   "bytes": 6298016,
+   "metadata": {
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "dtype": "bfloat16",
+    "mode": "served",
+    "layers": "[0, 3, 4, 15, 31]",
+    "request": "m008_choice_27",
+    "permute": "2",
+    "degrade": "null",
+    "run": "bf16_perm2"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      63
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      407
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      63
+     ]
+    }
+   }
+  },
+  "bf16_perm2/hidden_m010_choice_255.safetensors": {
+   "sha256": "32a0127de88cd0096fe074f5b36f193a03b62889a31df670a64b1dfd00470c16",
+   "bytes": 6618592,
+   "metadata": {
+    "dtype": "bfloat16",
+    "layers": "[0, 3, 4, 15, 31]",
+    "request": "m010_choice_255",
+    "permute": "2",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "degrade": "null",
+    "run": "bf16_perm2",
+    "mode": "served"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      66
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      3608
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      66
+     ]
+    }
+   }
+  },
+  "bf16_perm2/hidden_m013_score_3.safetensors": {
+   "sha256": "a86199da5d4ca3aa2b2e6cca4f217f7470cd2e8a479e2cb12219022623b8aff8",
+   "bytes": 5803624,
+   "metadata": {
+    "mode": "served",
+    "dtype": "bfloat16",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "degrade": "null",
+    "run": "bf16_perm2",
+    "permute": "2",
+    "layers": "[0, 3, 4, 15, 31]",
+    "request": "m013_score_3"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      59
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    }
+   }
+  },
+  "bf16_perm2/hidden_m019_state_json.safetensors": {
+   "sha256": "65d846934deb5f7d1f2f2035800f91338e7eab54da15eb7a88a70f3908efb774",
+   "bytes": 11409200,
+   "metadata": {
+    "mode": "served",
+    "permute": "2",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "run": "bf16_perm2",
+    "request": "m019_state_json",
+    "dtype": "bfloat16",
+    "degrade": "null",
+    "layers": "[0, 3, 4, 15, 31]"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      113
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      72
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      79
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      113
+     ]
+    }
+   }
+  },
+  "bf16_perm2/hidden_m026_unicode_state.safetensors": {
+   "sha256": "64975cf1da748777b31c5126e6adb4450093e8fdc29a7613cdeda80b2629ef02",
+   "bytes": 21437784,
+   "metadata": {
+    "request": "m026_unicode_state",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "degrade": "null",
+    "layers": "[0, 3, 4, 15, 31]",
+    "dtype": "bfloat16",
+    "run": "bf16_perm2",
+    "permute": "2",
+    "mode": "served"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      215
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      72
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      69
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      215
+     ]
+    }
+   }
+  },
+  "bf16_perm2/hidden_m037_len1024_debias1.safetensors": {
+   "sha256": "0936548e61823bbfc81c2fe020fcca40b0f78413914ce75a363b91cf58478428",
+   "bytes": 105403384,
+   "metadata": {
+    "request": "m037_len1024_debias1",
+    "degrade": "null",
+    "layers": "[0, 3, 4, 15, 31]",
+    "dtype": "bfloat16",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "mode": "served",
+    "run": "bf16_perm2",
+    "permute": "2"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      1069
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      109
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      69
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      1069
+     ]
+    }
+   }
+  },
+  "bf16_perm2/hidden_m040_len4096_debias1.safetensors": {
+   "sha256": "f7cf782913960fbb2d2f8dc51971a12ff04263d5946bb5c7a3f80d7f0845cb71",
+   "bytes": 102281616,
+   "metadata": {
+    "dtype": "bfloat16",
+    "request": "m040_len4096_debias1",
+    "degrade": "null",
+    "permute": "2",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "run": "bf16_perm2",
+    "mode": "served",
+    "layers": "[0, 3, 4, 15, 31]"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      4141
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      74
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      59
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      1037
+     ]
+    }
+   }
+  },
+  "bf16_perm2/hidden_m044_len16000_debias1.safetensors": {
+   "sha256": "e8085949aca54fa5a88905b1c01f241a31ce5269df898a7260d560b86c2f9554",
+   "bytes": 105818160,
+   "metadata": {
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "run": "bf16_perm2",
+    "dtype": "bfloat16",
+    "layers": "[0, 3, 4, 15, 31]",
+    "degrade": "null",
+    "request": "m044_len16000_debias1",
+    "permute": "2",
+    "mode": "served"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      16044
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      102
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      79
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      1072
+     ]
+    }
+   }
+  },
+  "bf16_perm3/hidden_m000_noul_default.safetensors": {
+   "sha256": "8e8dd6e35eca49e13190fa0c5e3d70be306d14f3b8bea87a9e9dcf3d79467eb8",
+   "bytes": 5803632,
+   "metadata": {
+    "permute": "3",
+    "request": "m000_noul_default",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "run": "bf16_perm3",
+    "layers": "[0, 3, 4, 15, 31]",
+    "mode": "served",
+    "degrade": "null",
+    "dtype": "bfloat16"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    }
+   }
+  },
+  "bf16_perm3/hidden_m005_choice_5.safetensors": {
+   "sha256": "73d3576fca2934dfeb9c63194e945c6005e5fad9e4686204c7a3849a852575ec",
+   "bytes": 5803912,
+   "metadata": {
+    "layers": "[0, 3, 4, 15, 31]",
+    "permute": "3",
+    "mode": "served",
+    "degrade": "null",
+    "request": "m005_choice_5",
+    "dtype": "bfloat16",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "run": "bf16_perm3"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      95
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    }
+   }
+  },
+  "bf16_perm3/hidden_m008_choice_27.safetensors": {
+   "sha256": "dd5235ced11f60cb5f9a920b7cc192e0c227439647a8b89d116e40e5146d7fa1",
+   "bytes": 6298016,
+   "metadata": {
+    "request": "m008_choice_27",
+    "layers": "[0, 3, 4, 15, 31]",
+    "run": "bf16_perm3",
+    "permute": "3",
+    "degrade": "null",
+    "mode": "served",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "dtype": "bfloat16"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      63
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      407
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      63
+     ]
+    }
+   }
+  },
+  "bf16_perm3/hidden_m010_choice_255.safetensors": {
+   "sha256": "d26ab9ac72ff89c65212f7bc4aa9d0f901f509814189ab4837fee1f76548fc2f",
+   "bytes": 6618592,
+   "metadata": {
+    "dtype": "bfloat16",
+    "permute": "3",
+    "layers": "[0, 3, 4, 15, 31]",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "degrade": "null",
+    "mode": "served",
+    "run": "bf16_perm3",
+    "request": "m010_choice_255"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      66
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      3608
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      66
+     ]
+    }
+   }
+  },
+  "bf16_perm3/hidden_m013_score_3.safetensors": {
+   "sha256": "8aa31766ccd10691e4c34b97d113939a6b9bc530da0ef33d886a9880c7c66575",
+   "bytes": 5803624,
+   "metadata": {
+    "run": "bf16_perm3",
+    "layers": "[0, 3, 4, 15, 31]",
+    "mode": "served",
+    "degrade": "null",
+    "permute": "3",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "dtype": "bfloat16",
+    "request": "m013_score_3"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      59
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    }
+   }
+  },
+  "bf16_perm3/hidden_m019_state_json.safetensors": {
+   "sha256": "6884e8be9ad9beaf0061556ce6e39b1479c439c4859f9ab9531a6871d58a3f51",
+   "bytes": 11409200,
+   "metadata": {
+    "degrade": "null",
+    "layers": "[0, 3, 4, 15, 31]",
+    "mode": "served",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "dtype": "bfloat16",
+    "request": "m019_state_json",
+    "permute": "3",
+    "run": "bf16_perm3"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      113
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      72
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      79
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      113
+     ]
+    }
+   }
+  },
+  "bf16_perm3/hidden_m026_unicode_state.safetensors": {
+   "sha256": "cf35dc5d0fa755034f6bb05ca2fffb4c81af2b6975244b3cb808c114954047fe",
+   "bytes": 21437784,
+   "metadata": {
+    "dtype": "bfloat16",
+    "degrade": "null",
+    "run": "bf16_perm3",
+    "permute": "3",
+    "request": "m026_unicode_state",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "layers": "[0, 3, 4, 15, 31]",
+    "mode": "served"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      215
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      72
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      69
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      215
+     ]
+    }
+   }
+  },
+  "bf16_perm3/hidden_m037_len1024_debias1.safetensors": {
+   "sha256": "c578f583532f039be950573219355df3213ad6789e8fe4f1ef281f0289b9c7c8",
+   "bytes": 105403384,
+   "metadata": {
+    "degrade": "null",
+    "mode": "served",
+    "dtype": "bfloat16",
+    "layers": "[0, 3, 4, 15, 31]",
+    "run": "bf16_perm3",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "request": "m037_len1024_debias1",
+    "permute": "3"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      1069
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      109
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      69
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      1069
+     ]
+    }
+   }
+  },
+  "bf16_perm3/hidden_m040_len4096_debias1.safetensors": {
+   "sha256": "55cb700b6be95d86dd5f0db1ac422a2d7c8312ecdd9bc377674c9bd0dc8ff4da",
+   "bytes": 102281616,
+   "metadata": {
+    "mode": "served",
+    "layers": "[0, 3, 4, 15, 31]",
+    "degrade": "null",
+    "permute": "3",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "run": "bf16_perm3",
+    "dtype": "bfloat16",
+    "request": "m040_len4096_debias1"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      4141
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      74
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      59
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      1037
+     ]
+    }
+   }
+  },
+  "bf16_perm3/hidden_m044_len16000_debias1.safetensors": {
+   "sha256": "5aacc39acea6b27f7e0331d4ee39c9f8a570730ea22cc8361043845fab60697a",
+   "bytes": 105818160,
+   "metadata": {
+    "run": "bf16_perm3",
+    "dtype": "bfloat16",
+    "request": "m044_len16000_debias1",
+    "layers": "[0, 3, 4, 15, 31]",
+    "degrade": "null",
+    "mode": "served",
+    "permute": "3",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      16044
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      102
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      79
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      1072
+     ]
+    }
+   }
+  },
+  "bf16_perq/hidden_m000_noul_default.safetensors": {
+   "sha256": "d8ad29be6928914985b7d7ece53f0b6747c9a47deb635097f20838ee9599e791",
+   "bytes": 5803624,
+   "metadata": {
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "mode": "per_question",
+    "layers": "[0, 3, 4, 15, 31]",
+    "run": "bf16_perq",
+    "dtype": "bfloat16",
+    "degrade": "null",
+    "request": "m000_noul_default"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    }
+   }
+  },
+  "bf16_perq/hidden_m005_choice_5.safetensors": {
+   "sha256": "0b6c19fa4b9adcde8501c6018deaa2f5424a8fc83583d1085fee0ebcf1984cdb",
+   "bytes": 5803904,
+   "metadata": {
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "layers": "[0, 3, 4, 15, 31]",
+    "degrade": "null",
+    "mode": "per_question",
+    "request": "m005_choice_5",
+    "dtype": "bfloat16",
+    "run": "bf16_perq"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      95
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    }
+   }
+  },
+  "bf16_perq/hidden_m008_choice_27.safetensors": {
+   "sha256": "26880fd24530d7d82f9ff17ba0925c14a7cd227a2c37130222a8acad12d1d5ae",
+   "bytes": 6298008,
+   "metadata": {
+    "mode": "per_question",
+    "run": "bf16_perq",
+    "request": "m008_choice_27",
+    "dtype": "bfloat16",
+    "degrade": "null",
+    "layers": "[0, 3, 4, 15, 31]",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      63
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      407
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      63
+     ]
+    }
+   }
+  },
+  "bf16_perq/hidden_m010_choice_255.safetensors": {
+   "sha256": "26b03e3147de5b0935be2360e322548c304c2b6f9c41a131bd44b681bd4f0b2a",
+   "bytes": 6618576,
+   "metadata": {
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "degrade": "null",
+    "layers": "[0, 3, 4, 15, 31]",
+    "dtype": "bfloat16",
+    "mode": "per_question",
+    "request": "m010_choice_255",
+    "run": "bf16_perq"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      66
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      3608
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      66
+     ]
+    }
+   }
+  },
+  "bf16_perq/hidden_m013_score_3.safetensors": {
+   "sha256": "4aeb693673dc2e127d35f8e7fc508fce56c1084da0f7cf396314bdf2b9a85ae1",
+   "bytes": 5803616,
+   "metadata": {
+    "layers": "[0, 3, 4, 15, 31]",
+    "run": "bf16_perq",
+    "request": "m013_score_3",
+    "dtype": "bfloat16",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "mode": "per_question",
+    "degrade": "null"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      59
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    }
+   }
+  },
+  "bf16_perq/hidden_m019_state_json.safetensors": {
+   "sha256": "03670dcd7313d9f97bbba4ebde90f1fd812580081ba00ac20b0a7c87c8d9449d",
+   "bytes": 11409192,
+   "metadata": {
+    "degrade": "null",
+    "request": "m019_state_json",
+    "dtype": "bfloat16",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "run": "bf16_perq",
+    "mode": "per_question",
+    "layers": "[0, 3, 4, 15, 31]"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      113
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      72
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      79
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      113
+     ]
+    }
+   }
+  },
+  "bf16_perq/hidden_m026_unicode_state.safetensors": {
+   "sha256": "1c800bdf31cac981504d07c49a8db47256d81d024832b321c6daf82248a34266",
+   "bytes": 21437768,
+   "metadata": {
+    "degrade": "null",
+    "layers": "[0, 3, 4, 15, 31]",
+    "dtype": "bfloat16",
+    "mode": "per_question",
+    "request": "m026_unicode_state",
+    "run": "bf16_perq",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      215
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      72
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      69
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      215
+     ]
+    }
+   }
+  },
+  "bf16_perq/hidden_m037_len1024_debias1.safetensors": {
+   "sha256": "2c13b189d3f5310394c3a24d96573c0015106ae59cd374aba64bc4e346150c4d",
+   "bytes": 105403368,
+   "metadata": {
+    "run": "bf16_perq",
+    "request": "m037_len1024_debias1",
+    "degrade": "null",
+    "dtype": "bfloat16",
+    "mode": "per_question",
+    "layers": "[0, 3, 4, 15, 31]",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      1069
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      109
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      69
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      1069
+     ]
+    }
+   }
+  },
+  "bf16_perq/hidden_m040_len4096_debias1.safetensors": {
+   "sha256": "580727791a04b7c92ae2ec8aa2964dc8a969d43b3473d8077f53870f83494c27",
+   "bytes": 102281608,
+   "metadata": {
+    "mode": "per_question",
+    "dtype": "bfloat16",
+    "layers": "[0, 3, 4, 15, 31]",
+    "request": "m040_len4096_debias1",
+    "run": "bf16_perq",
+    "degrade": "null",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      4141
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      74
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      59
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      1037
+     ]
+    }
+   }
+  },
+  "bf16_perq/hidden_m044_len16000_debias1.safetensors": {
+   "sha256": "f5842ef4f8e4ae28b61db2943eebe22034f50b381c01c7dd383a61061eae5e71",
+   "bytes": 105818152,
+   "metadata": {
+    "run": "bf16_perq",
+    "mode": "per_question",
+    "layers": "[0, 3, 4, 15, 31]",
+    "degrade": "null",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "request": "m044_len16000_debias1",
+    "dtype": "bfloat16"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      16044
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      102
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      79
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      1072
+     ]
+    }
+   }
+  },
+  "bf16_served/hidden_m000_noul_default.safetensors": {
+   "sha256": "fe5de02f083661fdd1343c1f41dfe93b78f3f19a19d560e813f5f621df266d09",
+   "bytes": 5803624,
+   "metadata": {
+    "layers": "[0, 3, 4, 15, 31]",
+    "run": "bf16_served",
+    "request": "m000_noul_default",
+    "mode": "served",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "degrade": "null",
+    "dtype": "bfloat16"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    }
+   }
+  },
+  "bf16_served/hidden_m005_choice_5.safetensors": {
+   "sha256": "1bcfcd3cfc33d9cc69c988e0e9d4c6001350e18a715dfd825e730f67ce979d2d",
+   "bytes": 5803896,
+   "metadata": {
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "mode": "served",
+    "run": "bf16_served",
+    "degrade": "null",
+    "dtype": "bfloat16",
+    "request": "m005_choice_5",
+    "layers": "[0, 3, 4, 15, 31]"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      95
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    }
+   }
+  },
+  "bf16_served/hidden_m008_choice_27.safetensors": {
+   "sha256": "c0168b9ea6e6a413f24c9a8b73a5f822c67ec0ce647d5196612104187d952be6",
+   "bytes": 6298000,
+   "metadata": {
+    "layers": "[0, 3, 4, 15, 31]",
+    "request": "m008_choice_27",
+    "mode": "served",
+    "dtype": "bfloat16",
+    "run": "bf16_served",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "degrade": "null"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      63
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      407
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      63
+     ]
+    }
+   }
+  },
+  "bf16_served/hidden_m010_choice_255.safetensors": {
+   "sha256": "0ec06ecd505563295e2d9f72b0901bf2ba0f52b5490df944cce76db970598b23",
+   "bytes": 6618576,
+   "metadata": {
+    "mode": "served",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "run": "bf16_served",
+    "layers": "[0, 3, 4, 15, 31]",
+    "degrade": "null",
+    "dtype": "bfloat16",
+    "request": "m010_choice_255"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      66
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      3608
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      66
+     ]
+    }
+   }
+  },
+  "bf16_served/hidden_m013_score_3.safetensors": {
+   "sha256": "1b6312b62e37f974a7e8ff3d0956629669910593b41fed594bd92abfaf9e384a",
+   "bytes": 5803608,
+   "metadata": {
+    "degrade": "null",
+    "request": "m013_score_3",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "run": "bf16_served",
+    "layers": "[0, 3, 4, 15, 31]",
+    "mode": "served",
+    "dtype": "bfloat16"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      59
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    }
+   }
+  },
+  "bf16_served/hidden_m019_state_json.safetensors": {
+   "sha256": "cf80e027ee8dcdb8aedd4a18b6fad7f282869ff4559b10132f6477ee48fb8294",
+   "bytes": 11409192,
+   "metadata": {
+    "request": "m019_state_json",
+    "run": "bf16_served",
+    "degrade": "null",
+    "layers": "[0, 3, 4, 15, 31]",
+    "mode": "served",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "dtype": "bfloat16"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      113
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      72
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      79
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      113
+     ]
+    }
+   }
+  },
+  "bf16_served/hidden_m026_unicode_state.safetensors": {
+   "sha256": "c73d5ffc4890dd498a688e7206e81111cd1575a612f5ef4562a82587c36afe0d",
+   "bytes": 21437768,
+   "metadata": {
+    "request": "m026_unicode_state",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "mode": "served",
+    "run": "bf16_served",
+    "dtype": "bfloat16",
+    "layers": "[0, 3, 4, 15, 31]",
+    "degrade": "null"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      215
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      72
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      69
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      215
+     ]
+    }
+   }
+  },
+  "bf16_served/hidden_m037_len1024_debias1.safetensors": {
+   "sha256": "24813182c6424fd68572505ef8ac2d5497dedfff4792594fd3cb6f47861b08e1",
+   "bytes": 105403368,
+   "metadata": {
+    "request": "m037_len1024_debias1",
+    "layers": "[0, 3, 4, 15, 31]",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "run": "bf16_served",
+    "dtype": "bfloat16",
+    "mode": "served",
+    "degrade": "null"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      1069
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      109
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      69
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      1069
+     ]
+    }
+   }
+  },
+  "bf16_served/hidden_m040_len4096_debias1.safetensors": {
+   "sha256": "ce4dde3dd79890f675c43007b838c75fbdeb04c2e9bc2b4a78374f5498911bfe",
+   "bytes": 102281608,
+   "metadata": {
+    "degrade": "null",
+    "dtype": "bfloat16",
+    "run": "bf16_served",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "request": "m040_len4096_debias1",
+    "mode": "served",
+    "layers": "[0, 3, 4, 15, 31]"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      4141
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      74
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      59
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      1037
+     ]
+    }
+   }
+  },
+  "bf16_served/hidden_m044_len16000_debias1.safetensors": {
+   "sha256": "c5d033752b3f9b9e22cf556aa9845302929409ca7011286139d1528544e5d112",
+   "bytes": 105818144,
+   "metadata": {
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "degrade": "null",
+    "run": "bf16_served",
+    "dtype": "bfloat16",
+    "layers": "[0, 3, 4, 15, 31]",
+    "mode": "served",
+    "request": "m044_len16000_debias1"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      16044
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      102
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      79
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      1072
+     ]
+    }
+   }
+  },
+  "fp32_served/hidden_m000_noul_default.safetensors": {
+   "sha256": "3122f707f47ca75da475e197b32c9c752b8e43d269735fb8c7187908fda035b5",
+   "bytes": 5803624,
+   "metadata": {
+    "layers": "[0, 3, 4, 15, 31]",
+    "dtype": "float32",
+    "mode": "served",
+    "request": "m000_noul_default",
+    "degrade": "null",
+    "run": "fp32_served",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    }
+   }
+  },
+  "fp32_served/hidden_m005_choice_5.safetensors": {
+   "sha256": "3e0822f71a278cd36bef1cd3985a96d0c185f18ec0e3b7b9c7eb1e555bcd9095",
+   "bytes": 5803896,
+   "metadata": {
+    "request": "m005_choice_5",
+    "run": "fp32_served",
+    "degrade": "null",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "dtype": "float32",
+    "mode": "served",
+    "layers": "[0, 3, 4, 15, 31]"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      95
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    }
+   }
+  },
+  "fp32_served/hidden_m008_choice_27.safetensors": {
+   "sha256": "939abdbdc1fcc993964744c04e303f9eef881d67cabe77755fd5b2b020711802",
+   "bytes": 6298000,
+   "metadata": {
+    "layers": "[0, 3, 4, 15, 31]",
+    "mode": "served",
+    "run": "fp32_served",
+    "dtype": "float32",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "degrade": "null",
+    "request": "m008_choice_27"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      63
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      407
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      63,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      63
+     ]
+    }
+   }
+  },
+  "fp32_served/hidden_m010_choice_255.safetensors": {
+   "sha256": "bcfdca5c42a493fddb0b453a42be3a087c5b0113fa024e08a930f0a910c19da1",
+   "bytes": 6618576,
+   "metadata": {
+    "layers": "[0, 3, 4, 15, 31]",
+    "dtype": "float32",
+    "request": "m010_choice_255",
+    "mode": "served",
+    "run": "fp32_served",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "degrade": "null"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      66
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      3608
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      66,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      66
+     ]
+    }
+   }
+  },
+  "fp32_served/hidden_m013_score_3.safetensors": {
+   "sha256": "354f504563b0a9b28a64917a45d465450668b0ea5874bad4546e6b3bfbe45108",
+   "bytes": 5803608,
+   "metadata": {
+    "mode": "served",
+    "degrade": "null",
+    "request": "m013_score_3",
+    "run": "fp32_served",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "layers": "[0, 3, 4, 15, 31]",
+    "dtype": "float32"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      59
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      58,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    }
+   }
+  },
+  "fp32_served/hidden_m019_state_json.safetensors": {
+   "sha256": "fa9ab6c89499cfffac66e4cad5fedf8cdacdc6bd0ea26269e0a913a3e3739580",
+   "bytes": 11409192,
+   "metadata": {
+    "request": "m019_state_json",
+    "degrade": "null",
+    "layers": "[0, 3, 4, 15, 31]",
+    "mode": "served",
+    "dtype": "float32",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "run": "fp32_served"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      113
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      72
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      79
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      113,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      113
+     ]
+    }
+   }
+  },
+  "fp32_served/hidden_m026_unicode_state.safetensors": {
+   "sha256": "e3baea5ee3c993ce13bb45928c09553faceb64cbeecdc4ee66420df61b758404",
+   "bytes": 21437768,
+   "metadata": {
+    "dtype": "float32",
+    "layers": "[0, 3, 4, 15, 31]",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "request": "m026_unicode_state",
+    "degrade": "null",
+    "mode": "served",
+    "run": "fp32_served"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      215
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      72
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      69
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      215,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      215
+     ]
+    }
+   }
+  },
+  "fp32_served/hidden_m037_len1024_debias1.safetensors": {
+   "sha256": "628db7ff8f0d7dfe0f235f5d1ce40ba5974db1262fbadac8bc748a4138e49b73",
+   "bytes": 105403368,
+   "metadata": {
+    "layers": "[0, 3, 4, 15, 31]",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "run": "fp32_served",
+    "dtype": "float32",
+    "request": "m037_len1024_debias1",
+    "mode": "served",
+    "degrade": "null"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      1069
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      109
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      69
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1069,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      1069
+     ]
+    }
+   }
+  },
+  "fp32_served/hidden_m040_len4096_debias1.safetensors": {
+   "sha256": "a27d1fd6235b48838be935d942b50b4aa68b1a776db945f7600fd7f8ea9b322f",
+   "bytes": 102281600,
+   "metadata": {
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "mode": "served",
+    "layers": "[0, 3, 4, 15, 31]",
+    "degrade": "null",
+    "dtype": "float32",
+    "request": "m040_len4096_debias1",
+    "run": "fp32_served"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      4141
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      74
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      59
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1037,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      1037
+     ]
+    }
+   }
+  },
+  "fp32_served/hidden_m044_len16000_debias1.safetensors": {
+   "sha256": "e3a63748c27b88c935611e71f0e141f774b26e3e2b59a5823ff1728d0b3e5671",
+   "bytes": 105818144,
+   "metadata": {
+    "dtype": "float32",
+    "mode": "served",
+    "degrade": "null",
+    "rowset": "per dump_hidden request: prefix rows {0, s, 2s, ...} | {P-2, P-1} with s = max(1, P // 1024), then every branch's answer row (last suffix token), in suffix order; requests sorted by id",
+    "layers": "[0, 3, 4, 15, 31]",
+    "request": "m044_len16000_debias1",
+    "run": "fp32_served"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      16044
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      102
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      79
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      1072,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      1072
+     ]
+    }
+   }
+  }
+ }
+}

@@ -1,11 +1,12 @@
-//! Per-layer hidden-state gate of the bf16 GPU engine (DESIGN §9.2 "Model"; Phase 2a, I1).
+//! Per-layer hidden-state gate (a) of the bf16 GPU engine (DESIGN §9.2 "Model"; Phase 2a I1, redefined in A1).
 //!
-//! For the 10 requests with W1b hidden dumps, the engine runs each request alone with debug taps on the residual
-//! stream after layers 0, 3, 4, 15, 31 and on the final-norm output. At the dumped rows (8 sampled prefix rows
-//! and every branch's answer row) the relative error `||h - h_fp32|| / ||h_fp32||` per row is compared with
-//! qev fp32 (served path, the truth). Gate: `[model.hidden.layerN]` rel_p99/rel_max of `tests/tolerances.toml`
-//! (1.5 x the bf16 reference's own error vs fp32); the rule is also checked directly against the bf16 dumps
-//! (sysone p99/max <= 1.5 x bf16-reference p99/max).
+//! For the 10 requests with dense hidden dumps (`reference/hidden_dense.py`), the engine runs each request alone
+//! with debug taps on the residual stream after layers 0, 3, 4, 15, 31 and on the final-norm output. On the dense
+//! row set (every prefix row, or a stride of ~1k rows for the 4k and 16k requests, plus every answer row: 3,829
+//! rows per tap) the relative error `||h - h_fp32|| / ||h_fp32||` per row is compared with qev fp32 (served path,
+//! the truth), and so is the bf16 served reference's on the SAME rows. Gate per tap ([`HiddenGate`],
+//! `[model.hidden]` of `tests/tolerances.toml`): sysone p99 <= factor x reference p99; median per-row log ratio
+//! <= ln 1.5; sign test on rows > 1.5x worse vs > 1.5x better (one-sided binomial, alpha 0.01). Max is reported.
 //!
 //! `scripts/gpu.sh cargo test --release --test engine_layers -- --nocapture`
 
@@ -15,9 +16,10 @@ use sysone::engine::forward::Taps;
 use sysone::engine::goldens::{self, SafeTensors};
 use sysone::engine::gpu::{EngineOptions, GpuEngine};
 use sysone::frontend::{Frontend, Limits};
-use sysone::tolerances::{Stats, Tolerances};
+use sysone::tolerances::{HiddenGate, Stats, Tolerances};
 
 const LAYERS: [usize; 5] = [0, 3, 4, 15, 31];
+const H: usize = 4096;
 
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -38,10 +40,52 @@ fn rel(a: &[f32], truth: &[f32]) -> f64 {
     (num / den.max(1e-300)).sqrt()
 }
 
+fn tap_names() -> Vec<String> {
+    let names: Vec<String> = LAYERS.iter().map(|l| format!("layer{l}")).chain(["norm".to_string()]).collect();
+    assert_eq!(names, HiddenGate::TAPS, "taps differ from the gate's");
+    names
+}
+
+/// One dense dump: its prefix rows (checked against the row set) and, per tap, the dumped rows
+/// (prefix rows then answer rows) as one `[R, H]` buffer.
+struct Dense {
+    prefix_rows: Vec<usize>,
+    branches: usize,
+    rows: Vec<Vec<f32>>,
+    file: SafeTensors,
+}
+
+fn dense(run: &str, id: &str) -> Dense {
+    let f = SafeTensors::read(&goldens::hidden_dense_dump(&repo(), run, id).unwrap()).unwrap();
+    let p = f.i64("ids/prefix").unwrap().len();
+    let prefix_rows: Vec<usize> = f.i64("prefix_rows").unwrap().iter().map(|&x| x as usize).collect();
+    assert_eq!(prefix_rows, goldens::dense_prefix_rows(p), "{run} {id}: prefix rows are not the dense row set");
+    let branches = (0..).take_while(|k| f.shape(&format!("ids/suffix{k}")).is_some()).count();
+    let rows = tap_names()
+        .iter()
+        .map(|name| {
+            let mut v = f.f32(&format!("{name}/prefix")).unwrap();
+            v.extend(f.f32(&format!("{name}/answer")).unwrap());
+            assert_eq!(v.len(), (prefix_rows.len() + branches) * H, "{run} {id} {name}: dump rows");
+            v
+        })
+        .collect();
+    Dense { prefix_rows, branches, rows, file: f }
+}
+
+/// The reference's p99 on the dense rows must be the one tolerances.toml was written from (same dumps, same rows).
+fn check_measured(t: &Tolerances, tap: &str, refe: &Stats) {
+    let k = |m: &str| t.f64(&format!("model.hidden.{tap}.{m}")).unwrap();
+    assert_eq!(refe.n as f64, k("measured_rows"), "{tap}: row count differs from tolerances.toml");
+    let m = k("measured_rel_p99");
+    assert!((refe.p99 - m).abs() <= 1e-9 * m, "{tap}: reference p99 {} != measured_rel_p99 {m}", refe.p99);
+}
+
 #[test]
 fn hidden_states_vs_fp32_truth() {
     let fe = Frontend::load(&model_dir(), Limits::default()).unwrap();
-    let ids = goldens::hidden_ids(&repo(), "fp32_batched").unwrap();
+    let ids = goldens::hidden_dense_ids(&repo(), "fp32_served").unwrap();
+    assert_eq!(ids, goldens::hidden_dense_ids(&repo(), "bf16_served").unwrap());
     let cases = goldens::model_corpus(&repo()).unwrap();
     let plans = goldens::plan_corpus(&fe, &cases, |id| ids.iter().any(|x| x == id)).unwrap();
     assert_eq!(plans.len(), ids.len(), "every dumped request plans");
@@ -49,41 +93,40 @@ fn hidden_states_vs_fp32_truth() {
     let opts = EngineOptions { buckets: EngineOptions::buckets_up_to(32768), warmup: false, cuda_graphs: false, taps,
                                ..Default::default() };
     let mut e = GpuEngine::load(&model_dir(), &fe.slot_ids, opts).unwrap();
-    let names: Vec<String> = LAYERS.iter().map(|l| format!("layer{l}")).chain(["norm".to_string()]).collect();
-    // Per tap: (sysone vs fp32, bf16 reference vs fp32, sysone vs bf16 reference).
+    let names = tap_names();
+    // Per tap: (sysone vs fp32, bf16 reference vs fp32, sysone vs bf16 reference), in the gate's row order
+    // (requests sorted by id; per request prefix rows then answer rows).
     let mut errs: Vec<[Vec<f64>; 3]> = vec![Default::default(); names.len()];
-    // Row labels, in the order errors are pushed (same for every tap).
     let mut labels: Vec<String> = Vec::new();
+    let mut plans = plans;
+    plans.sort_by(|a, b| a.case.id.cmp(&b.case.id));
     for p in &plans {
         let id = &p.case.id;
         let (b, _) = goldens::batch_of(&[&p.plan]).unwrap();
         use sysone::contract::DecisionEngine;
         e.run(&b).unwrap();
-        let f32d = SafeTensors::read(&goldens::hidden_dump(&repo(), "fp32_batched", id).unwrap()).unwrap();
-        let bf16d = SafeTensors::read(&goldens::hidden_dump(&repo(), "bf16_batched", id).unwrap()).unwrap();
+        let f32d = dense("fp32_served", id);
+        let bf16d = dense("bf16_served", id);
         // Same token ids as the reference.
-        let pre: Vec<u32> = f32d.i64("ids/prefix").unwrap().iter().map(|&x| x as u32).collect();
+        let pre: Vec<u32> = f32d.file.i64("ids/prefix").unwrap().iter().map(|&x| x as u32).collect();
         assert_eq!(pre, p.plan.prefix_ids, "{id}: prefix ids differ from the dump");
+        assert_eq!(f32d.branches, p.plan.branches.len(), "{id}: branch count");
         for (k, br) in p.plan.branches.iter().enumerate() {
-            let s: Vec<u32> = f32d.i64(&format!("ids/suffix{k}")).unwrap().iter().map(|&x| x as u32).collect();
+            let s: Vec<u32> = f32d.file.i64(&format!("ids/suffix{k}")).unwrap().iter().map(|&x| x as u32).collect();
             assert_eq!(s, br.suffix_ids, "{id}: suffix {k} ids differ from the dump");
         }
-        let prefix_rows: Vec<usize> = f32d.i64("prefix_rows").unwrap().iter().map(|&x| x as usize).collect();
-        let rows: Vec<usize> = prefix_rows.iter().copied().chain(b.answer_rows.iter().map(|&r| r as usize)).collect();
+        assert_eq!(f32d.prefix_rows, bf16d.prefix_rows);
+        let rows: Vec<usize> =
+            f32d.prefix_rows.iter().copied().chain(b.answer_rows.iter().map(|&r| r as usize)).collect();
         let t = b.num_tokens();
-        labels.extend(prefix_rows.iter().map(|r| format!("{id} prefix row {r}")));
+        labels.extend(f32d.prefix_rows.iter().map(|r| format!("{id} prefix row {r}")));
         labels.extend((0..b.num_branches()).map(|k| format!("{id} answer {k}")));
         for (ti, name) in names.iter().enumerate() {
             let ours = e.read_tap(name, t).unwrap();
-            let mut truth = f32d.f32(&format!("{name}/prefix")).unwrap();
-            truth.extend(f32d.f32(&format!("{name}/answer")).unwrap());
-            let mut refb = bf16d.f32(&format!("{name}/prefix")).unwrap();
-            refb.extend(bf16d.f32(&format!("{name}/answer")).unwrap());
-            let h = 4096;
-            assert_eq!(truth.len(), rows.len() * h, "{id} {name}: dump rows");
+            let (truth, refb) = (&f32d.rows[ti], &bf16d.rows[ti]);
             for (k, &r) in rows.iter().enumerate() {
-                let o = &ours[r * h..(r + 1) * h];
-                let (tr, rb) = (&truth[k * h..(k + 1) * h], &refb[k * h..(k + 1) * h]);
+                let o = &ours[r * H..(r + 1) * H];
+                let (tr, rb) = (&truth[k * H..(k + 1) * H], &refb[k * H..(k + 1) * H]);
                 errs[ti][0].push(rel(o, tr));
                 errs[ti][1].push(rel(rb, tr));
                 errs[ti][2].push(rel(o, rb));
@@ -92,29 +135,134 @@ fn hidden_states_vs_fp32_truth() {
         println!("{id}: T={t}, {} rows checked per tap", rows.len());
     }
     let t = Tolerances::load_default().unwrap();
+    let gate = HiddenGate::load(&t).unwrap();
     let mut failed = Vec::new();
     for (ti, name) in names.iter().enumerate() {
         let [ours, refb, cross] = &errs[ti];
-        let (so, sr, sc) = (Stats::of(ours).unwrap(), Stats::of(refb).unwrap(), Stats::of(cross).unwrap());
-        let key = format!("model.hidden.{name}");
-        let (p99, max) = (t.f64(&format!("{key}.rel_p99")).unwrap(), t.f64(&format!("{key}.rel_max")).unwrap());
-        let factor = t.f64("factor").unwrap();
-        println!("{name:7} sysone vs fp32: {so}\n        bf16 ref vs fp32: {sr}\n        sysone vs bf16 ref: {sc}\n        \
-                  gate [{key}] rel_p99 {p99} rel_max {max}; rule {factor} x bf16-ref: p99 {:.3e} max {:.3e}",
-                 factor * sr.p99, factor * sr.max);
-        if so.p99 > p99 || so.max > max {
-            failed.push(format!("{name}: p99 {:.3e} (limit {p99}), max {:.3e} (limit {max})", so.p99, so.max));
-        }
+        assert!(ours.len() >= gate.rows_min, "{name}: only {} rows", ours.len());
+        let c = gate.compare(name, ours, refb).unwrap();
+        check_measured(&t, name, &c.refe);
+        let sc = Stats::of(cross).unwrap();
+        let fails = gate.failures(&c);
+        println!("{name:7} sysone vs fp32: {}\n        bf16 ref vs fp32: {}\n        sysone vs bf16 ref: {sc}\n        \
+                  (i) p99 {:.3e} <= {} x {:.3e} = {:.3e}; max {:.3e} (ref {:.3e}, reported)\n        \
+                  (ii) median ln(sysone/ref) {:+.4} <= {:.4}\n        \
+                  (iii) rows > {}x worse {} vs > {}x better {} (design effect {}: {} vs {}): p = {:.3e} (alpha {})\n        {}",
+                 c.cand, c.refe, c.cand.p99, gate.factor, c.refe.p99, gate.factor * c.refe.p99, c.cand.max,
+                 c.refe.max, c.median_log_ratio, gate.paired_ratio.ln(), gate.sign_ratio, c.n_up, gate.sign_ratio,
+                 c.n_down, c.design_effect, c.eff_up, c.eff_down, c.sign_p, gate.sign_alpha,
+                 if fails.is_empty() { "PASS".into() } else { fails.join("; ") });
         let mut worst: Vec<usize> = (0..ours.len()).collect();
         worst.sort_by(|&a, &b| ours[b].total_cmp(&ours[a]));
         for &k in worst.iter().take(3) {
             println!("        worst: {}: sysone {:.3e}, bf16 ref {:.3e}", labels[k], ours[k], refb[k]);
         }
-        if so.p99 > factor * sr.p99 || so.max > factor * sr.max {
-            println!("        NOTE: {name} is outside {factor} x this run's bf16-reference error");
+        if !fails.is_empty() {
+            failed.push(format!("{name}: {}", fails.join("; ")));
         }
     }
     assert!(failed.is_empty(), "hidden-state gate failures:\n  {}", failed.join("\n  "));
+}
+
+/// The gate's validation (`reference/hidden_dense.py gate`, `tests/golden/dev/model/hidden_gate_report.json`)
+/// recomputed here from the dense dumps with [`HiddenGate`]: the bf16 null realizations (per-question path and three
+/// hidden-basis permutations) vs the reference in both role orders, and the deterministic synthetic regressions on
+/// top of `bf16_perm1` (every row's error scaled; 5% of rows scaled, strided or as one block) must reach the same
+/// statistics and verdicts as the Python gate. No GPU.
+#[test]
+fn hidden_gate_matches_python() {
+    let t = Tolerances::load_default().unwrap();
+    let gate = HiddenGate::load(&t).unwrap();
+    let report: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(repo().join("tests/golden/dev/model/hidden_gate_report.json")).unwrap(),
+    )
+    .unwrap();
+    let g = &report["gate"];
+    assert_eq!(
+        (gate.factor, gate.paired_ratio, gate.sign_ratio, gate.sign_alpha, gate.rows_min as u64,
+         HiddenGate::TAPS.map(|tap| g["design_effect"][tap].as_f64().unwrap())),
+        (g["factor"].as_f64().unwrap(), g["paired_ratio"].as_f64().unwrap(), g["sign_ratio"].as_f64().unwrap(),
+         g["sign_alpha"].as_f64().unwrap(), g["rows_min"].as_u64().unwrap(), gate.design_effect),
+        "hidden_gate_report.json was generated with other [model.hidden] parameters"
+    );
+    assert!(report["all_ok"].as_bool().unwrap(), "the Python validation itself did not meet its expectations");
+    let names = tap_names();
+    // Per run and tap: errors vs fp32 of the bf16 served reference and of the bf16 null realizations.
+    const RUNS: [&str; 5] = ["bf16_served", "bf16_perq", "bf16_perm1", "bf16_perm2", "bf16_perm3"];
+    let mut errs: Vec<Vec<Vec<f64>>> = vec![vec![Vec::new(); names.len()]; RUNS.len()];
+    for id in goldens::hidden_dense_ids(&repo(), "fp32_served").unwrap() {
+        let f = dense("fp32_served", &id);
+        for (ri, run) in RUNS.iter().enumerate() {
+            let d = dense(run, &id);
+            for ti in 0..names.len() {
+                for k in 0..f.rows[ti].len() / H {
+                    let s = k * H..(k + 1) * H;
+                    errs[ri][ti].push(rel(&d.rows[ti][s.clone()], &f.rows[ti][s]));
+                }
+            }
+        }
+    }
+    let refe = &errs[0];
+    let run_errs = |run: &str| &errs[RUNS.iter().position(|r| *r == run).unwrap_or_else(|| panic!("no run {run}"))];
+    let base = run_errs("bf16_perm1");
+    let n = refe[0].len();
+    assert_eq!(n as u64, report["rows"].as_u64().unwrap());
+    for (ti, name) in names.iter().enumerate() {
+        check_measured(&t, name, &Stats::of(&refe[ti]).unwrap());
+    }
+    let strided: Vec<bool> = (0..n).map(|k| k % 20 == 7).collect();
+    let block: Vec<bool> = (0..n).map(|k| k >= n - n.div_ceil(20)).collect();
+    let (mut checked, mut fails) = (0, 0);
+    for cand in report["candidates"].as_array().unwrap() {
+        if !cand["rust_check"].as_bool().unwrap() {
+            continue;
+        }
+        let name = cand["name"].as_str().unwrap();
+        let (kind, arg) = name.split_once(':').unwrap();
+        let x: f64 = arg.parse().unwrap_or(f64::NAN);
+        let mut all_pass = true;
+        for (ti, tap) in names.iter().enumerate() {
+            let scaled = |mask: &dyn Fn(usize) -> bool| -> Vec<f64> {
+                base[ti].iter().enumerate().map(|(k, e)| if mask(k) { x * e } else { *e }).collect()
+            };
+            let (c, r) = match kind {
+                "null" => (run_errs(arg)[ti].clone(), refe[ti].clone()),
+                "null_swapped" => (refe[ti].clone(), run_errs(arg)[ti].clone()),
+                "scale_all" => (scaled(&|_| true), refe[ti].clone()),
+                "rows5_strided" => (scaled(&|k| strided[k]), refe[ti].clone()),
+                "rows5_block" => (scaled(&|k| block[k]), refe[ti].clone()),
+                _ => panic!("unknown rust_check candidate {name}"),
+            };
+            let got = gate.compare(tap, &c, &r).unwrap();
+            let want = &cand["taps"][tap.as_str()];
+            let close = |a: f64, k: &str| {
+                let b = want[k].as_f64().unwrap();
+                assert!((a - b).abs() <= 1e-9 * b.abs().max(1e-12), "{name} {tap} {k}: rust {a} python {b}");
+            };
+            close(got.cand.p99, "cand_p99");
+            close(got.refe.p99, "ref_p99");
+            close(got.median_log_ratio, "median_log_ratio");
+            close(got.sign_p, "sign_p");
+            assert_eq!((got.n_up as u64, got.n_down as u64),
+                       (want["n_up"].as_u64().unwrap(), want["n_down"].as_u64().unwrap()), "{name} {tap}");
+            assert_eq!((got.eff_up as u64, got.eff_down as u64, got.design_effect),
+                       (want["eff_up"].as_u64().unwrap(), want["eff_down"].as_u64().unwrap(),
+                        want["design_effect"].as_f64().unwrap()), "{name} {tap}: effective counts");
+            let mut f: Vec<String> =
+                gate.failures(&got).iter().map(|s| s.split_whitespace().next().unwrap().to_string()).collect();
+            f.sort();
+            let mut w: Vec<String> =
+                want["failed"].as_array().unwrap().iter().map(|s| s.as_str().unwrap().to_string()).collect();
+            w.sort();
+            assert_eq!(f, w, "{name} {tap}: failed criteria");
+            all_pass &= f.is_empty();
+        }
+        assert_eq!(if all_pass { "pass" } else { "fail" }, cand["verdict"].as_str().unwrap(), "{name}");
+        checked += 1;
+        fails += usize::from(!all_pass);
+    }
+    assert!(checked >= 10 && fails > 0 && fails < checked, "{checked} candidates checked, {fails} failing");
+    println!("{checked} validation candidates reproduced ({fails} failing as in the Python report)");
 }
 
 /// Diagnostic (ignored): per-row relative error over every prefix row of one request, against an fp32 dump

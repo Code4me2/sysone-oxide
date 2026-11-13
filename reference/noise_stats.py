@@ -203,7 +203,8 @@ def main() -> None:
     if args.write_tolerances:
         import tolerances
 
-        TOLERANCES.write_text(tolerances.render(report))
+        old = TOLERANCES.read_text() if TOLERANCES.exists() else ""
+        TOLERANCES.write_text(tolerances.keep_generated_blocks(old, tolerances.render(report)))
         print(f"wrote {TOLERANCES}")
 
 

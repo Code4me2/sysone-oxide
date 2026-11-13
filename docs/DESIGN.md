@@ -271,7 +271,8 @@ Every kernel gets a standalone test against a PyTorch reference implementation (
 test.
 
 *Update (Phase 2a):* every kernel above is implemented in cuTile (`src/kernels/`), including `tree_conv1d_silu` and
-the GDN scan; there are no SIMT kernels in the tree yet (the cuda-oxide GDN scan, G1, is in progress). The
+the GDN scan. *Update (G1):* the GDN delta rule also has cuda-oxide SIMT kernels (`kernels-simt/`, docs/G1.md),
+opt-in through `GdnOptions::backend`. The
 projection GEMMs and the slot readout run on cuBLAS (`src/engine/gemm.rs`). The kernel tests compare against CPU f64
 references transcribed from transformers' `modeling_qwen3_5.py` rather than against PyTorch at run time. The op-by-op
 mapping is in ARCHITECTURE.md §5.
@@ -347,7 +348,10 @@ LRU bounded by bytes. It matters for workloads that ask new questions about the 
 - For each request record: rendered prompt strings, `prefix_ids`, `suffix_ids`, slot logits, final probabilities,
   and the response JSON.
 - For 10 requests also record per-layer hidden states (after layers 0, 3, 4, 15, 31 and the final norm) at answer
-  rows and at sampled prefix rows.
+  rows and at sampled prefix rows (W1b, 8 rows per request). Gate (a) uses denser dumps of the same 10 requests
+  (`reference/hidden_dense.py`, Phase 2a A1): every prefix row, or every `P // 1024`-th row for the 4k and 16k
+  requests, plus every answer row (3,829 rows per tap), in fp32 and bf16 on the served path, plus bf16 null
+  realizations (per-question path; three hidden-basis permutations) and two degraded paths for validation. Stored outside git with a committed sha256 manifest.
 - The reference runs in **fp32** (the "truth") and in **bf16** (the "production reference"): HF eager with OneJev +
   `serve.patch`.
 - **NVFP4 tier:** the same corpus through the checkpoint's evaluation path (compressed-tensors
@@ -373,7 +377,7 @@ Every test always reports the measured distribution (p50/p99/max), not just pass
 |---|---|
 | Frontend | Prompt strings and token ids byte-identical to the goldens for 100% of the corpus; limit and error responses identical. |
 | Kernels | Each op against a torch reference on random inputs (fp32 tolerance per op, documented). |
-| Model | Per-layer hidden states: relative error vs fp32 truth no worse than bf16-reference vs fp32 truth × 1.5. |
+| Model | Per-layer hidden states, gate (a): per row, relative error vs fp32 truth, compared with the bf16 reference's own error on the same rows (the dense row set, ≥ 1000 rows per tap). Per tap: (i) p99 ≤ 1.5 × the reference's p99 (max reported only); (ii) median over rows of ln(sysone / reference error) ≤ ln 1.5; (iii) rows > 1.5× worse than the reference are not significantly more frequent than rows > 1.5× better (one-sided exact binomial sign test, α = 0.01, on counts deflated by a per-tap design effect measured from five bf16 realizations of the reference, because rows of one request move together). Heavy-tailed deep-layer errors are row-specific (summation order decides which rows are sensitive), so a marginal quantile alone is not enough; the paired criteria catch systematic regressions. Validation (bf16 per-question null passes, synthetic regressions fail): `tests/golden/dev/model/hidden_gate_report.json`. |
 | End-to-end | Per-option probability |Δ| vs bf16 reference: start at p99 ≤ 0.01 and max ≤ 0.05 (the reference's own batched-vs-sequential spread is ≤ 0.03). Top choice agrees wherever the reference margin is > 0.02. Calibration quality (Brier/ECE on the golden corpus labels where available) is not worse than the bf16 reference beyond ε. |
 | NVFP4 | Kernels: activation quantization bit-exact vs compressed-tensors; FP4 GEMMs within 1 ulp of the exact f64 dequant-matmul. Model: **statistical**, because the QDQ reference itself moves by up to 0.2 per option under a batch-shape change (§3.1). On a labeled eval set rebuilt from the checkpoint card's public sources (BANKING77, LEDGAR, LongBench-v2): sysone NVFP4's accuracy, top-1 agreement with the QDQ reference, and mean/p99 \|Δp\| must lie inside the envelope the QDQ reference shows against itself across batch shapes and paths (paired bootstrap). Report vs bf16 as quality information. |
 | Batch invariance | The same request alone vs packed with 63 others: max |Δp| ≤ 0.01. |
