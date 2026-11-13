@@ -1,29 +1,37 @@
 #!/usr/bin/env bash
-# Run the labeled eval set through the sysone bf16 server over HTTP, in GPU-locked chunks, then merge and score.
-# Each chunk is ONE scripts/gpu.sh job: start `sysone --engine bf16` (default production config), wait for
+# Run the labeled eval set through the sysone server over HTTP, in GPU-locked chunks, then merge and score.
+# Each chunk is ONE scripts/gpu.sh job: start `sysone --engine $ENGINE` (default production config), wait for
 # /health (the server only listens once the engine is loaded and warmed up), POST records for up to
 # CHUNK_SECONDS with run_sysone.py, stop the server, release the lock. Loops until every record is in a part.
 #   bash reference/eval/run_sysone.sh                 # name sysone_bf16
 #   NAME=sysone_bf16_x CHUNK_SECONDS=300 bash reference/eval/run_sysone.sh
 #   NAME=sysone_smoke RUN_ARGS='--limit 3' bash reference/eval/run_sysone.sh   # harness smoke (subset)
 #   NAME=sysone_bf16_simt GDN_BACKEND=simt bash reference/eval/run_sysone.sh     # GDN backend (tile|simt|auto)
+#   NAME=sysone_nvfp4 ENGINE=nvfp4 bash reference/eval/run_sysone.sh             # nvfp4 engine (N1); the model
+#        defaults to the NVFP4 checkpoint and the limits to its profile (16,384 per branch, 65,536 per request)
 # Then: python3 -I reference/eval/score.py --run-file tests/golden/dev/eval/candidates/sysone_bf16.json --tier bf16
+#       (nvfp4: --tier nvfp4)
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd -P)
 REPO=$(cd "$HERE/../.." && pwd)
-NAME=${NAME:-sysone_bf16}
+ENGINE=${ENGINE:-bf16}
+NAME=${NAME:-sysone_$ENGINE}
 PORT=${PORT:-8766}
-MODEL=${SYSONE_MODEL_DIR:-/home/velvet/Desktop/hf_models/elephant-1}
+case "$ENGINE" in
+  bf16) MODEL=${SYSONE_MODEL_DIR:-/home/velvet/Desktop/hf_models/elephant-1}; MAX_BRANCH=32768 ;;
+  nvfp4) MODEL=${SYSONE_NVFP4_DIR:-/home/velvet/Desktop/hf_models/elephant-1-nvfp4-mlp}; MAX_BRANCH=16384 ;;
+  *) echo "ENGINE must be bf16 or nvfp4"; exit 1 ;;
+esac
 BIN=${SYSONE_BIN:-$REPO/target/release/sysone}
 REF=${SYSONE_REF:-/home/velvet/Desktop/sysone-ref}
 PARTS=$REF/golden/dev/eval/candidates/$NAME
 LOG=$REF/golden/dev/eval/logs
 CHUNK_SECONDS=${CHUNK_SECONDS:-420}
 GDN_BACKEND=${GDN_BACKEND:-auto}
-# Server flags: the defaults of src/main.rs, spelled out so they are recorded. Buckets are
-# EngineOptions::buckets_up_to(max(token_budget, max_request_tokens)) = 256, 512, ..., 65536, CUDA graphs on.
-SERVER_ARGS=(--engine bf16 --model "$MODEL" --listen "127.0.0.1:$PORT" --token-budget 16384 --max-wait-us 2000
-             --max-request-tokens 65536 --max-branch-tokens 32768 --max-prefixes 256 --gdn-backend "$GDN_BACKEND")
+# Server flags: the defaults of src/main.rs and the checkpoint profile, spelled out so they are recorded. Buckets
+# are EngineOptions::buckets_up_to(max(token_budget, max_request_tokens)) = 256, 512, ..., 65536, CUDA graphs on.
+SERVER_ARGS=(--engine "$ENGINE" --model "$MODEL" --listen "127.0.0.1:$PORT" --token-budget 16384 --max-wait-us 2000
+             --max-request-tokens 65536 --max-branch-tokens "$MAX_BRANCH" --max-prefixes 256 --gdn-backend "$GDN_BACKEND")
 
 if [ "${1:-}" = "__chunk" ]; then  # runs under the GPU lock
   t0=$(date +%s.%N)
@@ -59,20 +67,39 @@ mkdir -p "$PARTS" "$LOG"
 SHA=$(git -C "$REPO" rev-parse HEAD)
 DIRTY=$(git -C "$REPO" status --porcelain --untracked-files=no -- src Cargo.toml Cargo.lock | wc -l)
 BIN_SHA=$(sha256sum "$BIN" | cut -d' ' -f1)
-if [ ! -f "$PARTS/model_sha256" ]; then sha256sum "$MODEL/model.safetensors" | cut -d' ' -f1 >"$PARTS/model_sha256"; fi
-python3 -I - "$PARTS/build.json" "$SHA" "$DIRTY" "$BIN_SHA" "$(cat "$PARTS/model_sha256")" "$MODEL" "${SERVER_ARGS[*]}" <<'EOF'
+# Weight files: model.safetensors, or every shard of model.safetensors.index.json (the NVFP4 checkpoint), as JSON.
+if [ ! -f "$PARTS/model_sha256.json" ]; then
+  python3 -I - "$MODEL" >"$PARTS/model_sha256.json" <<'EOF'
+import hashlib, json, pathlib, sys
+d = pathlib.Path(sys.argv[1])
+idx = d / "model.safetensors.index.json"
+files = sorted(set(json.loads(idx.read_text())["weight_map"].values())) if idx.exists() else ["model.safetensors"]
+out = {}
+for f in files:
+    h = hashlib.sha256()
+    with open(d / f, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 24), b""):
+            h.update(chunk)
+    out[f] = h.hexdigest()
+print(json.dumps(out))
+EOF
+fi
+python3 -I - "$PARTS/build.json" "$SHA" "$DIRTY" "$BIN_SHA" "$PARTS/model_sha256.json" "$MODEL" "${SERVER_ARGS[*]}" "$ENGINE" <<'EOF'
 import json, subprocess, sys
-out, sha, dirty, bin_sha, model_sha, model, server_args = sys.argv[1:]
+out, sha, dirty, bin_sha, model_sha, model, server_args, engine = sys.argv[1:]
+model_sha = json.load(open(model_sha))
+desc = {"bf16": "sysone GpuEngine bf16 (bf16 weights/activations, f32 slot readout)",
+        "nvfp4": "sysone GpuEngine nvfp4 (NVFP4 W4A4 MLP GEMMs, quantize fused; everything else bf16; f32 slot readout)"}
 gpu = subprocess.run(["nvidia-smi", "--query-gpu=name,driver_version", "--format=csv,noheader"],
                      capture_output=True, text=True).stdout.strip()
-b = {"config": {"engine": "sysone GpuEngine bf16 (bf16 weights/activations, f32 slot readout)", "dtype": "bfloat16",
+b = {"config": {"engine": desc[engine], "dtype": "bfloat16", "nvfp4": engine == "nvfp4",
                 "model": model.rstrip("/").split("/")[-1],
                 "buckets": [256 << i for i in range(9)], "cuda_graphs": True,
                 "token_budget": 16384, "max_wait_us": 2000, "max_prefixes": 256,
                 "gdn_backend": server_args.split("--gdn-backend ")[1].split()[0],
                 "server_args": server_args.replace(model, "<model>")},
      "provenance": {"tier": "dev (GB10)", "git_sha": sha, "src_dirty_files": int(dirty), "binary_sha256": bin_sha,
-                    "gpu": gpu, "model_files_sha256": {"model.safetensors": model_sha}}}
+                    "gpu": gpu, "model_files_sha256": model_sha}}
 json.dump(b, open(out, "w"), indent=1)
 EOF
 for i in $(seq 1 40); do

@@ -159,6 +159,109 @@ pub mod kernels {
         s.store(st);
     }
 
+    /// `(x * rsqrt(sum(x²)/N + eps)) * (1 + w)` in fp32: the same operations in the same order as
+    /// `crate::kernels::norm`'s `zc_scale` (a copy: cuTile modules cannot call each other's device functions).
+    fn zc_scale_q<const N: i32>(
+        xf: Tile<f32, { [1, N] }>,
+        one_plus_w: Tile<f32, { [1, N] }>,
+        eps: f32,
+    ) -> Tile<f32, { [1, N] }> {
+        let ss: Tile<f32, { [1] }> = reduce_sum(xf * xf, 1i32);
+        let ss: f32 = tile_to_scalar(ss.reshape(const_shape![]));
+        let n: f32 = convert_scalar(N);
+        let inv: Tile<f32, { [] }> = rsqrt(scalar_to_tile(ss / n + eps), ftz::Disabled);
+        let inv: f32 = tile_to_scalar(inv);
+        (xf * inv.broadcast(const_shape![1, N])) * one_plus_w
+    }
+
+    /// `zc_rmsnorm` (as `crate::kernels::norm::zc_rmsnorm`) with the NVFP4 quantization of its bf16 output fused
+    /// into the epilogue: the normed row is rounded to bf16 (the reference's rounding point) and quantized, and
+    /// only the packed values and scales are stored. One row per tile block. Generics: `N, N/2, N/16`.
+    #[cutile::entry()]
+    pub fn zc_rmsnorm_nvfp4<const N: i32, const NP: i32, const G: i32>(
+        q: &mut Tensor<f4e2m1fnx2, { [1, NP] }>,
+        s: &mut Tensor<f8e4m3fn, { [1, G] }>,
+        x: &Tensor<bf16, { [-1, N] }>,
+        w: &Tensor<bf16, { [N] }>,
+        eps: f32,
+        igs: f32,
+    ) {
+        let pid: (i32, i32, i32) = get_tile_block_id();
+        let row_shape: Shape<{ [1, N] }> = const_shape![1, N];
+        let tx: Tile<bf16, { [1, N] }> = x.partition(row_shape).load([pid.0, 0i32]);
+        let xf: Tile<f32, { [1, N] }> = convert_tile(tx);
+        let tw: Tile<bf16, { [N] }> = w.partition(const_shape![N]).load([0i32]);
+        let wf: Tile<f32, { [1, N] }> = convert_tile(tw.reshape(row_shape));
+        let one_plus_w: Tile<f32, { [1, N] }> = constant(1.0f32, row_shape) + wf;
+        let y: Tile<f32, { [1, N] }> = zc_scale_q(xf, one_plus_w, eps);
+        let yb: Tile<bf16, { [1, N] }> = convert_tile(y);
+        let yq: Tile<f32, { [1, N] }> = convert_tile(yb);
+        let (qt, st) = nvfp4_quantize_tile::<1, N, G>(yq, igs);
+        q.store(qt.pack(const_shape![1, NP]));
+        s.store(st);
+    }
+
+    /// `add_zc_rmsnorm` (as `crate::kernels::norm::add_zc_rmsnorm`: `residual = bf16(residual + x)` in place,
+    /// then the norm) with the NVFP4 quantization of the bf16 normed row fused into the epilogue. Generics:
+    /// `N, N/2, N/16`.
+    #[cutile::entry()]
+    pub fn add_zc_rmsnorm_nvfp4<const N: i32, const NP: i32, const G: i32>(
+        residual: &mut Tensor<bf16, { [1, N] }>,
+        q: &mut Tensor<f4e2m1fnx2, { [1, NP] }>,
+        s: &mut Tensor<f8e4m3fn, { [1, G] }>,
+        x: &Tensor<bf16, { [-1, N] }>,
+        w: &Tensor<bf16, { [N] }>,
+        eps: f32,
+        igs: f32,
+    ) {
+        let pid: (i32, i32, i32) = get_tile_block_id();
+        let row_shape: Shape<{ [1, N] }> = const_shape![1, N];
+        let tr: Tile<bf16, { [1, N] }> = residual.load();
+        let tx: Tile<bf16, { [1, N] }> = x.partition(row_shape).load([pid.0, 0i32]);
+        let trf: Tile<f32, { [1, N] }> = convert_tile(tr);
+        let txf: Tile<f32, { [1, N] }> = convert_tile(tx);
+        let sum: Tile<f32, { [1, N] }> = trf + txf;
+        let new_res: Tile<bf16, { [1, N] }> = convert_tile(sum);
+        residual.store(new_res);
+        let xf: Tile<f32, { [1, N] }> = convert_tile(new_res);
+        let tw: Tile<bf16, { [N] }> = w.partition(const_shape![N]).load([0i32]);
+        let wf: Tile<f32, { [1, N] }> = convert_tile(tw.reshape(row_shape));
+        let one_plus_w: Tile<f32, { [1, N] }> = constant(1.0f32, row_shape) + wf;
+        let y: Tile<f32, { [1, N] }> = zc_scale_q(xf, one_plus_w, eps);
+        let yb: Tile<bf16, { [1, N] }> = convert_tile(y);
+        let yq: Tile<f32, { [1, N] }> = convert_tile(yb);
+        let (qt, st) = nvfp4_quantize_tile::<1, N, G>(yq, igs);
+        q.store(qt.pack(const_shape![1, NP]));
+        s.store(st);
+    }
+
+    /// `silu_mul` (as `crate::kernels::pointwise::silu_mul`: `bf16(bf16(silu(g)) · u)`) with the NVFP4
+    /// quantization of the bf16 product fused into the epilogue. `B` columns of one row per tile block; grid
+    /// `(T, I/B)`. Generics: `I, B, B/2, B/16`.
+    #[cutile::entry()]
+    pub fn silu_mul_nvfp4<const I: i32, const B: i32, const BP: i32, const G: i32>(
+        q: &mut Tensor<f4e2m1fnx2, { [1, BP] }>,
+        s: &mut Tensor<f8e4m3fn, { [1, G] }>,
+        gu: &Tensor<bf16, { [-1, -1] }>,
+        igs: f32,
+    ) {
+        let pid: (i32, i32, i32) = get_tile_block_id();
+        let part: Partition<bf16, { [1, B] }> = gu.partition(const_shape![1, B]);
+        let tg: Tile<bf16, { [1, B] }> = part.load([pid.0, pid.1]);
+        let tu: Tile<bf16, { [1, B] }> = part.load([pid.0, pid.1 + I / B]);
+        let g: Tile<f32, { [1, B] }> = convert_tile(tg);
+        let u: Tile<f32, { [1, B] }> = convert_tile(tu);
+        let one: Tile<f32, { [1, B] }> = constant(1.0f32, const_shape![1, B]);
+        let sl: Tile<f32, { [1, B] }> = true_div(g, one + exp(negf(g)));
+        let s_b: Tile<bf16, { [1, B] }> = convert_tile(sl);
+        let s_f: Tile<f32, { [1, B] }> = convert_tile(s_b);
+        let o: Tile<bf16, { [1, B] }> = convert_tile(s_f * u);
+        let of: Tile<f32, { [1, B] }> = convert_tile(o);
+        let (qt, st) = nvfp4_quantize_tile::<1, B, G>(of, igs);
+        q.store(qt.pack(const_shape![1, BP]));
+        s.store(st);
+    }
+
     /// `z[T, N] = bf16(alpha[n] · Σ_k x[t, k] · w[n, k])` with NVFP4 operands and e4m3 group-16 block scales.
     ///
     /// Persistent, grouped-M rasterization over the output tiles (`MAP_SHAPE = [GROUP_M, 1]`). Generics:
@@ -524,27 +627,146 @@ pub fn gemm_op(
     sms: usize,
 ) -> Result<impl DeviceOp<Output = Arc<Tensor<bf16>>>> {
     ensure!(tiles.kernel == GemmKernel::Raw, "gemm_op launches the Raw kernel");
-    let t = check_gemm_shapes(x, x_scales, w, &z, &tiles)?;
-    let (nm, nn) = (t.div_ceil(tiles.bm), w.n / tiles.bn);
-    let ntb = tiles.num_tile_blocks(t, w.n, sms);
-    // Safety: check_gemm_shapes validated every operand against (T, N, K) and the tiles; the kernel only touches
-    // tiles bid_m < ceil(T/BM), bid_n < N/BN, k < K/BK, and partial row tiles are clipped by the partition views.
+    check_gemm_shapes(x, x_scales, w, &z, &tiles)?;
+    let alpha = RawAlpha { lo: w.alpha_lo, hi: w.alpha_hi, split_n: w.split_n };
+    gemm_raw_op(x, x_scales, &w.packed, &w.scales, alpha, z, tiles, sms)
+}
+
+/// The scalar epilogue of [`kernels::gemm_nvfp4_raw`]: output columns `< split_n` are scaled by `lo`, the rest by
+/// `hi` (the two halves of a fused gate/up; one projection has `lo == hi`, `split_n = N`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RawAlpha {
+    pub lo: f32,
+    pub hi: f32,
+    pub split_n: usize,
+}
+
+impl RawAlpha {
+    /// The epilogue of projections that share one `input_global_scale` `igs`, given each part's
+    /// `(rows, weight_global_scale)` in row order: `1 / (igs · wgs)` rounded once to f32 (as [`prepare_weights`]).
+    pub fn for_parts(igs: f32, parts: &[(usize, f32)]) -> Result<Self> {
+        ensure!(!parts.is_empty() && parts.len() <= 2, "{} parts: the raw epilogue takes one or two", parts.len());
+        let alpha = |wgs: f32| (1.0f64 / (igs as f64 * wgs as f64)) as f32;
+        let n: usize = parts.iter().map(|p| p.0).sum();
+        Ok(RawAlpha {
+            lo: alpha(parts[0].1),
+            hi: alpha(parts[parts.len() - 1].1),
+            split_n: if parts.len() == 1 { n } else { parts[0].0 },
+        })
+    }
+}
+
+/// The `Raw` GEMM on borrowed weight tensors (`w_packed [N, K/2]`, `w_scales [N, K/16]`), as a device operation
+/// writing into `z [T, N]`. Every shape is validated here; the kernel itself has no bounds checks.
+#[allow(clippy::too_many_arguments)]
+pub fn gemm_raw_op(
+    x: &Arc<Tensor<f4e2m1fnx2>>,
+    x_scales: &Arc<Tensor<f8e4m3fn>>,
+    w_packed: &Arc<Tensor<f4e2m1fnx2>>,
+    w_scales: &Arc<Tensor<f8e4m3fn>>,
+    alpha: RawAlpha,
+    z: Arc<Tensor<bf16>>,
+    tiles: GemmTiles,
+    sms: usize,
+) -> Result<impl DeviceOp<Output = Arc<Tensor<bf16>>>> {
+    ensure!(tiles.kernel == GemmKernel::Raw, "gemm_raw_op launches the Raw kernel");
+    ensure!(w_packed.shape().len() == 2 && x.shape().len() == 2, "gemm: rank-2 operands expected");
+    let (n, k) = (w_packed.shape()[0] as usize, 2 * w_packed.shape()[1] as usize);
+    let t = x.shape()[0] as usize;
+    ensure!(x.shape() == [t as i32, (k / 2) as i32], "gemm: x is {:?}, W has K = {k}", x.shape());
+    ensure!(x_scales.shape() == [t as i32, (k / GROUP) as i32], "gemm: x_scales is {:?}", x_scales.shape());
+    ensure!(w_scales.shape() == [n as i32, (k / GROUP) as i32], "gemm: W scales is {:?}", w_scales.shape());
+    ensure!(z.shape() == [t as i32, n as i32], "gemm: z is {:?}, expected [{t}, {n}]", z.shape());
+    tiles.validate(n, k)?;
+    ensure!(alpha.split_n % tiles.bn == 0 && alpha.split_n <= n, "gemm: alpha split at column {} (N = {n}, BN = {})",
+            alpha.split_n, tiles.bn);
+    let (nm, nn) = (t.div_ceil(tiles.bm), n / tiles.bn);
+    let ntb = tiles.num_tile_blocks(t, n, sms);
+    // Safety: every operand was validated against (T, N, K) and the tiles above; the kernel only touches tiles
+    // bid_m < ceil(T/BM), bid_n < N/BN, k < K/BK, and partial row tiles are clipped by the partition views.
     let op = unsafe {
         kernels::gemm_nvfp4_raw(
             z,
             x.clone(),
-            w.packed.clone(),
+            w_packed.clone(),
             x_scales.clone(),
-            w.scales.clone(),
-            w.alpha_lo,
-            w.alpha_hi,
-            (w.split_n / tiles.bn) as i32,
+            w_scales.clone(),
+            alpha.lo,
+            alpha.hi,
+            (alpha.split_n / tiles.bn) as i32,
             nm as i32,
             nn as i32,
             ntb as i32,
         )
     };
     Ok(op.generics(tiles.generics()).grid((ntb, 1, 1)).map(|out| out.0))
+}
+
+/// Columns of one row per tile block of [`kernels::silu_mul_nvfp4`].
+pub const SILU_Q_BLOCK: usize = 1024;
+
+fn check_act(t: usize, k: usize, q: &Tensor<f4e2m1fnx2>, s: &Tensor<f8e4m3fn>) -> Result<()> {
+    ensure!(k % GROUP == 0, "K = {k} is not a multiple of {GROUP}");
+    ensure!(q.shape() == [t as i32, (k / 2) as i32], "q is {:?}, expected [{t}, {}]", q.shape(), k / 2);
+    ensure!(s.shape() == [t as i32, (k / GROUP) as i32], "s is {:?}, expected [{t}, {}]", s.shape(), k / GROUP);
+    Ok(())
+}
+
+/// `q, s = nvfp4(bf16(zc_rmsnorm(x, w)))` for `x [T, N]`, `w [N]`: [`kernels::zc_rmsnorm_nvfp4`].
+pub fn zc_rmsnorm_nvfp4<'a>(
+    q: &'a mut Tensor<f4e2m1fnx2>,
+    s: &'a mut Tensor<f8e4m3fn>,
+    x: &'a Tensor<bf16>,
+    w: &'a Tensor<bf16>,
+    eps: f32,
+    igs: f32,
+) -> Result<impl GraphNode + 'a> {
+    ensure!(x.shape().len() == 2, "x must be [T, N], got {:?}", x.shape());
+    let (t, n) = (x.shape()[0] as usize, x.shape()[1] as usize);
+    ensure!(w.shape() == [n as i32], "w is {:?}, expected [{n}]", w.shape());
+    check_act(t, n, q, s)?;
+    let g = vec![n.to_string(), (n / 2).to_string(), (n / GROUP).to_string()];
+    Ok(kernels::zc_rmsnorm_nvfp4(q.partition([1, n / 2]), s.partition([1, n / GROUP]), x, w, eps, igs).generics(g))
+}
+
+/// `residual = bf16(residual + x)` in place, then `q, s = nvfp4(bf16(zc_rmsnorm(residual, w)))`:
+/// [`kernels::add_zc_rmsnorm_nvfp4`].
+#[allow(clippy::too_many_arguments)]
+pub fn add_zc_rmsnorm_nvfp4<'a>(
+    residual: &'a mut Tensor<bf16>,
+    q: &'a mut Tensor<f4e2m1fnx2>,
+    s: &'a mut Tensor<f8e4m3fn>,
+    x: &'a Tensor<bf16>,
+    w: &'a Tensor<bf16>,
+    eps: f32,
+    igs: f32,
+) -> Result<impl GraphNode + 'a> {
+    ensure!(x.shape().len() == 2 && residual.shape() == x.shape(), "residual {:?} vs x {:?}", residual.shape(), x.shape());
+    let (t, n) = (x.shape()[0] as usize, x.shape()[1] as usize);
+    ensure!(w.shape() == [n as i32], "w is {:?}, expected [{n}]", w.shape());
+    check_act(t, n, q, s)?;
+    let g = vec![n.to_string(), (n / 2).to_string(), (n / GROUP).to_string()];
+    Ok(kernels::add_zc_rmsnorm_nvfp4(residual.partition([1, n]), q.partition([1, n / 2]), s.partition([1, n / GROUP]),
+                                     x, w, eps, igs)
+        .generics(g))
+}
+
+/// `q, s = nvfp4(bf16(bf16(silu(gu[:, :I])) · gu[:, I:]))` for `gu [T, 2I]`: [`kernels::silu_mul_nvfp4`].
+/// `I` must be a multiple of [`SILU_Q_BLOCK`].
+pub fn silu_mul_nvfp4<'a>(
+    q: &'a mut Tensor<f4e2m1fnx2>,
+    s: &'a mut Tensor<f8e4m3fn>,
+    gu: &'a Tensor<bf16>,
+    igs: f32,
+) -> Result<impl GraphNode + 'a> {
+    let sh = gu.shape();
+    ensure!(sh.len() == 2 && (sh[1] as usize).is_multiple_of(2), "gu must be [T, 2I], got {sh:?}");
+    let (t, i) = (sh[0] as usize, sh[1] as usize / 2);
+    ensure!(i.is_multiple_of(SILU_Q_BLOCK), "I = {i} is not a multiple of {SILU_Q_BLOCK}");
+    check_act(t, i, q, s)?;
+    let b = SILU_Q_BLOCK;
+    let g = vec![i.to_string(), b.to_string(), (b / 2).to_string(), (b / GROUP).to_string()];
+    Ok(kernels::silu_mul_nvfp4(q.partition([1, b / 2]), s.partition([1, b / GROUP]), gu, igs).generics(g))
 }
 
 /// Synchronous GEMM with either kernel. `z` must be `[T, N]` bf16.
@@ -604,6 +826,28 @@ mod tests {
         assert_eq!(p.alpha[0], (1.0 / (628.0f64 * 9408.0)) as f32);
         assert_eq!(p.alpha[ng], (1.0 / (628.0f64 * 4128.0)) as f32);
         assert_eq!(p.alpha.len(), ng + nu);
+    }
+
+    #[test]
+    fn raw_alpha_for_parts_matches_prepare_weights() {
+        // The engine computes the epilogue from the loaded parts (RawAlpha); it must equal prepare_weights'.
+        let k = 32usize;
+        let (p, s) = (vec![0u8; 256 * k / 2], vec![0x38u8; 256 * k / 16]);
+        let proj = |wgs| CheckpointProj {
+            n: 256,
+            k,
+            weight_packed: &p,
+            weight_scale: &s,
+            weight_global_scale: wgs,
+            input_global_scale: 628.0,
+        };
+        let two = prepare_weights(&[proj(9408.0), proj(4128.0)]).unwrap();
+        let a = RawAlpha::for_parts(628.0, &[(256, 9408.0), (256, 4128.0)]).unwrap();
+        assert_eq!((a.lo, a.hi, a.split_n), (two.alpha_lo, two.alpha_hi, two.split_n));
+        let one = prepare_weights(&[proj(9408.0)]).unwrap();
+        let a = RawAlpha::for_parts(628.0, &[(256, 9408.0)]).unwrap();
+        assert_eq!((a.lo, a.hi, a.split_n), (one.alpha_lo, one.alpha_hi, one.split_n));
+        assert!(RawAlpha::for_parts(628.0, &[]).is_err());
     }
 
     #[test]

@@ -65,13 +65,61 @@ pub struct ModelingOverrides {
     pub n_slots: usize,
 }
 
+/// The `quantization_config` of a compressed-tensors checkpoint (only what selects the profile).
+#[derive(Clone, Debug, Deserialize)]
+pub struct QuantizationConfig {
+    pub format: String,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct ModelConfig {
     pub model_type: String,
     pub text_config: TextConfig,
     pub image_token_id: Option<u32>,
     pub modeling_overrides: ModelingOverrides,
+    #[serde(default)]
+    pub quantization_config: Option<QuantizationConfig>,
 }
+
+/// Weight format of a checkpoint's projections, which selects the engine (`--engine bf16 | nvfp4`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WeightFormat {
+    /// Every projection bf16 (`baselabs/elephant-1`).
+    Bf16,
+    /// compressed-tensors `nvfp4-pack-quantized` W4A4 on the MLP projections, everything else bf16
+    /// (`Code4me2/elephant-1-NVFP4-MLP`, DESIGN §3.1).
+    Nvfp4,
+}
+
+impl WeightFormat {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Bf16 => "bf16",
+            Self::Nvfp4 => "nvfp4",
+        }
+    }
+}
+
+/// What a checkpoint needs from the server beyond `config.json`'s architecture (DESIGN §13 item 9): its weight
+/// format and its request limits. Derived from `config.json` ([`ModelConfig::profile`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CheckpointProfile {
+    pub weights: WeightFormat,
+    /// Longest prefix + one question suffix (qev `max_branch_tokens`).
+    pub max_branch_tokens: usize,
+    /// Longest prefix + all suffixes of one request (qev `max_request_tokens`).
+    pub max_request_tokens: usize,
+    /// Where the limits come from, for logs.
+    pub limits_source: &'static str,
+}
+
+/// The reference's limits (qev defaults; DESIGN §1).
+pub const QEV_MAX_BRANCH_TOKENS: usize = 32768;
+pub const QEV_MAX_REQUEST_TOKENS: usize = 65536;
+/// The NVFP4 checkpoint's documented limit (its calibration data reaches 16,017 tokens). E1 established that the
+/// checkpoint's own evaluation applies it per evaluated question, i.e. to prefix + one suffix (reference/eval/
+/// README.md, "Eligibility"): it bounds `max_branch_tokens`; the request total keeps qev's limit.
+pub const NVFP4_MAX_BRANCH_TOKENS: usize = 16384;
 
 impl ModelConfig {
     pub fn load(model_dir: &Path) -> Result<Self> {
@@ -103,6 +151,26 @@ impl ModelConfig {
                 o.attention.linear_attention);
         ensure!(o.readout == "slot_lm", "readout {:?} unsupported in v1", o.readout);
         Ok(())
+    }
+
+    /// The checkpoint profile: bf16 checkpoints get qev's limits; `nvfp4-pack-quantized` gets the NVFP4 engine and
+    /// its documented 16,384-token limit per branch. Any other quantization format is refused.
+    pub fn profile(&self) -> Result<CheckpointProfile> {
+        match self.quantization_config.as_ref().map(|q| q.format.as_str()) {
+            None => Ok(CheckpointProfile {
+                weights: WeightFormat::Bf16,
+                max_branch_tokens: QEV_MAX_BRANCH_TOKENS,
+                max_request_tokens: QEV_MAX_REQUEST_TOKENS,
+                limits_source: "qev defaults",
+            }),
+            Some("nvfp4-pack-quantized") => Ok(CheckpointProfile {
+                weights: WeightFormat::Nvfp4,
+                max_branch_tokens: NVFP4_MAX_BRANCH_TOKENS,
+                max_request_tokens: QEV_MAX_REQUEST_TOKENS,
+                limits_source: "NVFP4 checkpoint profile (documented 16,384-token limit per evaluated question)",
+            }),
+            Some(f) => anyhow::bail!("quantization format {f:?} is not supported (bf16 or nvfp4-pack-quantized)"),
+        }
     }
 
     pub fn rotary_dim(&self) -> usize {
@@ -155,6 +223,19 @@ mod tests {
         assert_eq!(c.linear_conv_dim(), 8192);
         let full = c.text_config.layer_types.iter().filter(|t| **t == LayerType::FullAttention).count();
         assert_eq!(full, 8);
+    }
+
+    #[test]
+    fn profile_follows_the_quantization_format() {
+        let c = elephant1();
+        let p = c.profile().unwrap();
+        assert_eq!((p.weights, p.max_branch_tokens, p.max_request_tokens), (WeightFormat::Bf16, 32768, 65536));
+        let mut c = elephant1();
+        c.quantization_config = Some(QuantizationConfig { format: "nvfp4-pack-quantized".into() });
+        let p = c.profile().unwrap();
+        assert_eq!((p.weights, p.max_branch_tokens, p.max_request_tokens), (WeightFormat::Nvfp4, 16384, 65536));
+        c.quantization_config = Some(QuantizationConfig { format: "float-quantized".into() });
+        assert!(c.profile().is_err());
     }
 
     #[test]
