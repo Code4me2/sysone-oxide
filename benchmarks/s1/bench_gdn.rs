@@ -15,6 +15,7 @@ use cutile::prelude::*;
 use std::time::Instant;
 use sysone::contract::DecisionBatch;
 use sysone::kernels::gdn::*;
+use sysone::kernels::gdn::simt;
 
 #[cutile::module]
 mod probes {
@@ -109,6 +110,11 @@ struct Args {
     shapes: Vec<String>,
     #[arg(long, default_value_t = 10)]
     iters: usize,
+    /// Delta-rule implementation: `tile` (cuTile) or `simt` (cuda-oxide, docs/G1.md). For `simt` the precision,
+    /// block and warp options, `--w3a` and `--f32-qk` do not apply, and the `wy` column times the slot guard (the WY
+    /// operands are recomputed inside the scan).
+    #[arg(long, default_value = "tile")]
+    backend: GdnBackend,
     /// Scan precision: fp32 (3xTF32, default), tf32, bf16, mixed (3xTF32 state, TF32 output).
     #[arg(long, default_value = "fp32")]
     precision: String,
@@ -207,7 +213,9 @@ fn main() -> Result<()> {
         _ => None,
     };
 
-    let mut base = GdnOptions::default();
+    let mut base = args.backend.options();
+    let simt_backend = args.backend == GdnBackend::Simt;
+    anyhow::ensure!(!simt_backend || !(args.w3a || args.f32_qk), "--w3a and --f32-qk select cuTile scans");
     base.precision = match args.precision.as_str() {
         "fp32" => GdnPrecision::Fp32Split3,
         "tf32" => GdnPrecision::Tf32,
@@ -234,7 +242,7 @@ fn main() -> Result<()> {
     }
     let w3a = args.w3a;
     let f32_qk = args.f32_qk;
-    if w3a {
+    if w3a || simt_backend {
         configs.truncate(1);
     }
     for opts in configs {
@@ -242,6 +250,8 @@ fn main() -> Result<()> {
             "# {}",
             if w3a {
                 "W3a scan (tinv, wy, scan_p, scan_s)".to_string()
+            } else if simt_backend {
+                "SIMT (cuda-oxide) scan: tinv, wy = slot guard, scan_p, scan_s; prep = SIMT gates".to_string()
             } else {
                 format!("{opts:?} (tinv = Tinv + p, wy unused; q, k {})", if f32_qk { "stored f32" } else { "from the bf16 conv" })
             }
@@ -252,6 +262,8 @@ fn main() -> Result<()> {
             unsafe {
                 if w3a {
                     gdn_chunk_scan_w3a(plan, v, scratch, core)
+                } else if simt_backend {
+                    simt::chunk_scan(plan, conv, scratch, core)
                 } else if f32_qk {
                     gdn_chunk_scan_with(plan, v, scratch, core, &opts)
                 } else {
@@ -264,7 +276,7 @@ fn main() -> Result<()> {
         let conv_op = |plan: &GdnPlan, x: DView<bf16>, conv: DView<bf16>, scratch: &GdnScratch| -> BoxedDeviceOp<()> {
             // SAFETY: as for the other launches below.
             unsafe {
-                if w3a {
+                if w3a || simt_backend {
                     tree_conv1d_silu(plan, x, &conv_w, conv)
                 } else if f32_qk {
                     tree_conv1d_silu_qk(plan, x, &conv_w, conv, scratch)
@@ -288,7 +300,11 @@ fn main() -> Result<()> {
             let t = batch.num_tokens();
             let plan = GdnPlan::new(&batch.segments, t, &s)?;
             let proj = upload((0..t * PROJ_COLS).map(|_| bf16::from_f32(rng.next() * 2.0)).collect(), &[t, PROJ_COLS], &s)?;
-            let scratch = if w3a { GdnScratch::with_w3a_buffers(t, plan.num_prefixes, &s)? } else { GdnScratch::new(t, plan.num_prefixes, &s)? };
+            let scratch = if w3a {
+                GdnScratch::with_w3a_buffers(t, plan.num_prefixes, &s)?
+            } else {
+                GdnScratch::for_backend(opts.backend, t, plan.num_prefixes, &s)?
+            };
             let out = api::zeros::<bf16>(&[t, VALUE_DIM]).sync_on(&s)?;
             let pv = DView::of(&proj)?;
             let conv = scratch.conv_view()?;
@@ -303,15 +319,25 @@ fn main() -> Result<()> {
             let a = pv.columns(CONV_DIM + VALUE_DIM, 32)?;
             let b = pv.columns(CONV_DIM + VALUE_DIM + 32, 32)?;
             let z = pv.columns(CONV_DIM, VALUE_DIM)?;
+            // W3a: gdn_prep (q, k, g, beta); P1: cuTile gates; SIMT: its own gates kernel.
+            let prep_op = |scratch: &GdnScratch| -> BoxedDeviceOp<()> {
+                // SAFETY: as for the other launches.
+                unsafe {
+                    if w3a {
+                        gdn_prep(&plan, conv, a, b, &w, scratch)
+                    } else if simt_backend {
+                        simt::gates(&plan, a, b, &w, scratch)
+                    } else {
+                        gdn_gates(&plan, conv, a, b, &w, scratch)
+                    }
+                }
+                .unwrap()
+            };
             let mixer = time(args.iters, &s, &|| {
                 let mut ops = DeviceOpVec::with_capacity(4);
                 unsafe {
                     ops.push(conv_op(&plan, pv.columns(0, CONV_DIM).unwrap(), conv, &scratch));
-                    if w3a {
-                        ops.push(gdn_prep(&plan, conv, a, b, &w, &scratch).unwrap());
-                    } else {
-                        ops.push(gdn_gates(&plan, conv, a, b, &w, &scratch).unwrap());
-                    }
+                    ops.push(prep_op(&scratch));
                     ops.push(scan(&plan, conv, &scratch, core).map(|_| ()));
                     ops.push(gated_rmsnorm(&plan, core, z, &norm_w, 1e-6, ov).unwrap());
                 }
@@ -319,9 +345,7 @@ fn main() -> Result<()> {
             })?;
             // P1: conv also writes inverse norms (or normalised f32 q, k), prep = gates only; W3a: conv, then prep.
             let t_conv = time(args.iters, &s, &|| one(conv_op(&plan, pv.columns(0, CONV_DIM).unwrap(), conv, &scratch)))?;
-            let t_prep = time(args.iters, &s, &|| {
-                one(unsafe { if w3a { gdn_prep(&plan, conv, a, b, &w, &scratch) } else { gdn_gates(&plan, conv, a, b, &w, &scratch) }.unwrap() })
-            })?;
+            let t_prep = time(args.iters, &s, &|| one(prep_op(&scratch)))?;
             // The scan is four operations (W3a: inverse, WY, prefix scan, suffix scan; P1: inverse + p, an empty
             // op in the WY slot, prefix scan, suffix scan); time each alone by replaying the full sequence and
             // dropping the others (inputs stay valid from the mixer run above).

@@ -13,6 +13,7 @@
 //! SIMT (cuda-oxide) module yet. Launchers that take raw device pointers are `unsafe`; each module states its
 //! safety contract and the reference rounding points it reproduces. See docs/ARCHITECTURE.md §4.6 and §5.
 pub mod gdn;
+pub mod simt;
 
 pub mod attention;
 pub mod norm;

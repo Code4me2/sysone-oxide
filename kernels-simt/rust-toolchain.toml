@@ -1,0 +1,5 @@
+# The cuda-oxide device crates build with cuda-oxide's pinned toolchain (../../cuda-rust/cuda-oxide/rust-toolchain.toml),
+# not sysone's 1.98.0. sysone itself never needs this toolchain: it loads the checked-in PTX (see README.md).
+[toolchain]
+channel = "1.99.1"
+components = ["rust-src", "rustc-dev", "clippy", "rustfmt", "llvm-tools"]

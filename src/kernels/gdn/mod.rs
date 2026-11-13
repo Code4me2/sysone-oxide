@@ -33,6 +33,7 @@
 //! Every launcher here is `unsafe`: it hands raw device addresses to the kernel, so the caller must keep every
 //! buffer alive, and not written by anyone else, until the returned operation has completed on its stream.
 
+pub mod simt;
 pub mod tile;
 
 use crate::contract::Segment;
@@ -56,6 +57,45 @@ pub const KEY_DIM: usize = NUM_K_HEADS * HEAD_DIM;
 pub const VALUE_DIM: usize = NUM_V_HEADS * HEAD_DIM;
 /// One prefix's recurrent state, `[32, 128, 128]` f32 elements.
 pub const STATE_ELEMS: usize = NUM_V_HEADS * HEAD_DIM * HEAD_DIM;
+
+/// Which implementation runs the chunked delta rule (the conv, gate and norm kernels are cuTile in both).
+///
+/// `Simt` is the cuda-oxide path (`simt.rs`, docs/G1.md): tensor-core `mma.sync` with split-bf16 operands,
+/// recomputing the WY operands inside the scan instead of storing them. `Tile` is the cuTile path, kept as the
+/// fallback and as the test reference.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum GdnBackend {
+    #[default]
+    Tile,
+    Simt,
+}
+
+impl GdnBackend {
+    pub const ALL: [GdnBackend; 2] = [GdnBackend::Tile, GdnBackend::Simt];
+
+    /// Default [`GdnOptions`] with this backend.
+    pub fn options(self) -> GdnOptions {
+        GdnOptions { backend: self, ..GdnOptions::default() }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            GdnBackend::Tile => "tile",
+            GdnBackend::Simt => "simt",
+        }
+    }
+}
+
+impl std::str::FromStr for GdnBackend {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "tile" => Ok(GdnBackend::Tile),
+            "simt" => Ok(GdnBackend::Simt),
+            _ => bail!("unknown GDN backend {s:?} (tile | simt)"),
+        }
+    }
+}
 
 /// Channel block of the conv kernel.
 const CONV_BC: usize = 512;
@@ -215,6 +255,11 @@ impl GdnPlan {
     }
 
     /// Rewrite the tables in place for another batch with the same capacities (for graph replay).
+    ///
+    /// The launchers check `num_prefixes <= scratch.slots` when they build their operations, which a replayed graph
+    /// does not repeat: size the scratch of a captured mixer with [`GdnScratch::for_plan`] (one slot per segment the
+    /// plan can hold). If a replay still sees more prefixes than slots, the SIMT path writes NaN over the affected
+    /// segments' output (it never leaves stale output); the cuTile scan does not detect it.
     pub fn update(&mut self, segments: &[Segment], stream: &Arc<Stream>) -> Result<()> {
         let t = GdnTables::build(segments, self.tokens, self.max_chunks, self.max_segs)?;
         let chunks = api::copy_host_vec_to_device(&Arc::new(t.chunks)).sync_on(stream)?;
@@ -259,34 +304,51 @@ pub struct GdnScratch {
 }
 
 impl GdnScratch {
+    /// Scratch for the cuTile backend (every buffer at full size).
     pub fn new(tokens: usize, slots: usize, stream: &Arc<Stream>) -> Result<Self> {
-        Self::alloc(tokens, slots, 1, stream)
+        Self::alloc(tokens, slots, tokens, 1, stream)
     }
 
     /// Like [`new`](Self::new), with full-size `w, u, qd, kd` for [`gdn_chunk_scan_w3a`].
     pub fn with_w3a_buffers(tokens: usize, slots: usize, stream: &Arc<Stream>) -> Result<Self> {
-        Self::alloc(tokens, slots, tokens, stream)
+        Self::alloc(tokens, slots, tokens, tokens, stream)
     }
 
-    fn alloc(tokens: usize, slots: usize, wy_rows: usize, stream: &Arc<Stream>) -> Result<Self> {
+    /// Scratch for `backend`'s mixer. `Tile` is [`new`](Self::new). The SIMT backend does not use q, k or p either
+    /// (it normalises q, k and recomputes P inside the scan), so those are also one-row placeholders.
+    pub fn for_backend(backend: GdnBackend, tokens: usize, slots: usize, stream: &Arc<Stream>) -> Result<Self> {
+        match backend {
+            GdnBackend::Tile => Self::new(tokens, slots, stream),
+            GdnBackend::Simt => Self::alloc(tokens, slots, 1, 1, stream),
+        }
+    }
+
+    /// `qkp_rows`: rows of q, k and p (`tokens`, or 1 when unused); `wy_rows`: rows of w, u, qd, kd.
+    fn alloc(tokens: usize, slots: usize, qkp_rows: usize, wy_rows: usize, stream: &Arc<Stream>) -> Result<Self> {
         let slots = slots.max(1);
         Ok(Self {
             tokens,
             slots,
             conv: api::zeros::<bf16>(&[tokens, CONV_DIM]).sync_on(stream)?,
-            q: api::zeros::<f32>(&[tokens, KEY_DIM]).sync_on(stream)?,
-            k: api::zeros::<f32>(&[tokens, KEY_DIM]).sync_on(stream)?,
+            q: api::zeros::<f32>(&[qkp_rows, KEY_DIM]).sync_on(stream)?,
+            k: api::zeros::<f32>(&[qkp_rows, KEY_DIM]).sync_on(stream)?,
             g: api::zeros::<f32>(&[tokens, NUM_V_HEADS]).sync_on(stream)?,
             beta: api::zeros::<f32>(&[tokens, NUM_V_HEADS]).sync_on(stream)?,
             w: api::zeros::<f32>(&[wy_rows, VALUE_DIM]).sync_on(stream)?,
             u: api::zeros::<f32>(&[wy_rows, VALUE_DIM]).sync_on(stream)?,
             qd: api::zeros::<f32>(&[wy_rows, VALUE_DIM]).sync_on(stream)?,
             kd: api::zeros::<f32>(&[wy_rows, VALUE_DIM]).sync_on(stream)?,
-            p: api::zeros::<f32>(&[tokens, NUM_V_HEADS * CHUNK]).sync_on(stream)?,
+            p: api::zeros::<f32>(&[qkp_rows, NUM_V_HEADS * CHUNK]).sync_on(stream)?,
             tinv: api::zeros::<f32>(&[tokens, NUM_V_HEADS * CHUNK]).sync_on(stream)?,
             core: api::zeros::<bf16>(&[tokens, VALUE_DIM]).sync_on(stream)?,
             state: api::zeros::<f32>(&[slots, NUM_V_HEADS, HEAD_DIM, HEAD_DIM]).sync_on(stream)?,
         })
+    }
+
+    /// Scratch for every batch `plan` can describe (graph replay): one state slot per segment the plan can hold,
+    /// since `GdnPlan::update` may raise the prefix count up to that.
+    pub fn for_plan(backend: GdnBackend, plan: &GdnPlan, stream: &Arc<Stream>) -> Result<Self> {
+        Self::for_backend(backend, plan.tokens, plan.max_segs, stream)
     }
 
     pub fn conv_view(&self) -> Result<DView<bf16>> {
@@ -508,6 +570,9 @@ impl GdnPrecision {
 /// [`gdn_chunk_scan`] and [`gdn_mixer`] use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct GdnOptions {
+    /// Implementation of the delta rule in [`gdn_mixer_with`]. The other fields tune the cuTile (`Tile`) kernels
+    /// only; the SIMT kernels have one configuration. [`gdn_chunk_scan_with`] is always cuTile.
+    pub backend: GdnBackend,
     pub precision: GdnPrecision,
     /// Value columns per program of the prefix scan (phase 0: few, long segments; smaller blocks give more
     /// programs). One of 16, 32, 64, 128.
@@ -527,6 +592,7 @@ pub struct GdnOptions {
 impl Default for GdnOptions {
     fn default() -> Self {
         Self {
+            backend: GdnBackend::default(),
             precision: GdnPrecision::default(),
             prefix_bv: 32,
             suffix_bv: 32,
@@ -803,7 +869,7 @@ pub unsafe fn gdn_mixer(
     unsafe { gdn_mixer_with(plan, proj, w, eps, scratch, out, &GdnOptions::default()) }
 }
 
-/// [`gdn_mixer`] with explicit [`GdnOptions`].
+/// [`gdn_mixer`] with explicit [`GdnOptions`] (including the [`GdnBackend`]).
 ///
 /// # Safety
 /// As for [`tree_conv1d_silu`].
@@ -827,9 +893,19 @@ pub unsafe fn gdn_mixer_with(
     let core = DView::of(&scratch.core)?;
     let mut ops = DeviceOpVec::with_capacity(6);
     unsafe {
-        ops.push(tree_conv1d_silu_inv(plan, qkv, w.conv_w, conv)?);
-        ops.push(gdn_gates(plan, conv, a, b, w, scratch)?);
-        ops.push(gdn_chunk_scan_conv(plan, conv, scratch, core, opts)?.map(|_| ()));
+        match opts.backend {
+            GdnBackend::Tile => {
+                ops.push(tree_conv1d_silu_inv(plan, qkv, w.conv_w, conv)?);
+                ops.push(gdn_gates(plan, conv, a, b, w, scratch)?);
+                ops.push(gdn_chunk_scan_conv(plan, conv, scratch, core, opts)?.map(|_| ()));
+            }
+            // The SIMT scan normalises q and k itself (no inverse norms needed) and has its own gates kernel.
+            GdnBackend::Simt => {
+                ops.push(tree_conv1d_silu(plan, qkv, w.conv_w, conv)?);
+                ops.push(simt::gates(plan, a, b, w, scratch)?);
+                ops.push(simt::chunk_scan(plan, conv, scratch, core)?.map(|_| ()).boxed());
+            }
+        }
         ops.push(gated_rmsnorm(plan, core, z, w.norm_w, eps, out)?);
     }
     Ok(ops)

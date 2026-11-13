@@ -1,0 +1,14 @@
+[package]
+name = "mma_check"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+# Standalone single-source (host + device) probe, built and run with `cargo oxide run`; not part of any workspace.
+[workspace]
+
+[dependencies]
+cuda-device = { path = "../../../cuda-rust/cuda-oxide/crates/cuda-device" }
+cuda-host = { path = "../../../cuda-rust/cuda-oxide/crates/cuda-host" }
+cuda-core = { path = "../../../cuda-rust/cuda-core" }

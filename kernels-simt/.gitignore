@@ -1,0 +1,11 @@
+target/
+*.ll
+*.opt.ll
+*.bc
+*.cubin
+*.target
+*.options
+*.kernels
+# Build products of `cargo oxide`; only the copies under artifacts/ (with their manifests) are checked in.
+*.ptx
+!artifacts/*.ptx

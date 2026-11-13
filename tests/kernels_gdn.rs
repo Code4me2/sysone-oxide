@@ -13,9 +13,18 @@ use cutile::prelude::*;
 use cutile::cuda_core::Stream;
 use sysone::contract::{DecisionBatch, Segment};
 use sysone::kernels::gdn::*;
+use sysone::kernels::gdn::simt;
 
 const PROJ_COLS: usize = CONV_DIM + VALUE_DIM + 2 * NUM_V_HEADS;
 const EPS: f32 = 1e-6;
+
+/// The delta-rule backends every test runs against (`GDN_BACKENDS=tile,simt` to restrict).
+fn backends() -> Vec<GdnBackend> {
+    match std::env::var("GDN_BACKENDS") {
+        Ok(v) => v.split(',').map(|b| b.trim().parse().unwrap()).collect(),
+        Err(_) => GdnBackend::ALL.to_vec(),
+    }
+}
 
 // ---------------------------------------------------------------------------------------------------------------
 // Helpers
@@ -161,6 +170,25 @@ fn conv_ref(x: &[f64], stride: usize, w: &Weights, segs: &[Segment], t: usize) -
 
 fn softplus(x: f64) -> f64 {
     if x > 20.0 { x } else { x.exp().ln_1p() }
+}
+
+/// `l2norm` of the q and k heads of the conv output (q also scaled by 128^-0.5), as `gdn_prep` computes them.
+fn qk_ref(conv: &[f64], t: usize) -> (Vec<f64>, Vec<f64>) {
+    let mut q = vec![0f64; t * KEY_DIM];
+    let mut k = vec![0f64; t * KEY_DIM];
+    for r in 0..t {
+        for hk in 0..NUM_K_HEADS {
+            for (dst, off) in [(&mut q, 0usize), (&mut k, KEY_DIM)] {
+                let x = &conv[r * CONV_DIM + off + hk * 128..][..128];
+                let inv = 1.0 / (x.iter().map(|v| v * v).sum::<f64>() + 1e-6).sqrt();
+                let scale = if off == 0 { 1.0 / 128f64.sqrt() } else { 1.0 };
+                for d in 0..128 {
+                    dst[r * KEY_DIM + hk * 128 + d] = x[d] * inv * scale;
+                }
+            }
+        }
+    }
+    (q, k)
 }
 
 struct Prep {
@@ -368,11 +396,11 @@ struct Run {
 }
 
 /// Run the whole mixer on `proj` with the given plan capacities and download every intermediate.
-fn run_gpu(proj: &[f64], segs: &[Segment], w: &GpuWeights, caps: Option<(usize, usize)>, s: &Arc<Stream>) -> Run {
-    run_gpu_with(proj, segs, w, caps, &GdnOptions::default(), s)
+fn run_gpu(backend: GdnBackend, proj: &[f64], segs: &[Segment], w: &GpuWeights, caps: Option<(usize, usize)>, s: &Arc<Stream>) -> Run {
+    run_gpu_with(proj, segs, w, caps, &backend.options(), s)
 }
 
-/// [`run_gpu`] with explicit scan options.
+/// [`run_gpu`] with explicit options (backend and scan options).
 fn run_gpu_with(
     proj: &[f64],
     segs: &[Segment],
@@ -387,25 +415,35 @@ fn run_gpu_with(
         Some((mc, ms)) => GdnPlan::with_capacity(segs, t, mc, ms, s).unwrap(),
     };
     let proj_t = upload(to_bf16(proj), &[t, PROJ_COLS], s);
-    let scratch = GdnScratch::new(t, plan.num_prefixes, s).unwrap();
+    let scratch = GdnScratch::for_backend(opts.backend, t, plan.num_prefixes, s).unwrap();
     let out = api::zeros::<bf16>(&[t, VALUE_DIM]).sync_on(s).unwrap();
     let ops = unsafe {
         gdn_mixer_with(&plan, DView::of(&proj_t).unwrap(), &w.view(), EPS, &scratch, DView::of(&out).unwrap(), opts).unwrap()
     };
     ops.sync_on(s).unwrap();
-    // The mixer's scan rebuilds the normalised f32 q and k from the bf16 conv output and stores neither; write
-    // them with `tree_conv1d_silu_qk` (the same arithmetic as the scan's rebuild) so the checks below can inspect
-    // them and feed them to the oracle. It rewrites the same conv output.
-    unsafe {
-        let pv = DView::of(&proj_t).unwrap();
-        tree_conv1d_silu_qk(&plan, pv.columns(0, CONV_DIM).unwrap(), &w.conv_w, scratch.conv_view().unwrap(), &scratch).unwrap()
-    }
-    .sync_on(s)
-    .unwrap();
+    let conv = bf16_to_f64(&download(&scratch.conv, s));
+    let (q, k) = match opts.backend {
+        // The mixer's scan rebuilds the normalised f32 q and k from the bf16 conv output and stores neither; write
+        // them with `tree_conv1d_silu_qk` (the same arithmetic as the scan's rebuild) so the checks below can
+        // inspect them and feed them to the oracle. It rewrites the same conv output.
+        GdnBackend::Tile => {
+            unsafe {
+                let pv = DView::of(&proj_t).unwrap();
+                tree_conv1d_silu_qk(&plan, pv.columns(0, CONV_DIM).unwrap(), &w.conv_w, scratch.conv_view().unwrap(), &scratch).unwrap()
+            }
+            .sync_on(s)
+            .unwrap();
+            (to_f64(&download(&scratch.q, s)), to_f64(&download(&scratch.k, s)))
+        }
+        // The SIMT kernels normalise q and k from the bf16 conv output in registers (in fp32) and never store them.
+        // Feed the oracle the exact f64 normalisation of the GPU's conv output, so the scan and state checks
+        // measure the SIMT normalisation error together with the delta rule's; the q/k stage check is skipped.
+        GdnBackend::Simt => qk_ref(&conv, t),
+    };
     Run {
-        conv: bf16_to_f64(&download(&scratch.conv, s)),
-        q: to_f64(&download(&scratch.q, s)),
-        k: to_f64(&download(&scratch.k, s)),
+        conv,
+        q,
+        k,
         g: to_f64(&download(&scratch.g, s)),
         beta: to_f64(&download(&scratch.beta, s)),
         core: bf16_to_f64(&download(&scratch.core, s)),
@@ -437,7 +475,13 @@ fn tree_batch() -> DecisionBatch {
 /// tree batch; plus the prefix final states and the whole chain from the projection output.
 #[test]
 fn gdn_kernels_match_f64_references_on_a_tree_batch() {
-    on_test_thread(|| {
+    for backend in backends() {
+        on_test_thread(move || kernels_match_f64_references(backend));
+    }
+}
+
+fn kernels_match_f64_references(backend: GdnBackend) {
+    {
         let ctx = Context::new(0).unwrap();
         let s = ctx.new_stream().unwrap();
         let mut rng = Rng(0x2545f4914f6cdd1d);
@@ -447,8 +491,8 @@ fn gdn_kernels_match_f64_references_on_a_tree_batch() {
         let w = weights(&mut rng);
         let gw = GpuWeights::new(&w, &s);
         let proj = projection(t, &mut rng);
-        println!("tree batch: {t} tokens, {} segments", segs.len());
-        let run = run_gpu(&proj, segs, &gw, None, &s);
+        println!("[{}] tree batch: {t} tokens, {} segments", backend.name(), segs.len());
+        let run = run_gpu(backend, &proj, segs, &gw, None, &s);
         let mut fails = Vec::new();
         let mut check = |name: &str, over: usize| {
             if over > 0 {
@@ -470,8 +514,12 @@ fn gdn_kernels_match_f64_references_on_a_tree_batch() {
         let a: Vec<f64> = (0..t).flat_map(|r| proj[r * PROJ_COLS + CONV_DIM + VALUE_DIM..][..32].to_vec()).collect();
         let b: Vec<f64> = (0..t).flat_map(|r| proj[r * PROJ_COLS + CONV_DIM + VALUE_DIM + 32..][..32].to_vec()).collect();
         let prep = prep_ref(&run.conv, &a, &b, 32, &w, t);
-        check("q", report("gdn_prep q", &run.q, &prep.q, "1e-6 rel + 1e-9", |_, r| 1e-6 * r.abs() + 1e-9));
-        check("k", report("gdn_prep k", &run.k, &prep.k, "1e-6 rel + 1e-8", |_, r| 1e-6 * r.abs() + 1e-8));
+        if backend == GdnBackend::Tile {
+            check("q", report("gdn_prep q", &run.q, &prep.q, "1e-6 rel + 1e-9", |_, r| 1e-6 * r.abs() + 1e-9));
+            check("k", report("gdn_prep k", &run.k, &prep.k, "1e-6 rel + 1e-8", |_, r| 1e-6 * r.abs() + 1e-8));
+        } else {
+            println!("[{}] q, k are normalised inside the scan kernels (never stored): checked through the scan", backend.name());
+        }
         check("g", report("gdn_prep g", &run.g, &prep.g, "1e-5 rel + 1e-12", |_, r| 1e-5 * r.abs() + 1e-12));
         check("beta", report("gdn_prep beta", &run.beta, &prep.beta, "1 bf16 ulp", |_, r| ulp16(r)));
 
@@ -495,13 +543,25 @@ fn gdn_kernels_match_f64_references_on_a_tree_batch() {
             }),
         );
         // Prefix states (f32) per prefix, relative to that prefix's state rms. Envelope: transformers' own f32
-        // `torch_chunk_gated_delta_rule` (GPU, TF32 off) vs the f64 recurrence on these inputs reaches 1.1e-4 x rms
-        // (measured with the GDN_DUMP_DIR dump); the tolerance is 3e-4 x rms.
+        // `torch_chunk_gated_delta_rule` (GPU, TF32 off) vs the f64 recurrence on these inputs, per prefix
+        // (`reference/gdn_envelope.py` on the GDN_DUMP_DIR dump of this test; max abs error / state rms). The gate is
+        // twice the batch's worst envelope (prefix 4: 1.13e-4), i.e. 2.2e-4 x rms on every prefix; the ratio to
+        // transformers' error on the same prefix is printed as well (docs/G1.md, "Accuracy").
+        const TRANSFORMERS_STATE_ENVELOPE: [f64; 6] = [6.20e-6, 6.53e-6, 2.91e-5, 4.99e-6, 1.128e-4, 1.55e-5];
+        const STATE_TOL: f64 = 2.2e-4;
+        assert_eq!(states.len(), TRANSFORMERS_STATE_ENVELOPE.len(), "tree batch changed: re-measure the envelope");
         for (slot, st) in states.iter().enumerate() {
             let rms = (st.iter().map(|x| x * x).sum::<f64>() / st.len() as f64).sqrt();
             let got = &run.state[slot * STATE_ELEMS..][..STATE_ELEMS];
             let name = format!("prefix {slot} final state (f32)");
-            check(&name.clone(), report(&name, got, st, "3e-4 * state rms", |_, _| 3e-4 * rms));
+            check(&name.clone(), report(&name, got, st, "2.2e-4 * state rms", |_, _| STATE_TOL * rms));
+            let err = got.iter().zip(st).map(|(g, r)| (g - r).abs()).fold(0f64, f64::max) / rms;
+            let env = TRANSFORMERS_STATE_ENVELOPE[slot];
+            println!(
+                "[{}] prefix {slot}: state error {err:.2e} x rms; transformers f32 {env:.2e} x rms ({:.2}x it); gate {STATE_TOL:.1e}",
+                backend.name(),
+                err / env
+            );
         }
 
         // 4. gated RMSNorm from the GPU scan output and z.
@@ -523,15 +583,22 @@ fn gdn_kernels_match_f64_references_on_a_tree_batch() {
                 4.0 * ulp16(r) + 1e-2 * out_rms
             }),
         );
-        assert!(fails.is_empty(), "failures: {fails:#?}");
-    });
+        assert!(fails.is_empty(), "[{}] failures: {fails:#?}", backend.name());
+    }
 }
 
 /// Each branch of the tree batch, run alone as one causal sequence (prefix + suffix in a single prefix segment,
 /// so the conv and the chunking see one contiguous stream), against the tree-batched run's rows.
 #[test]
 fn tree_batched_matches_each_branch_alone() {
-    on_test_thread(|| {
+    for backend in backends() {
+        on_test_thread(move || tree_batched_matches_alone(backend));
+    }
+}
+
+fn tree_batched_matches_alone(backend: GdnBackend) {
+    {
+        println!("[{}]", backend.name());
         let ctx = Context::new(0).unwrap();
         let s = ctx.new_stream().unwrap();
         let mut rng = Rng(0x9e3779b97f4a7c15);
@@ -543,14 +610,14 @@ fn tree_batched_matches_each_branch_alone() {
         let proj = projection(t, &mut rng);
         // Spare capacity in the plan: unused chunk and segment entries must be no-ops.
         let caps = (GdnTables::chunk_capacity(t, segs.len()) + 5, segs.len() + 3);
-        let tree = run_gpu(&proj, segs, &gw, Some(caps), &s);
+        let tree = run_gpu(backend, &proj, segs, &gw, Some(caps), &s);
         let (mut got_core, mut want_core, mut got_out, mut want_out) = (vec![], vec![], vec![], vec![]);
         let mut scale = Vec::new(); // (suffix, head) rms of the alone run's scan output, per (row, head)
         for (i, seg) in segs.iter().enumerate().filter(|(_, s)| !s.is_prefix()) {
             let (rows, own) = history(segs, i);
             let alone_proj: Vec<f64> = rows.iter().flat_map(|&r| proj[r * PROJ_COLS..][..PROJ_COLS].to_vec()).collect();
             let alone_segs = [Segment { start: 0, len: rows.len() as u32, parent: -1, pos0: 0 }];
-            let alone = run_gpu(&alone_proj, &alone_segs, &gw, None, &s);
+            let alone = run_gpu(backend, &alone_proj, &alone_segs, &gw, None, &s);
             assert_eq!(rows.len() - own, seg.len as usize);
             let suffix_only = [Segment { start: own as u32, len: seg.len, parent: -1, pos0: 0 }];
             let shr = segment_head_rms(&alone.core, &suffix_only, rows.len());
@@ -582,15 +649,21 @@ fn tree_batched_matches_each_branch_alone() {
         let b = report("suffix mixer out: tree vs alone", &got_out, &want_out, "4 bf16 ulp + 1e-2 * out rms", |_, r| {
             4.0 * ulp16(r) + 1e-2 * out_rms
         });
-        assert_eq!(a + b, 0, "tree-batched suffix rows differ from the branches run alone");
-    });
+        assert_eq!(a + b, 0, "[{}] tree-batched suffix rows differ from the branches run alone", backend.name());
+    }
 }
 
 /// Replaying a plan through `update` with a different tree (same capacities) gives the same result as a fresh
 /// plan; segments of one request are independent of the others in the batch.
 #[test]
 fn plan_update_and_batch_invariance() {
-    on_test_thread(|| {
+    for backend in backends() {
+        on_test_thread(move || plan_update_invariance(backend));
+    }
+}
+
+fn plan_update_invariance(backend: GdnBackend) {
+    {
         let ctx = Context::new(0).unwrap();
         let s = ctx.new_stream().unwrap();
         let mut rng = Rng(0xdeadbeefcafef00d);
@@ -605,14 +678,14 @@ fn plan_update_and_batch_invariance() {
         let proj = projection(t, &mut rng);
         let off = 300 + 40 + 129;
         let small_proj = proj[off * PROJ_COLS..].to_vec();
-        let alone = run_gpu(&small_proj, &small.segments, &gw, None, &s);
+        let alone = run_gpu(backend, &small_proj, &small.segments, &gw, None, &s);
 
         // Plan sized for `big`, first used for `small` padded to the same T, then updated to `big`.
         let caps = (GdnTables::chunk_capacity(t, 8), 8);
         let mut plan = GdnPlan::with_capacity(&small.segments, t, caps.0, caps.1, &s).unwrap();
         let mut padded = small_proj.clone();
         padded.resize(t * PROJ_COLS, 0.0);
-        let scratch = GdnScratch::new(t, 4, &s).unwrap();
+        let scratch = GdnScratch::for_backend(backend, t, 4, &s).unwrap();
         let out = api::zeros::<bf16>(&[t, VALUE_DIM]).sync_on(&s).unwrap();
         let wv = gw.view();
         for (step, (p, b)) in [(&padded, &small), (&proj, &big)].into_iter().enumerate() {
@@ -620,16 +693,215 @@ fn plan_update_and_batch_invariance() {
                 plan.update(&b.segments, &s).unwrap();
             }
             let pt = upload(to_bf16(p), &[t, PROJ_COLS], &s);
-            unsafe { gdn_mixer(&plan, DView::of(&pt).unwrap(), &wv, EPS, &scratch, DView::of(&out).unwrap()).unwrap() }
+            unsafe { gdn_mixer_with(&plan, DView::of(&pt).unwrap(), &wv, EPS, &scratch, DView::of(&out).unwrap(), &backend.options()).unwrap() }
                 .sync_on(&s)
                 .unwrap();
             let got = bf16_to_f64(&download(&out, &s));
             let base = if step == 0 { 0 } else { off };
             let n = small.num_tokens() * VALUE_DIM;
             let same = got[base * VALUE_DIM..][..n] == alone.out[..n];
-            println!("plan step {step}: request rows bit-identical to a fresh single-request plan: {same}");
-            assert!(same, "step {step}: request output depends on the rest of the batch or on plan reuse");
+            println!("[{}] plan step {step}: request rows bit-identical to a fresh single-request plan: {same}", backend.name());
+            assert!(same, "[{}] step {step}: request output depends on the rest of the batch or on plan reuse", backend.name());
         }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// SIMT (cuda-oxide) backend, stage by stage
+
+/// `(I + A)^-1` per (chunk, v-head) in f64 from k (normalised), g, beta: the reference for both backends' `tinv`.
+fn tinv_ref(k: &[f64], g: &[f64], beta: &[f64], chunks: &[(usize, usize)], t: usize) -> Vec<f64> {
+    let mut out = vec![0f64; t * NUM_V_HEADS * CHUNK];
+    for &(start, len) in chunks {
+        for h in 0..NUM_V_HEADS {
+            let hk = h / 2;
+            let mut cum = vec![0f64; len];
+            let mut acc = 0f64;
+            for i in 0..len {
+                acc += g[(start + i) * 32 + h];
+                cum[i] = acc;
+            }
+            let kr = |i: usize| &k[(start + i) * KEY_DIM + hk * 128..][..128];
+            let mut a = vec![0f64; len * len];
+            for i in 0..len {
+                for j in 0..i {
+                    let dot: f64 = kr(i).iter().zip(kr(j)).map(|(x, y)| x * y).sum();
+                    a[i * len + j] = beta[(start + i) * 32 + h] * dot * (cum[i] - cum[j]).exp();
+                }
+            }
+            for c in 0..len {
+                let mut x = vec![0f64; len];
+                for i in c..len {
+                    let mut s = if i == c { 1.0 } else { 0.0 };
+                    for m in c..i {
+                        s -= a[i * len + m] * x[m];
+                    }
+                    x[i] = s;
+                }
+                for i in 0..len {
+                    out[(start + i) * NUM_V_HEADS * CHUNK + h * CHUNK + c] = x[i];
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The SIMT `Tinv` against the f64 inverse, next to the cuTile one, on the tree batch.
+#[test]
+fn simt_tinv_matches_f64_reference() {
+    on_test_thread(|| {
+        let ctx = Context::new(0).unwrap();
+        let s = ctx.new_stream().unwrap();
+        let mut rng = Rng(0x2545f4914f6cdd1d);
+        let batch = tree_batch();
+        let segs = &batch.segments;
+        let t = batch.num_tokens();
+        let w = weights(&mut rng);
+        let gw = GpuWeights::new(&w, &s);
+        let proj = projection(t, &mut rng);
+        let plan = GdnPlan::new(segs, t, &s).unwrap();
+        let proj_t = upload(to_bf16(&proj), &[t, PROJ_COLS], &s);
+        let scratch = GdnScratch::new(t, plan.num_prefixes, &s).unwrap();
+        let out = api::zeros::<bf16>(&[t, VALUE_DIM]).sync_on(&s).unwrap();
+        unsafe { gdn_mixer(&plan, DView::of(&proj_t).unwrap(), &gw.view(), EPS, &scratch, DView::of(&out).unwrap()).unwrap() }
+            .sync_on(&s)
+            .unwrap();
+        let simt_tinv = api::zeros::<f32>(&[t, NUM_V_HEADS * CHUNK]).sync_on(&s).unwrap();
+        unsafe { simt::chunk_tinv(&plan, scratch.conv_view().unwrap(), &scratch, &simt_tinv).unwrap() }.sync_on(&s).unwrap();
+        // Neither mixer stores the normalised k: the reference takes the exact normalisation of the GPU conv output.
+        let (_, k) = qk_ref(&bf16_to_f64(&download(&scratch.conv, &s)), t);
+        let g = to_f64(&download(&scratch.g, &s));
+        let beta = to_f64(&download(&scratch.beta, &s));
+        let tables = GdnTables::build(segs, t, GdnTables::num_chunks(segs), segs.len()).unwrap();
+        let chunks: Vec<(usize, usize)> = tables.chunks.chunks(4).map(|c| (c[0] as usize, c[1] as usize)).collect();
+        let want = tinv_ref(&k, &g, &beta, &chunks, t);
+        // Scale: the largest entry of each (chunk-row, head) row of the reference inverse.
+        let row_max: Vec<f64> = want.chunks(CHUNK).map(|r| r.iter().fold(0f64, |m, x| m.max(x.abs()))).collect();
+        // Compare the entries the scans read: rows inside their chunk, 16x16 blocks on and below the diagonal (the
+        // SIMT kernel writes only those).
+        let mut read = vec![false; t * NUM_V_HEADS * CHUNK];
+        for &(start, len) in &chunks {
+            for i in 0..len {
+                for h in 0..NUM_V_HEADS {
+                    for j in 0..CHUNK {
+                        read[(start + i) * NUM_V_HEADS * CHUNK + h * CHUNK + j] = j / 16 <= i / 16;
+                    }
+                }
+            }
+        }
+        let keep = |v: Vec<f64>| -> Vec<f64> { v.into_iter().zip(&read).filter(|(_, r)| **r).map(|(x, _)| x).collect() };
+        let row_max = keep(row_max.iter().flat_map(|&m| std::iter::repeat_n(m, CHUNK)).collect());
+        let want = keep(want);
+        let tile = keep(to_f64(&download(&scratch.tinv, &s)));
+        let simt = keep(to_f64(&download(&simt_tinv, &s)));
+        // Both are fp32 evaluations of an inverse whose conditioning amplifies rounding (measured: tile max 4.4e-5,
+        // SIMT 3.4e-5 x row max); the gate is that the SIMT error is no worse than the cuTile one.
+        let tol = |i: usize, _: f64| 1e-4 * row_max[i];
+        let a = report("tile tinv vs f64", &tile, &want, "1e-4 * row max", tol);
+        let b = report("simt tinv vs f64", &simt, &want, "1e-4 * row max", tol);
+        let max_rel = |got: &[f64]| got.iter().zip(&want).enumerate().map(|(i, (g, w))| (g - w).abs() / row_max[i]).fold(0f64, f64::max);
+        let (mt, ms) = (max_rel(&tile), max_rel(&simt));
+        println!("max |err| / row max: tile {mt:.2e}, simt {ms:.2e}");
+        assert_eq!(a + b, 0);
+        assert!(ms <= 1.5 * mt, "SIMT tinv error {ms:.2e} exceeds 1.5x the cuTile error {mt:.2e}");
+    });
+}
+
+/// The mixer captured once into a CUDA graph and replayed after `GdnPlan::update` for two different trees gives
+/// the eager result bit for bit (both backends). Scratch is sized for the plan's segment capacity.
+#[test]
+fn graph_replay_matches_eager() {
+    for backend in backends() {
+        on_test_thread(move || graph_replay(backend));
+    }
+}
+
+fn graph_replay(backend: GdnBackend) {
+    use cuda_async::cuda_graph::CudaGraph;
+    let ctx = Context::new(0).unwrap();
+    let s = ctx.new_stream().unwrap();
+    let mut rng = Rng(0x5eed5eed5eed5eed);
+    let w = weights(&mut rng);
+    let gw = GpuWeights::new(&w, &s);
+    let mut big = DecisionBatch::default();
+    big.push_request(&[1; 300], &[(&[2; 40], 2), (&[3; 129], 2)]).unwrap();
+    big.push_request(&[4; 70], &[(&[5; 5], 2), (&[6; 64], 2)]).unwrap();
+    let mut small = DecisionBatch::default();
+    small.push_request(&[7; 90], &[(&[8; 3], 2)]).unwrap();
+    let t = big.num_tokens();
+    let caps = (GdnTables::chunk_capacity(t, 8), 8);
+    let mut plan = GdnPlan::with_capacity(&small.segments, t, caps.0, caps.1, &s).unwrap();
+    let scratch = GdnScratch::for_plan(backend, &plan, &s).unwrap();
+    let mut input = api::zeros::<bf16>(&[t, PROJ_COLS]).sync_on(&s).unwrap();
+    let out = api::zeros::<bf16>(&[t, VALUE_DIM]).sync_on(&s).unwrap();
+    let wv = gw.view();
+    // SAFETY: input, out, the plan tables and the scratch outlive the graph and are only rewritten between replays.
+    let ops = unsafe {
+        gdn_mixer_with(&plan, DView::of(&input).unwrap(), &wv, EPS, &scratch, DView::of(&out).unwrap(), &backend.options()).unwrap()
+    };
+    let graph = CudaGraph::capture(s.clone(), ops).unwrap();
+    for (step, b) in [&small, &big, &small].into_iter().enumerate() {
+        let n = b.num_tokens();
+        let mut proj = projection(n, &mut rng);
+        proj.resize(t * PROJ_COLS, 0.0);
+        plan.update(&b.segments, &s).unwrap();
+        let src = upload(to_bf16(&proj), &[t, PROJ_COLS], &s);
+        api::memcpy(&mut input, &src).sync_on(&s).unwrap();
+        graph.launch().sync_on(graph.stream()).unwrap();
+        let got = bf16_to_f64(&download(&out, &s));
+        let eager = run_gpu(backend, &proj, &b.segments, &gw, Some(caps), &s);
+        let same = got[..n * VALUE_DIM] == eager.out[..n * VALUE_DIM];
+        println!("[{}] graph replay {step} ({n} tokens): bit-identical to eager: {same}", backend.name());
+        assert!(same, "[{}] graph replay {step} differs from the eager run", backend.name());
+    }
+}
+
+/// A replayed SIMT mixer whose plan was updated to more prefixes than its scratch has state slots (a scratch not
+/// sized with `GdnScratch::for_plan`) must not leave the previous output in place: the scan writes NaN over the
+/// segments without a slot. The launch-time check (`num_prefixes <= slots`) cannot see a replay.
+#[test]
+fn simt_replay_past_slot_capacity_is_nan() {
+    if !backends().contains(&GdnBackend::Simt) {
+        return;
+    }
+    on_test_thread(|| {
+        use cuda_async::cuda_graph::CudaGraph;
+        let ctx = Context::new(0).unwrap();
+        let s = ctx.new_stream().unwrap();
+        let mut rng = Rng(0x0dd5eed0dd5eed00);
+        let w = weights(&mut rng);
+        let gw = GpuWeights::new(&w, &s);
+        let mut one = DecisionBatch::default();
+        one.push_request(&[1; 100], &[(&[2; 20], 2)]).unwrap();
+        let mut two = DecisionBatch::default();
+        two.push_request(&[3; 70], &[(&[4; 10], 2)]).unwrap();
+        two.push_request(&[5; 30], &[(&[6; 10], 2)]).unwrap();
+        let t = 120;
+        let caps = (GdnTables::chunk_capacity(t, 4), 4);
+        let mut plan = GdnPlan::with_capacity(&one.segments, t, caps.0, caps.1, &s).unwrap();
+        // One slot: enough for `one` (the launch-time check passes), not for `two`.
+        let scratch = GdnScratch::for_backend(GdnBackend::Simt, t, 1, &s).unwrap();
+        let input = upload(to_bf16(&projection(t, &mut rng)), &[t, PROJ_COLS], &s);
+        let out = api::zeros::<bf16>(&[t, VALUE_DIM]).sync_on(&s).unwrap();
+        // SAFETY: input, out, the plan tables and the scratch outlive the graph.
+        let ops = unsafe {
+            gdn_mixer_with(&plan, DView::of(&input).unwrap(), &gw.view(), EPS, &scratch, DView::of(&out).unwrap(), &GdnBackend::Simt.options())
+                .unwrap()
+        };
+        let graph = CudaGraph::capture(s.clone(), ops).unwrap();
+        graph.launch().sync_on(graph.stream()).unwrap();
+        let first = bf16_to_f64(&download(&scratch.core, &s));
+        assert!(first.iter().all(|x| x.is_finite()), "in-capacity replay produced non-finite output");
+        plan.update(&two.segments, &s).unwrap();
+        graph.launch().sync_on(graph.stream()).unwrap();
+        let core = bf16_to_f64(&download(&scratch.core, &s));
+        // Second request: prefix rows 80..110 and its suffix 110..120 use slot 1, which does not exist.
+        let row_nan = |r: usize| core[r * VALUE_DIM..][..VALUE_DIM].iter().all(|x| x.is_nan());
+        let row_finite = |r: usize| core[r * VALUE_DIM..][..VALUE_DIM].iter().all(|x| x.is_finite());
+        assert!((0..80).all(row_finite), "the request with a state slot must still be computed");
+        assert!((80..120).all(row_nan), "segments past the slot capacity must be NaN, not stale output");
+        println!("[simt] replay past the slot capacity: rows of the slotless request are NaN, the others finite");
     });
 }
 
@@ -649,7 +921,7 @@ fn scan_options_and_precision_variants_vs_f64() {
         let w = weights(&mut rng);
         let gw = GpuWeights::new(&w, &s);
         let proj = projection(t, &mut rng);
-        let base = run_gpu(&proj, segs, &gw, None, &s);
+        let base = run_gpu(GdnBackend::Tile, &proj, segs, &gw, None, &s);
         // The oracle from the GPU's own scan inputs (conv and prep do not depend on the options).
         let prep = Prep { q: base.q.clone(), k: base.k.clone(), g: base.g.clone(), beta: base.beta.clone() };
         let v: Vec<f64> = (0..t).flat_map(|r| base.conv[r * CONV_DIM + 2 * KEY_DIM..][..VALUE_DIM].to_vec()).collect();
@@ -719,7 +991,7 @@ fn fused_conv_qk_matches_standalone_conv_and_prep() {
         let w = weights(&mut rng);
         let gw = GpuWeights::new(&w, &s);
         let proj = projection(t, &mut rng);
-        let fused = run_gpu(&proj, segs, &gw, None, &s);
+        let fused = run_gpu(GdnBackend::Tile, &proj, segs, &gw, None, &s);
         let plan = GdnPlan::new(segs, t, &s).unwrap();
         let proj_t = upload(to_bf16(&proj), &[t, PROJ_COLS], &s);
         let pv = DView::of(&proj_t).unwrap();
@@ -779,7 +1051,7 @@ fn scan_from_bf16_conv_matches_stored_f32_qk() {
         let w = weights(&mut rng);
         let gw = GpuWeights::new(&w, &s);
         let proj = projection(t, &mut rng);
-        let mixer = run_gpu(&proj, segs, &gw, None, &s);
+        let mixer = run_gpu(GdnBackend::Tile, &proj, segs, &gw, None, &s);
         let plan = GdnPlan::new(segs, t, &s).unwrap();
         let proj_t = upload(to_bf16(&proj), &[t, PROJ_COLS], &s);
         let pv = DView::of(&proj_t).unwrap();

@@ -48,7 +48,7 @@ cuBLAS (through `cudarc`) for the bf16 GEMMs.
 | NVFP4 | Kernels exist and are tested (`src/kernels/nvfp4`), the loader reads NVFP4 checkpoints, but `forward::build` refuses NVFP4 projections: there is no NVFP4 forward yet. |
 | `allowed_token_mass` (`?debug=1`) | Computed by `MockEngine` only. `GpuEngine` does not override `DecisionEngine::run_with_mass`, so the field is absent with the GPU engine. |
 | Prefix cache across requests (DESIGN §8), images, `head` readout | Not implemented. |
-| GDN on cuda-oxide SIMT kernels (workstream G1) | In progress on a separate branch; nothing of it is in this tree. |
+| GDN on cuda-oxide SIMT kernels (workstream G1) | Implemented (`kernels-simt/`, `src/kernels/gdn/simt.rs`, docs/G1.md) and selected with `GdnOptions::backend = GdnBackend::Simt`; the default and the engine still use the cuTile path until the end-to-end gate has run with it. |
 
 ## 2. Request lifecycle
 
@@ -613,7 +613,7 @@ control.
 | dev / authoritative goldens | Goldens generated on this GB10 vs on the x86 reference box (DESIGN §9.1). |
 | GB10 | The DGX Spark GPU (sm_121, unified memory) sysone is developed on. |
 | cuTile / Tile IR | The tile-based GPU programming model of cuda-rust's `cutile` crate; kernels are JIT-compiled through `tileiras`. |
-| cuda-oxide / SIMT | cuda-rust's thread-level (SIMT) kernel compiler; the planned home of a faster GDN scan (G1). |
+| cuda-oxide / SIMT | cuda-rust's thread-level (SIMT) kernel compiler; builds the SIMT GDN delta rule (G1, `kernels-simt/`, docs/G1.md). |
 
 ## 10. Open questions
 
