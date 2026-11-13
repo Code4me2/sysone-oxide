@@ -186,7 +186,7 @@ mod kernels {
     /// Grid `(32, max_chunks, 1)` (the two v-heads of a k-head are adjacent, so k is read from DRAM once), block
     /// 128. conv: `[T, 8192]` bf16 (row stride `conv_stride`); g, beta:
     /// `[T, 32]` f32; tinv out: `[T, 32 * 64]` f32 (row i of the chunk at row start + i, columns h*64..; only the
-    /// chunk's `len` rows are written, upper triangle as zeros). chunks: `[max_chunks, 4]` (start, len, ..).
+    /// chunk's `len` rows and the 16x16 blocks on and below the diagonal are written; the scan reads only those). chunks: `[max_chunks, 4]` (start, len, ..).
     #[kernel]
     pub unsafe fn gdn_simt_tinv(
         conv: *const u16,
@@ -350,8 +350,9 @@ mod kernels {
         while e < len * CH {
             let i = e >> 6;
             let j = e & 63;
-            let v = if (j >> 4) <= (i >> 4) { f32::from_bits(unsafe { *tm.add(i * AW + j) }) } else { 0.0 };
-            unsafe { *tinv.add((start + i) * 2048 + h * 64 + j) = v };
+            if (j >> 4) <= (i >> 4) {
+                unsafe { *tinv.add((start + i) * 2048 + h * 64 + j) = f32::from_bits(*tm.add(i * AW + j)) };
+            }
             e += 128;
         }
     }
@@ -466,14 +467,16 @@ mod kernels {
                 let half = tid & 1;
                 let mut ss = 0f32;
                 if row < len {
-                    let mut wd = 0usize;
-                    while wd < 32 {
-                        let v = unsafe { *qrow.add(row * wstride + half * 32 + wd) };
-                        let a = lo_bf16(v);
-                        let b = hi_bf16(v);
-                        ss += a * a + b * b;
-                        wd += 1;
-                    }
+                    // Unrolled so that the 32 loads are in flight together.
+                    let mut v = [0u32; 32];
+                    unroll!(k in 0..16 {
+                        v[2 * k] = unsafe { *qrow.add(row * wstride + half * 32 + 2 * k) };
+                        v[2 * k + 1] = unsafe { *qrow.add(row * wstride + half * 32 + 2 * k + 1) };
+                    });
+                    unroll!(k in 0..16 {
+                        let (a, b, c, d) = (lo_bf16(v[2 * k]), hi_bf16(v[2 * k]), lo_bf16(v[2 * k + 1]), hi_bf16(v[2 * k + 1]));
+                        ss += a * a + b * b + c * c + d * d;
+                    });
                 }
                 ss += warp::shuffle_xor_f32(ss, 1);
                 Q_SCALE / (ss + L2_EPS).sqrt()
