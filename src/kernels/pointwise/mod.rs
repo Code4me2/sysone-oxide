@@ -57,12 +57,12 @@ pub mod pointwise_module {
 
 /// `out = silu(gu[:, :I]) * gu[:, I:]` for `gu` of shape `[T, 2I]` and `out` of shape `[T, I]`.
 /// `I` must be a multiple of [`SILU_BLOCK`].
-pub fn silu_mul<'a>(out: &'a mut Tensor<bf16>, gu: &'a Tensor<bf16>) -> anyhow::Result<impl DeviceOp + GraphNode + 'a> {
+pub fn silu_mul<'a>(out: &'a mut Tensor<bf16>, gu: &'a Tensor<bf16>) -> anyhow::Result<impl GraphNode + 'a> {
     let (s, o) = (gu.shape(), out.shape());
-    anyhow::ensure!(s.len() == 2 && s[1] % 2 == 0, "gu must be [T, 2I], got {s:?}");
+    anyhow::ensure!(s.len() == 2 && (s[1] as usize).is_multiple_of(2), "gu must be [T, 2I], got {s:?}");
     let i = s[1] as usize / 2;
     anyhow::ensure!(o == [s[0], i as i32].as_slice(), "out is {o:?}, expected [{}, {i}]", s[0]);
-    anyhow::ensure!(i % SILU_BLOCK == 0, "I = {i} is not a multiple of {SILU_BLOCK}");
+    anyhow::ensure!(i.is_multiple_of(SILU_BLOCK), "I = {i} is not a multiple of {SILU_BLOCK}");
     Ok(pointwise_module::silu_mul(out.partition([1, SILU_BLOCK]), gu)
         .generics(vec![i.to_string(), SILU_BLOCK.to_string()]))
 }
@@ -73,9 +73,9 @@ pub fn gather_rows<'a>(
     out: &'a mut Tensor<bf16>,
     src: &'a Tensor<bf16>,
     idx: &'a Tensor<u32>,
-) -> anyhow::Result<impl DeviceOp + GraphNode + 'a> {
+) -> anyhow::Result<impl GraphNode + 'a> {
     let (s, o) = (src.shape(), out.shape());
-    anyhow::ensure!(s.len() == 2 && s[1] as usize % GATHER_BLOCK == 0, "src must be [R, N*{GATHER_BLOCK}], got {s:?}");
+    anyhow::ensure!(s.len() == 2 && (s[1] as usize).is_multiple_of(GATHER_BLOCK), "src must be [R, N*{GATHER_BLOCK}], got {s:?}");
     anyhow::ensure!(idx.shape().len() == 1, "idx must be 1-D");
     anyhow::ensure!(o == [idx.shape()[0], s[1]].as_slice(), "out is {o:?}, expected [{}, {}]", idx.shape()[0], s[1]);
     Ok(pointwise_module::gather_rows(out.partition([1, GATHER_BLOCK]), src, idx).generics(vec![GATHER_BLOCK.to_string()]))
@@ -86,6 +86,6 @@ pub fn embedding<'a>(
     out: &'a mut Tensor<bf16>,
     table: &'a Tensor<bf16>,
     token_ids: &'a Tensor<u32>,
-) -> anyhow::Result<impl DeviceOp + GraphNode + 'a> {
+) -> anyhow::Result<impl GraphNode + 'a> {
     gather_rows(out, table, token_ids)
 }

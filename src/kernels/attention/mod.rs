@@ -264,7 +264,7 @@ pub fn qk_norm_rope<'a>(
     k_w: &'a Tensor<bf16>,
     inv_freq: &'a Tensor<f32>,
     eps: f32,
-) -> Result<impl DeviceOp + GraphNode + 'a> {
+) -> Result<impl GraphNode + 'a> {
     let t = qg.shape()[0];
     let (hq, hk, d) = (NUM_Q_HEADS as i32, NUM_KV_HEADS as i32, HEAD_DIM as i32);
     ensure!(qg.shape() == [t, hq, 2 * d].as_slice(), "qg is {:?}, expected [T, 16, 512]", qg.shape());
@@ -593,7 +593,7 @@ pub struct SegAttnArgs {
 /// # Safety
 /// Every pointer must reference a live device buffer of the documented shape for the batch the plan was
 /// built from, and `out` must not alias any input. The plan must have been built with `tiles.bm`.
-pub unsafe fn seg_attn(args: SegAttnArgs, tiles: AttnTiles) -> impl DeviceOp + GraphNode {
+pub unsafe fn seg_attn(args: SegAttnArgs, tiles: AttnTiles) -> impl GraphNode {
     let generics = vec![
         tiles.bm.to_string(),
         tiles.bn.to_string(),

@@ -48,11 +48,11 @@ pub fn slot_logits<'a>(
     out: &'a mut Tensor<f32>,
     hs: &'a Tensor<bf16>,
     w: &'a Tensor<bf16>,
-) -> anyhow::Result<impl DeviceOp + GraphNode + 'a> {
+) -> anyhow::Result<impl GraphNode + 'a> {
     let (h, ws, o) = (hs.shape(), w.shape(), out.shape());
     anyhow::ensure!(h.len() == 2 && ws.len() == 2 && h[1] == ws[1], "hs {h:?} and w {ws:?} disagree on K");
-    anyhow::ensure!(h[1] as usize % READOUT_BK == 0, "K = {} is not a multiple of {READOUT_BK}", h[1]);
-    anyhow::ensure!(ws[0] as usize % READOUT_BN == 0, "S = {} is not a multiple of {READOUT_BN}", ws[0]);
+    anyhow::ensure!((h[1] as usize).is_multiple_of(READOUT_BK), "K = {} is not a multiple of {READOUT_BK}", h[1]);
+    anyhow::ensure!((ws[0] as usize).is_multiple_of(READOUT_BN), "S = {} is not a multiple of {READOUT_BN}", ws[0]);
     anyhow::ensure!(o == [h[0], ws[0]].as_slice(), "out is {o:?}, expected [{}, {}]", h[0], ws[0]);
     Ok(readout_module::slot_logits(out.partition([READOUT_BM, READOUT_BN]), hs, w).generics(vec![
         READOUT_BM.to_string(),

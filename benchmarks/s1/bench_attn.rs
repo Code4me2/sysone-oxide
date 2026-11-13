@@ -44,7 +44,7 @@ fn baseline(stream: &Arc<cuda_core::Stream>, t: usize, d: usize, bm: usize, bn: 
     let v: Arc<Tensor<f16>> = upload(mk(hk * t * d, &mut rng), &[hk, t, d], stream)?.into();
     let mut out = api::zeros::<f16>(&[t, hq, d]).sync_on(stream)?;
     let g = hq / hk;
-    let gens = vec![bm, bn, d, g, bm * g, 0, usize::from(t % bn == 0), 2].iter().map(|x| x.to_string()).collect::<Vec<_>>();
+    let gens = [bm, bn, d, g, bm * g, 0, usize::from(t.is_multiple_of(bn)), 2].iter().map(|x| x.to_string()).collect::<Vec<_>>();
     macro_rules! launch {
         ($out:expr) => {
             unsafe {
@@ -87,7 +87,7 @@ impl Rng {
 fn tree(t: usize) -> DecisionBatch {
     let reqs: &[(usize, usize, usize)] = match t {
         ..=1024 => &[(380, 3, 44), (380, 3, 44)],
-        ..=4096 => &[(2900, 8, 110), (200, 2, 58)],
+        1025..=4096 => &[(2900, 8, 110), (200, 2, 58)],
         _ => &[(12000, 24, 100), (1500, 4, 121)],
     };
     let mut b = DecisionBatch::default();

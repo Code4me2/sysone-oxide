@@ -97,7 +97,7 @@ pub fn zc_rmsnorm<'a>(
     x: &'a Tensor<bf16>,
     w: &'a Tensor<bf16>,
     eps: f32,
-) -> anyhow::Result<impl DeviceOp + GraphNode + 'a> {
+) -> anyhow::Result<impl GraphNode + 'a> {
     let (_, n) = hidden_of(x, w)?;
     anyhow::ensure!(out.shape() == x.shape(), "out {:?} != x {:?}", out.shape(), x.shape());
     Ok(zc_rmsnorm_module::zc_rmsnorm(out.partition([1, n]), x, w, eps).generics(vec![n.to_string()]))
@@ -110,7 +110,7 @@ pub fn add_zc_rmsnorm<'a>(
     x: &'a Tensor<bf16>,
     w: &'a Tensor<bf16>,
     eps: f32,
-) -> anyhow::Result<impl DeviceOp + GraphNode + 'a> {
+) -> anyhow::Result<impl GraphNode + 'a> {
     let (_, n) = hidden_of(x, w)?;
     anyhow::ensure!(out.shape() == x.shape() && residual.shape() == x.shape(), "shape mismatch");
     Ok(zc_rmsnorm_module::add_zc_rmsnorm(residual.partition([1, n]), out.partition([1, n]), x, w, eps)
