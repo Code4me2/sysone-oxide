@@ -7,7 +7,7 @@ gpu="$here/../gpu.sh"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 export SYSONE_NVIDIA_SMI="$here/fake-nvidia-smi" SYSONE_GPU_LOCK_DIR="$tmp"
-unset SYSONE_GPU SYSONE_GPU_LOCK CUDA_VISIBLE_DEVICES
+unset SYSONE_GPU SYSONE_GPU_LOCK SYSONE_GPU_HELD CUDA_VISIBLE_DEVICES
 fails=0
 
 # expect "<description>" "<expected output>" env... -- args...
@@ -51,6 +51,20 @@ expect_error "index out of range" -- --gpu 3
 expect_error "ambiguous UUID prefix" -- --gpu GPU-
 expect_error "MIG entry" -- --gpu MIG-1234
 expect_error "empty CUDA_VISIBLE_DEVICES" CUDA_VISIBLE_DEVICES= --
+expect_error "nvidia-smi fails, --gpu 1" SYSONE_NVIDIA_SMI=/nonexistent -- --gpu 1
+expect_error "nvidia-smi fails, nothing selected" SYSONE_NVIDIA_SMI=/nonexistent --
+expect "nvidia-smi fails, SYSONE_GPU_LOCK set" "CUDA_VISIBLE_DEVICES=1 locks=/x/y.lock " \
+    SYSONE_NVIDIA_SMI=/nonexistent SYSONE_GPU_LOCK=/x/y.lock -- --gpu 1
+# Nesting: locks already held by the parent are not taken again; others are refused.
+expect "nested, same GPU" "CUDA_VISIBLE_DEVICES=1 locks=(held by parent) " SYSONE_GPU_HELD="$L/sysone-gpu1.lock" -- --gpu 1
+expect "nested, subset of --gpu all" "CUDA_VISIBLE_DEVICES=2 locks=(held by parent) " \
+    SYSONE_GPU_HELD="$L/sysone-gpu0.lock $L/sysone-gpu1.lock $L/sysone-gpu2.lock" -- --gpu 2
+expect_error "nested, other GPU" SYSONE_GPU_HELD="$L/sysone-gpu1.lock" -- --gpu 0
+out=$(timeout 10 bash "$gpu" --gpu 1 bash "$gpu" --gpu 1 bash -c 'echo inner "$SYSONE_GPU_HELD"' 2>&1)
+if [ "$out" = "inner $L/sysone-gpu1.lock" ]; then echo "ok    nested gpu.sh on the same GPU does not deadlock"
+else echo "FAIL  nested gpu.sh: got '$out'"; fails=1; fi
+if timeout 10 bash "$gpu" --gpu 1 bash "$gpu" --gpu 0 true >/dev/null 2>&1; then echo "FAIL  nested on another GPU: accepted"; fails=1
+else echo "ok    nested gpu.sh on another GPU refused"; fi
 if SYSONE_GPU_DRY_RUN=1 bash "$gpu" --gpu 1 >/dev/null 2>&1; then echo "FAIL  no command: accepted"; fails=1; else echo "ok    no command"; fi
 
 # The command runs with the lock held, and other GPUs' locks stay free.

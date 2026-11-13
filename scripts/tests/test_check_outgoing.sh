@@ -8,8 +8,10 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 export SYSONE_OUTGOING_DENY="acme-secret-project"
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+unset SYSONE_OUTGOING_ALLOW_EMAIL
 fails=0
 n=0
+reason=""
 
 g() { git -c user.name=Tester -c user.email=tester@users.noreply.github.com -c commit.gpgsign=false "$@"; }
 
@@ -32,6 +34,10 @@ expect() {
     local want="$1" what="$2"; shift 2
     local out rc
     out=$(bash "$check" --base main "$@" 2>&1); rc=$?
+    if [ "$want" = fail ] && [ -n "${reason:-}" ] && ! printf '%s\n' "$out" | grep -qE -- "$reason"; then
+        echo "FAIL  $what (failed, but not with /$reason/):"; printf '%s\n' "$out" | sed 's/^/        /'; fails=1; reason=""; return
+    fi
+    reason=""
     if { [ "$want" = pass ] && [ "$rc" = 0 ]; } || { [ "$want" = fail ] && [ "$rc" = 1 ]; }; then echo "ok    $what"
     else echo "FAIL  $what (want $want, exit $rc):"; printf '%s\n' "$out" | sed 's/^/        /'; fails=1; fi
 }
@@ -59,9 +65,13 @@ expect fail "model file extension"
 new_repo; git checkout -q main; add benchmarks/results/x86/a.txt 'x'
 expect fail "on main"
 
-bad() {   # bad "description" content
+bad() {   # bad "description" content [reason regex]
     new_repo; add "benchmarks/results/x86/c/d/out.txt" "$2"
-    expect fail "$1"
+    reason="${3:-}"; expect fail "$1"
+}
+good() {  # good "description" content
+    new_repo; add "benchmarks/results/x86/c/d/out.txt" "$2"
+    expect pass "$1"
 }
 bad "home path" 'model at /home/alice/models'
 bad "macOS home path" 'see /Users/bob/x'
@@ -81,6 +91,20 @@ bad "private key" '-----BEGIN OPENSSH PRIVATE KEY-----'
 bad "denied word" 'tagging run for ACME-SECRET-PROJECT docs'
 bad "host name" "built on $(hostname -s)"
 
+bad "IPv4 address at the end of a sentence" 'connected to 192.168.1.5.' 'IPv4 address: 192.168.1.5'
+bad "IPv4 address in a URL" 'http://10.0.0.12:8000/v1' 'IPv4'
+bad "bare UUID" 'job 3f2a9c1e-1b2c-4d5e-8f90-123456789abc' 'UUID'
+bad "lowercase gpu- UUID" 'gpu-3f2a9c1e-1b2c-4d5e-8f90-123456789abc' 'UUID'
+bad "IPv6 link-local" 'peer fe80::1c2:3ff:fe4d:5a6b' 'IPv6'
+bad "IPv6 documentation prefix" 'peer 2001:db8::1' 'IPv6'
+bad "IPv6 full form" '2001:0db8:85a3:0000:0000:8a2e:0370:7334' 'IPv6'
+bad "absolute path /data" 'read /data/customers/acme/doc1.pdf' 'absolute path'
+bad "absolute path /mnt" 'mounted at /mnt/secure' 'absolute path'
+bad "absolute path /srv in quotes" '"input": "/srv/x"' 'absolute path'
+bad "~ path" 'see ~/docs/x' 'home path variable'
+bad "\$HOME path" 'see $HOME/docs/x' 'home path variable'
+good "allowed system paths, URLs, rates, Rust paths, times" \
+    'lock /tmp/sysone-gpu0.lock, ptxas /usr/local/cuda-13/bin/ptxas, >/dev/null, https://github.com/NVIDIA/cuda-rust, POST /v1/completions, 812.5 tok/s, 1.6 TB/s, u8::MAX, std::fs::read, ::1, at 12:34:56, ~18 GB, version 1.2.3.4.5., </think>, <models>/elephant-1, /path/to/model'
 new_repo; add benchmarks/results/x86/c/ok.txt 'version 1.2.3, driver 580.95.05, 13.4, 3.1415926535897932, ratio 1.25e-3, sm_120'
 expect pass "versions and floats are not IPs or serials"
 new_repo; add benchmarks/results/x86/c/ok.txt 'Co-Authored-By: Claude <noreply@anthropic.com>, 123+x@users.noreply.github.com'
@@ -100,6 +124,41 @@ expect fail "machine identity in commit e-mail"
 new_repo; g commit -q --allow-empty -m "results from 192.168.1.20"
 expect fail "IP in commit message"
 
+# History, not just the net diff: what is added in one commit and removed in a later one is still pushed.
+new_repo; add benchmarks/results/x86/c/d/out.txt 'model at /home/alice/secret'; add benchmarks/results/x86/c/d/out.txt 'clean'
+reason='home path'; expect fail "leak added, then removed in a later commit"
+new_repo; mkdir -p benchmarks/results/x86; yes 'a line of text' | head -c 2100000 > benchmarks/results/x86/big.txt
+g add -A; g commit -qm big; add benchmarks/results/x86/big.txt 'small now'
+reason='over 1 MB'; expect fail "2 MB file added, then shrunk"
+new_repo; add src/engine/x.rs 'fn f() {}'; g rm -q src/engine/x.rs; g commit -qm rm
+reason='src/engine/x.rs: outside the allow-list'; expect fail "file outside the allow-list added, then deleted"
+new_repo; head -c 3000 /dev/urandom > benchmarks/results/x86/blob.dat; g add -A; g commit -qm blob; g rm -q benchmarks/results/x86/blob.dat; g commit -qm rm
+reason='binary'; expect fail "binary added, then deleted"
+new_repo; add benchmarks/results/x86/a.txt 'x'; g checkout -q main; add README.md 'base 2'; g checkout -q x86/1-test
+g merge -q --no-edit main
+reason='merge commit'; expect fail "merge commit in the branch"
+# Local diff drivers / textconv must not hide content.
+new_repo; git config diff.hide.textconv 'sed d'; echo '*.txt diff=hide' > .git/info/attributes
+add benchmarks/results/x86/c/t.txt 'model at /home/alice/x'
+reason='home path'; expect fail "textconv driver cannot hide a leak"
+
+# Commit messages and identities.
+new_repo; add benchmarks/results/x86/a.txt 'x'
+g commit -q --allow-empty -m "$(printf 'results\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com> /home/alice/x 10.1.2.3')"
+reason='home path'; expect fail "text after Co-Authored-By on the same line is scanned"
+new_repo; add benchmarks/results/x86/a.txt 'x'
+g commit -q --allow-empty -m "$(printf 'results\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_014sEtuVEV2A7Tveo3WRGFv6')"
+expect pass "exact attribution lines pass"
+new_repo; add benchmarks/results/x86/a.txt 'x'
+git -c user.name=Alice -c user.email=alice@bigcorp.com -c commit.gpgsign=false commit -q --allow-empty -m "results"
+reason='e-mail is not a noreply'; expect fail "real author e-mail not on the allow-list"
+export SYSONE_OUTGOING_ALLOW_EMAIL="other@x.org, alice@bigcorp.com"
+expect pass "author e-mail on SYSONE_OUTGOING_ALLOW_EMAIL"
+unset SYSONE_OUTGOING_ALLOW_EMAIL
+new_repo; add benchmarks/results/x86/a.txt 'x'
+git -c user.name="$(id -un)" -c user.email=x@users.noreply.github.com -c commit.gpgsign=false commit -q --allow-empty -m "results"
+reason='name contains'; expect fail "author name is the machine user name"
+
 # --files mode (used by the runners on result directories).
 mkdir -p "$tmp/files" "$tmp/Users/x"
 printf '%s\n' "$ok_json" > "$tmp/files/good.json"
@@ -109,5 +168,15 @@ if bash "$check" --files "$tmp/Users/x/good.json" >/dev/null; then echo "ok    -
 printf 'path /home/dave/x\n' > "$tmp/files/bad.txt"
 if bash "$check" --files "$tmp/files/good.json" >/dev/null; then echo "ok    --files clean"; else echo "FAIL  --files clean"; fails=1; fi
 if bash "$check" --files "$tmp/files/good.json" "$tmp/files/bad.txt" >/dev/null; then echo "FAIL  --files dirty accepted"; fails=1; else echo "ok    --files dirty"; fi
+
+# x86_seal (lib.sh) scans every file of a results directory, dotfiles included, and quarantines it on failure.
+mkdir -p "$tmp/seal/r1" "$tmp/seal/r2"
+printf '%s\n' "$ok_json" > "$tmp/seal/r1/metadata.json"
+printf '%s\n' "$ok_json" > "$tmp/seal/r2/metadata.json"; printf 'path /home/alice\n' > "$tmp/seal/r2/.hidden"
+( source "$here/../x86/lib.sh"; X86_QUARANTINE="$tmp/quarantine"; x86_seal "$tmp/seal/r1" ) >/dev/null 2>&1 &&
+    [ -d "$tmp/seal/r1" ] && echo "ok    x86_seal keeps a clean directory" || { echo "FAIL  x86_seal clean"; fails=1; }
+if ( source "$here/../x86/lib.sh"; X86_QUARANTINE="$tmp/quarantine"; x86_seal "$tmp/seal/r2" ) >/dev/null 2>&1 || [ -d "$tmp/seal/r2" ]; then
+    echo "FAIL  x86_seal missed a dotfile leak"; fails=1
+else echo "ok    x86_seal quarantines a dotfile leak"; fi
 
 [ "$fails" = 0 ] && echo "check_outgoing.sh: all tests passed" || { echo "check_outgoing.sh: FAILED"; exit 1; }

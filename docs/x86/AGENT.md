@@ -85,6 +85,13 @@ Toolkit upgrades: after changing the CUDA toolkit run `cargo clean -p cutile-com
   is that GPU. `--gpu all` holds every GPU's lock (only for jobs that really use several GPUs, e.g. a vLLM run
   with tensor parallelism; sysone itself is one process per GPU).
 - **One job per GPU.** Never start a second GPU job on a GPU whose lock is held; gpu.sh queues it for you.
+- **Never wrap the runners in gpu.sh** (`scripts/gpu.sh --gpu 1 scripts/x86/run_bench.sh` is wrong): the runners
+  take each GPU's lock themselves. A gpu.sh started inside another one runs unlocked when its parent already holds
+  all its locks and refuses otherwise (taking further locks while holding some can deadlock).
+- **Do not set `SYSONE_GPU_LOCK`** on this machine. It replaces the per-device locks with one file that does not
+  exclude jobs holding `/tmp/sysone-gpu<N>.lock`, so mixing the two lets jobs overlap on a GPU.
+- If `nvidia-smi` fails, gpu.sh refuses to run (it cannot tell which lock protects which GPU). Do not work around
+  it; report the driver problem in the issue.
 - **Idle rule for benchmarks.** Every benchmark binary refuses to start while another process holds a CUDA context
   on *its* GPU (other GPUs may be busy). Never pass `--allow-shared-gpu` for results you report. If the GPU is busy
   with something that is not yours, wait or ask the user in the issue; **never kill a process you did not start**.
@@ -112,15 +119,41 @@ the machine except the intended, sanitised results.
    `lscpu`/`dmesg`/`journalctl` output, or anything from outside the checkouts. If a number about the host would help
    (e.g. CPU model for a CPU-bound result), ask in the issue first.
 4. **Run `scripts/x86/check_outgoing.sh` before every push** (add `--code` for a code PR) and push only when it
-   prints `check_outgoing: OK`. It fails on paths outside the allow-list, home paths, IPs, e-mail addresses, GPU
-   UUIDs, bus ids, serial numbers, access tokens, this machine's host/user names, files over 1 MB and binaries. If
-   the sensitive material has names that must never appear (projects, customers), ask the user to give them to you
-   locally and export them as `SYSONE_OUTGOING_DENY=word1,word2` (never write them into the repo). The runners also
-   check each results directory and quarantine it under `target/x86-quarantine/` if it fails.
-5. **Never paste raw logs** into issues, PRs or commit messages. The runners keep stderr in `target/x86-logs/`
+   prints `check_outgoing: OK`. It checks **every commit** the push would upload (not only the branch's final
+   state), the staged changes and the commit messages and identities. It fails on paths outside the allow-list,
+   merge commits, home paths and other absolute paths, `~/` and `$HOME`, IPv4/IPv6 addresses, e-mail addresses,
+   UUIDs, bus ids, serial numbers, access tokens, this machine's host/user names, files over 1 MB and binaries.
+   If the sensitive material has names that must never appear (projects, customers), ask the user to give them to
+   you locally and export them as `SYSONE_OUTGOING_DENY=word1,word2` (never write them into the repo). Commit
+   identities must be noreply addresses or the address the user chose, exported locally as
+   `SYSONE_OUTGOING_ALLOW_EMAIL=<address>`. The runners also check each results directory and quarantine it under
+   `target/x86-quarantine/` if it fails.
+
+   **When it fails, remove the problem from the history, not just from the files.** A leak that is committed and
+   then fixed by a further commit is still pushed (git uploads every commit). Before the first push of the branch,
+   rewrite the unpushed commits:
+   - only the last commit is affected: fix the files, `git add` them, `git commit --amend --no-edit`;
+   - otherwise squash the branch into one clean commit (interactive rebase is not available to you):
+     ```bash
+     git reset --soft "$(git merge-base origin/main HEAD)"   # keeps your working tree and index
+     # fix or delete the offending files, then re-stage exactly what belongs in the PR
+     git commit -m "<message>"
+     ```
+   Then rerun the check. If a commit with a leak was **already pushed**, stop: do not push anything more, tell the
+   user locally, and write in the issue only "branch <name> must be deleted: a pushed commit failed the outgoing
+   check" (never the leaked content). You may not force-push; the user deletes the branch.
+   To bring in new commits from main, rebase your *unpushed* branch on `origin/main` (`git fetch && git rebase
+   origin/main`); never merge main into your branch (the check rejects merge commits). If the branch is already
+   pushed and needs main, ask in the PR instead.
+5. **Check every text before you post it.** Write PR bodies, issue comments and PR comments to a file outside the
+   repository first, run `scripts/x86/check_outgoing.sh --files <file>`, and post only when it prints OK (`gh pr
+   create --body-file <file>`, `gh issue comment <n> --body-file <file>`). The check catches patterns, not
+   meaning: read the text yourself too.
+   **Never paste raw logs** into issues, PRs or commit messages. The runners keep stderr in `target/x86-logs/`
    (git-ignored, local only): read it yourself and summarise the error in your own words, removing any path or
    identifier. Same for compiler errors: quote only the sysone source location and message.
-6. **Never push to `main`**, never force-push, never rewrite published history, never push to NVIDIA/cuda-rust,
+6. **Never push to `main`**, never force-push, never rewrite pushed history (unpushed commits that fail the check
+   must be rewritten, item 4), never push to NVIDIA/cuda-rust,
    never upload models, datasets or weights anywhere (Hugging Face, GitHub, gists, pastebins), never create public
    repositories, gists or releases, never use GitHub Actions or other CI to move data off the machine.
 7. **Commit identity:** the one the user chose for this work, set per repository
@@ -142,7 +175,8 @@ Repository: `Code4me2/sysone-oxide` (private). The GB10 agent writes the issues 
    `profiles/...` when the task asks), run `scripts/x86/check_outgoing.sh`, push the branch, open a PR:
    ```bash
    scripts/x86/check_outgoing.sh && git push -u origin HEAD
-   gh pr create --base main --title "x86: <task> (#<n>)" --body-file <your-local-body.md>
+   scripts/x86/check_outgoing.sh --files <your-local-body.md> &&
+     gh pr create --base main --title "x86: <task> (#<n>)" --body-file <your-local-body.md>
    ```
    The PR body says `Closes #<n>`, has a **results summary table** (one row per GPU and benchmark/test target:
    the headline numbers and pass/fail), lists anything NOT RUN or FAILED with the reason in your own words, and
@@ -163,8 +197,8 @@ Repository: `Code4me2/sysone-oxide` (private). The GB10 agent writes the issues 
 | `scripts/x86/setup.sh` | doctor (core prerequisites), build, GPU-free tests (lib, render_golden_shape, the script tests). Prints only. |
 | `scripts/x86/run_tests.sh --model DIR [--gpus 0,1,2] [--nvfp4 DIR] [--external] [--slow]` | Test targets that need no external golden dumps: CPU tests once, GPU tests per GPU (one GPU at a time, each under its lock). Writes `benchmarks/results/x86/host/<date>/cpu-tests/` and `.../<card-slug>/<date>/gpu<N>-tests/`. |
 | `scripts/x86/run_bench.sh --model DIR [--gpus ...] [--mode single\|concurrent\|both] [--forward-tokens L] [--quick]` | hwprobe (and `profiles/<sm>-<card-slug>.json`), bench_gdn tile and simt, bench_attn, bench_nvfp4, tile_gemm_probe, bench_forward per GPU one at a time; `--mode concurrent` runs bench_forward on all selected GPUs at once (`CONCURRENT_BENCHES` to change the list). Writes `.../gpu<N>-single/` and `.../gpu<N>-concurrent/`. `--quick` is a smoke test only. |
-| `scripts/x86/check_outgoing.sh [--code]` | The pre-push check (§5). `--files F...` scans files directly. |
-| `scripts/gpu.sh [--gpu N] CMD` | The per-GPU lock (§4). |
+| `scripts/x86/check_outgoing.sh [--code]` | The pre-push check over every commit of the branch (§5). `--files F...` scans files directly (PR bodies, comments). |
+| `scripts/gpu.sh [--gpu N] CMD` | The per-GPU lock (§4). Never around the runners above. |
 | `scripts/doctor.sh [--core] [--simt]` | Prerequisites, including the pinned cuda-rust revision. |
 
 Each results directory holds one sanitised `.txt` per job (the binary's stdout), `summary.tsv` (job, exit code or
@@ -186,7 +220,8 @@ them as NOT RUN unless you pass `--external`):
 - **Never change a gate, threshold or tolerance** (`tests/tolerances.toml`, `src/tolerances.rs`, eval limits, any
   assert bound in a test) to make something pass. Report failures honestly with the measured numbers; the GB10
   side decides. check_outgoing.sh rejects those files outright.
-- No force pushes, no pushes to `main`, no self-merges, no history rewrites.
+- No force pushes, no pushes to `main`, no self-merges, no rewriting of pushed history (rewriting unpushed commits
+  to remove a leak is required: §5 item 4).
 - No changes to the lock and safety scripts (`scripts/gpu.sh`, `scripts/doctor.sh`, `scripts/x86/check_outgoing.sh`,
   `scripts/x86/lib.sh`, `scripts/tests/`) without agreement in an issue first; then `check_outgoing.sh --safety`.
 - No `--allow-shared-gpu` in reported results; no benchmarks while your own other GPU jobs run on the same GPU.

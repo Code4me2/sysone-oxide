@@ -125,12 +125,15 @@ x86_job() {
     return "$rc"
 }
 
-# Final gate on a results directory: every file must pass check_outgoing.sh --files. On failure the directory
-# is moved out of the repo tree (target/x86-quarantine/) so it cannot be committed by accident.
+# Final gate on a results directory: every file in it (dotfiles and subdirectories included) must pass
+# check_outgoing.sh --files. On failure the directory is moved out of the repo tree (target/x86-quarantine/, or
+# X86_QUARANTINE) so it cannot be committed by accident.
 x86_seal() {
-    local dir="$1"
-    if "$X86_ROOT/scripts/x86/check_outgoing.sh" --files "$dir"/* >&2; then return 0; fi
-    local q="$X86_ROOT/target/x86-quarantine/$(date +%s)-$(basename "$dir")"
+    local dir="$1" files=()
+    mapfile -d '' files < <(find "$dir" -type f -print0)
+    if [ "${#files[@]}" -gt 0 ] && "$X86_ROOT/scripts/x86/check_outgoing.sh" --files "${files[@]}" >&2; then return 0; fi
+    [ "${#files[@]}" -gt 0 ] || echo "x86: $dir is empty" >&2
+    local q="${X86_QUARANTINE:-$X86_ROOT/target/x86-quarantine}/$(date +%s)-$(basename "$dir")"
     mkdir -p "$(dirname "$q")" && mv "$dir" "$q"
     echo "x86: results in $dir failed the outgoing check and were moved to target/x86-quarantine/; fix the leak, rerun" >&2
     return 1

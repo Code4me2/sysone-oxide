@@ -111,9 +111,16 @@ if [ "$mode" = single ] || [ "$mode" = both ]; then
         sm=$(x86_sm "$(x86_gpu_field "$g" compute_cap)")
         if [ -f "$d/profile.json" ] && [ "$quick" = 0 ] && [ -z "${profiled[$slug]:-}" ]; then
             x86_sanitize "$d/profile.json"
-            cp "$d/profile.json" "profiles/$sm-$slug.json"
-            profiled[$slug]=1
-            echo "x86: wrote profiles/$sm-$slug.json (from GPU $g)" >&2
+            # Scanned before it is copied out of the results directory: a profile that fails stays in the
+            # directory, which x86_seal then quarantines, and never reaches profiles/.
+            if "$X86_ROOT/scripts/x86/check_outgoing.sh" --files "$d/profile.json" >&2; then
+                cp "$d/profile.json" "profiles/$sm-$slug.json"
+                profiled[$slug]=1
+                echo "x86: wrote profiles/$sm-$slug.json (from GPU $g)" >&2
+            else
+                echo "x86: profile of GPU $g failed the outgoing check; profiles/ not written" >&2
+                failed=1
+            fi
         fi
         x86_seal "$d" || failed=1
         dirs+=("$d")

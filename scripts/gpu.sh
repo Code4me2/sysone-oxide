@@ -19,7 +19,16 @@
 # ascending order; when nothing is selected, GPU 0 is used (with a note on stderr). SYSONE_GPU_LOCK=<file>
 # overrides all of this with one lock file.
 #
-# SYSONE_GPU_LOCKED=1 is exported for the command (benchmarks record whether the lock was held).
+# SYSONE_GPU_LOCK is a single lock that does NOT exclude jobs holding the per-device locks: on a multi-GPU host use
+# it only when every GPU job on the host uses the same SYSONE_GPU_LOCK, never mixed with per-device locking.
+#
+# If nvidia-smi fails, gpu.sh refuses (it cannot tell which locks protect the GPU), unless SYSONE_GPU_LOCK is set.
+#
+# Nesting: SYSONE_GPU_LOCKED=1 and SYSONE_GPU_HELD=<lock files> are exported for the command (benchmarks record
+# whether the lock was held). A gpu.sh started inside it whose locks are all already held runs its command without
+# locking again (it would otherwise wait forever on its own parent); one that needs a lock the parent does not hold
+# refuses, because taking locks out of order can deadlock. The x86 runners take their locks themselves: never wrap
+# them in gpu.sh.
 # SYSONE_GPU_DRY_RUN=1 prints the resolved selection and lock files instead of running (used by the tests).
 set -euo pipefail
 smi="${SYSONE_NVIDIA_SMI:-nvidia-smi}"
@@ -33,6 +42,7 @@ case "${1:-}" in
 esac
 [ $# -ge 1 ] || die "usage: scripts/gpu.sh [--gpu N[,M...]|all] COMMAND [ARGS...]"
 
+outer_held="${SYSONE_GPU_HELD:-}"
 export SYSONE_GPU_LOCKED=1
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 
@@ -40,6 +50,8 @@ export CUDA_DEVICE_ORDER=PCI_BUS_ID
 gpus=()
 if out=$("$smi" --query-gpu=index,uuid --format=csv,noheader 2>/dev/null); then
     while IFS= read -r l; do [ -n "${l// /}" ] && gpus+=("$l"); done <<< "$out"
+elif [ -z "${SYSONE_GPU_LOCK:-}" ]; then
+    die "nvidia-smi failed: cannot tell which GPU lock(s) to take; fix the driver (or set SYSONE_GPU_LOCK, see above)"
 fi
 n=${#gpus[@]}
 
@@ -87,12 +99,25 @@ else
     while IFS= read -r i; do locks+=("$lockdir/sysone-gpu$i.lock"); done < <(printf '%s\n' "${idx[@]}" | sort -n -u)
 fi
 
+# Nested inside another gpu.sh: run unlocked if every lock is already held by it, refuse otherwise.
+nested=0
+if [ -n "$outer_held" ]; then
+    nested=1
+    for l in "${locks[@]}"; do
+        case " $outer_held " in *" $l "*) ;; *) nested=missing ;; esac
+    done
+    [ "$nested" = 1 ] || die "nested gpu.sh needs lock(s) ${locks[*]} but its parent holds only $outer_held (do not wrap GPU jobs or the x86 runners in gpu.sh)"
+fi
+export SYSONE_GPU_HELD="${locks[*]}"
+[ "$nested" = 1 ] && SYSONE_GPU_HELD="$outer_held"
+
 if [ "${SYSONE_GPU_DRY_RUN:-0}" = 1 ]; then
     echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES-<unset>}"
-    echo "locks=${locks[*]}"
+    if [ "$nested" = 1 ]; then echo "locks=(held by parent)"; else echo "locks=${locks[*]}"; fi
     exit 0
 fi
 
+[ "$nested" = 1 ] && exec "$@"
 cmd=()
 for l in "${locks[@]}"; do cmd+=(flock "$l"); done
 exec "${cmd[@]}" "$@"

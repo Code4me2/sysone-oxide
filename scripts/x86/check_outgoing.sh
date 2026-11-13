@@ -9,18 +9,27 @@
 #   scripts/x86/check_outgoing.sh --base REF      compare against REF instead of origin/main
 #   scripts/x86/check_outgoing.sh --files F...    scan files (contents and size) without git; used by the runners
 #
-# Fails when the diff
-#   - is on main/master, or touches a path outside the allow-list (results PR: benchmarks/results/x86/**,
-#     profiles/**, kernels-simt/artifacts/**), or a gate/tolerance file (never allowed), or a model/trace file;
-#   - adds a line with: a home path (/home/, /Users/, /root/), an IPv4 address (except 0.0.0.0, 127.0.0.1), an
-#     e-mail address (except noreply ones), a GPU/MIG UUID, a PCI bus id, a MAC address, a serial number (a
-#     "serial" field or a bare integer of 13+ digits), an access token (hf_, ghp_/gho_/ghs_/ghu_/ghr_,
-#     github_pat_, sk-, AKIA, private keys, Slack), this machine's host name or user name, or a word listed in
-#     SYSONE_OUTGOING_DENY (comma-separated, e.g. project or customer names from the sensitive material);
-#   - adds a binary file or a file over 1 MB;
-#   - has a commit whose message has any of the above, or whose author/committer e-mail is a machine identity
-#     (*.local, *.lan, *.localdomain, *.internal, (none), or containing the host name).
-# Nothing it reports should be pasted into GitHub: fix the files instead.
+# It checks EVERY commit the push would upload (mb..HEAD, where mb is the merge base with the base branch), not
+# only the branch's net change: a leak committed and removed again in a later commit is still in the pushed history,
+# so it fails here and must be removed by rewriting the unpushed commits (docs/x86/AGENT.md §5.4). It fails when
+#   - the branch is main/master, or has a merge commit (rebase on origin/main instead), or any commit or the index
+#     touches a path outside the allow-list (results PR: benchmarks/results/x86/**, profiles/**,
+#     kernels-simt/artifacts/**), or a gate/tolerance file (never allowed), or a model/trace/secret file;
+#   - any commit or the index adds a line with: an absolute path outside a short allow-list (/tmp/sysone*,
+#     /usr/local/cuda*, /usr/{bin,lib,include}/, /dev/null, /proc/, /sys/, /v1/ routes, /path/to/; home paths
+#     always fail; a path right after '<' or '>' is a tag or placeholder and not checked),
+#     ~/ or $HOME, an IPv4 address (except 0.0.0.0, 127.0.0.1) or IPv6 address (except ::1), an e-mail address
+#     (except noreply ones and SYSONE_OUTGOING_ALLOW_EMAIL), a UUID (GPU-/MIG- or bare, any case), a PCI bus id,
+#     a MAC address, a serial number (a "serial" field or a bare integer of 13+ digits), an access token (hf_,
+#     ghp_/gho_/ghs_/ghu_/ghr_, github_pat_, sk-, AKIA, private keys, Slack), this machine's host name or user
+#     name, or a word listed in SYSONE_OUTGOING_DENY (comma-separated, e.g. project or customer names from the
+#     sensitive material);
+#   - any commit or the index adds a binary file or a file over 1 MB (every new blob is checked);
+#   - a commit message has any of the above, or an author/committer e-mail is not allowed (only noreply addresses
+#     and the comma-separated SYSONE_OUTGOING_ALLOW_EMAIL, set locally by the user, never in the repo) or is a
+#     machine identity, or an author/committer name is this machine's host or user name.
+# Nothing it reports should be pasted into GitHub: remove it from the unpushed commits instead (AGENT.md §5.4).
+# Diffs are taken with --no-ext-diff --no-textconv, so local diff drivers and .gitattributes cannot hide content.
 set -uo pipefail
 
 RESULT_PATHS='^(benchmarks/results/x86/|profiles/|kernels-simt/artifacts/)'
@@ -37,7 +46,7 @@ while [ $# -gt 0 ]; do
         --safety) mode=safety ;;
         --base) base="$2"; shift ;;
         --files) shift; files=("$@"); mode=files; break ;;
-        -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,31p' "$0"; exit 0 ;;
         *) echo "check_outgoing: unknown argument $1" >&2; exit 2 ;;
     esac
     shift
@@ -54,6 +63,16 @@ done
 IFS=, read -r -a extra <<< "${SYSONE_OUTGOING_DENY:-}"
 for w in "${extra[@]}"; do w="${w## }"; w="${w%% }"; [ -n "$w" ] && deny_words+=("$w"); done
 
+# E-mail addresses that may appear (commit identities, attribution lines): noreply ones, plus the comma-separated
+# SYSONE_OUTGOING_ALLOW_EMAIL the user sets locally for the commit identity they chose.
+IFS=, read -r -a allow_emails <<< "${SYSONE_OUTGOING_ALLOW_EMAIL:-}"
+allowed_email() {
+    local e="${1,,}" a
+    [[ "$e" =~ ^(noreply@anthropic\.com|[a-z0-9._+-]+@users\.noreply\.github\.com|noreply@github\.com)$ ]] && return 0
+    for a in "${allow_emails[@]}"; do a="${a// /}"; [ -n "$a" ] && [ "$e" = "${a,,}" ] && return 0; done
+    return 1
+}
+
 # scan: reads "label<TAB>text" lines on stdin and reports every sensitive pattern found.
 scan() {
     # Only the text is scanned, never the label (a file path of this machine in --files mode).
@@ -66,7 +85,10 @@ scan() {
     relabel() { awk 'NR == FNR { lab[NR] = $0; next } { i = index($0, ":"); print lab[substr($0, 1, i - 1)] "\t" substr($0, i + 1) }' "$labels" -; }
     local -a pats=(
         'home path|(/home/|/Users/|/root/)'
-        'GPU/MIG UUID|(GPU|MIG)-[0-9A-Fa-f]{8}'
+        'GPU/MIG UUID|[GgMm][PpIi][UuGg]-[0-9A-Fa-f]{8}'
+        'UUID|[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}'
+        'home path variable|(~/|\$HOME([^A-Za-z0-9_]|$)|\$\{HOME\}|%USERPROFILE%)'
+        'IPv6 address|(^|[^0-9A-Za-z_:])([0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}([^0-9A-Za-z_:]|$)'
         'PCI bus id|[0-9A-Fa-f]{4,8}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}\.[0-7]'
         'MAC address|([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}'
         'serial number|[Ss][Ee][Rr][Ii][Aa][Ll]([ _-]?([Nn]umber|[Nn]o|[Nn]um))?"?[[:space:]]*[:=,]|gpu_serial'
@@ -83,20 +105,39 @@ scan() {
             report "$label: $kind: ${text:0:160}"
         done
     done
-    # IPv4 (octets <= 255; loopback/any allowed) and e-mail (noreply allowed), checked per match.
+    # IPv4 (octets <= 255; loopback/any allowed), checked per match. A '.' right after the address ends it unless a
+    # digit follows (a sentence end "... 10.0.0.5." is an address; "1.2.3.4.5" is a version string).
     awk '{
             s = $0
             while (match(s, /[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/)) {
-                ip = substr(s, RSTART, RLENGTH); pre = (RSTART > 1) ? substr(s, RSTART - 1, 1) : ""; post = substr(s, RSTART + RLENGTH, 1)
+                ip = substr(s, RSTART, RLENGTH); pre = (RSTART > 1) ? substr(s, RSTART - 1, 1) : ""
+                post = substr(s, RSTART + RLENGTH, 1); post2 = substr(s, RSTART + RLENGTH + 1, 1)
                 s = substr(s, RSTART + RLENGTH)
-                if (pre ~ /[0-9.]/ || post ~ /[0-9.]/) continue
+                if (pre ~ /[0-9.]/ || post ~ /[0-9]/ || (post == "." && post2 ~ /[0-9]/)) continue
                 n = split(ip, o, "."); ok = 1
                 for (i = 1; i <= 4; i++) if (length(o[i]) > 3 || o[i] + 0 > 255) ok = 0
                 if (ok && ip != "0.0.0.0" && ip != "127.0.0.1") { print NR ":IPv4 address: " ip; break }
             }
         }' "$tmp" | head -5 | relabel | while IFS=$'\t' read -r label text; do report "$label: $text"; done
+    # Compressed IPv6 ("fe80::1c2:3", "2001:db8::1"): hex groups around "::", with a digit; "::1" and Rust/C++ paths
+    # such as "u8::MAX" (not hex, or glued to an identifier) are not addresses.
+    grep -noE -- '(^|[^0-9A-Za-z_:])[0-9A-Fa-f:]*::[0-9A-Fa-f:]*([^0-9A-Za-z_:]|$)' "$tmp" |
+        awk '{ i = index($0, ":"); n = substr($0, 1, i - 1); a = substr($0, i + 1); gsub(/[^0-9A-Fa-f:]/, "", a)
+               if (a ~ /[0-9]/ && a != "::1" && a ~ /[0-9A-Fa-f]/ && length(a) >= 4) {
+                   ok = 1; k = split(a, g, ":"); for (j = 1; j <= k; j++) if (length(g[j]) > 4) ok = 0
+                   if (ok && k <= 8) print n ":IPv6 address: " a } }' |
+        head -5 | relabel | while IFS=$'\t' read -r label text; do report "$label: $text"; done
+    # Absolute paths: anything absolute outside a short allow-list of system/tool paths (results and docs never need
+    # a path of this machine; the runners already replace the repo and model paths with <repo> and <model>). A path
+    # right after '<' or '>' is not checked: closing tags (</think>) and placeholders (<models>/elephant-1).
+    grep -noE -- '(^|[][[:space:]"'"'"'`=(,;:{}|*])/[A-Za-z0-9_+-][A-Za-z0-9._+-]*(/[A-Za-z0-9._+-]*)*' "$tmp" |
+        awk '{ i = index($0, ":"); n = substr($0, 1, i - 1); a = substr($0, i + 1); sub(/^[^\/]/, "", a)
+               if (a ~ /^\/(home|Users|root)(\/|$)/) next   # reported as "home path" already
+               if (a ~ /^\/(tmp\/sysone|usr\/local\/cuda|usr\/(bin|lib|lib64|include)\/|bin\/|dev\/null$|dev\/shm$|proc\/|sys\/|v1\/|v1$|health$|metrics$|path\/to\/)/) next
+               print n ":absolute path outside the allow-list: " a }' |
+        head -5 | relabel | while IFS=$'\t' read -r label text; do report "$label: $text"; done
     grep -noE -- '[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}' "$tmp" |
-        grep -vE ':(noreply@anthropic\.com|[A-Za-z0-9._+-]+@users\.noreply\.github\.com|noreply@github\.com)$' |
+        while IFS= read -r m; do allowed_email "${m#*:}" || printf '%s\n' "$m"; done |
         head -5 | relabel | while IFS=$'\t' read -r label m; do report "$label: e-mail address: $m"; done
     local w
     for w in "${deny_words[@]}"; do
@@ -140,8 +181,15 @@ if [ -z "$base" ]; then
 fi
 mb=$(git merge-base "$base" HEAD 2>/dev/null) || { echo "check_outgoing: no merge base with $base (git fetch first)" >&2; exit 2; }
 
-# Paths touched by the branch's commits and by staged changes (unstaged and untracked files are not pushed).
-paths=$( { git diff --name-only --no-renames "$mb" HEAD; git diff --name-only --no-renames --cached; } | sort -u)
+# Everything below looks at every commit in mb..HEAD (what `git push` uploads) and at the index (what the next
+# commit adds), never only at the net diff. No external diff drivers or textconv filters.
+D=(--no-ext-diff --no-textconv --no-renames --no-color)
+
+merges=$(git rev-list --merges "$mb..HEAD")
+[ -z "$merges" ] || report "merge commit(s) $(printf '%s' "$merges" | cut -c1-10 | tr '\n' ' ')in the branch: rebase on origin/main instead of merging (before the first push)"
+
+# Paths touched by any commit of the branch (also ones a later commit reverted or deleted) and by staged changes.
+paths=$( { git log "${D[@]}" --format= --name-only --diff-merges=dense-combined "$mb..HEAD"; git diff "${D[@]}" --name-only --cached; } | sort -u)
 allowed="$RESULT_PATHS"
 [ "$mode" = code ] && allowed="$RESULT_PATHS|$CODE_PATHS"
 [ "$mode" = safety ] && allowed="$RESULT_PATHS|$CODE_PATHS|$SAFETY_PATHS"
@@ -155,32 +203,55 @@ while IFS= read -r p; do
     fi
 done <<< "$paths"
 
-# Sizes and binaries of the files as they will be pushed (staged version if staged, else HEAD).
-while IFS=$'\t' read -r add del p; do
-    [ -n "$p" ] || continue
-    if [ "$add" = - ]; then report "$p: binary file (results must be small text/JSON)"; fi
-done < <( { git diff --numstat --no-renames "$mb" HEAD; git diff --numstat --no-renames --cached; } | sort -u)
-while IFS= read -r p; do
-    [ -n "$p" ] || continue
-    size=$(git cat-file -s ":$p" 2>/dev/null || git cat-file -s "HEAD:$p" 2>/dev/null || echo 0)
-    [ "$size" -le "$MAX_BYTES" ] || report "$p: file over 1 MB ($size bytes)"
-done <<< "$paths"
+# Every blob the push would upload (objects of mb..HEAD not reachable from mb), plus staged blobs: size and binary.
+check_blob() {   # check_blob OBJECT SIZE PATH
+    [ "$2" -le "$MAX_BYTES" ] || report "$3: file over 1 MB ($2 bytes) in the branch history"
+    if [ "$2" -gt 0 ] && ! git cat-file blob "$1" | head -c 8000 | grep -qI .; then
+        report "$3: binary file (results must be small text/JSON)"
+    fi
+}
+while read -r obj type size path; do
+    [ "$type" = blob ] && check_blob "$obj" "$size" "$path"
+done < <(git rev-list --objects HEAD --not "$mb" | git cat-file --batch-check='%(objectname) %(objecttype) %(objectsize) %(rest)')
+while read -r _ obj _ path; do
+    [ -n "$obj" ] && [ "$obj" != 0000000000000000000000000000000000000000 ] || continue
+    check_blob "$obj" "$(git cat-file -s "$obj")" "$path"
+done < <(git diff-index "${D[@]}" --cached HEAD | awk -F'\t' '{ split($1, m, " "); print m[1], m[4], m[5], $2 }')
 
-# Added lines of the branch and the index.
-{ git diff -U0 --no-color --no-renames "$mb" HEAD; git diff -U0 --no-color --no-renames --cached; } |
-    awk '/^\+\+\+ /{ f = substr($0, 7); next } /^\+/{ print f "\t" substr($0, 2) }' | run_scan
+# Added lines of every commit (merges: their combined diff) and of the index, labelled "<path>@<commit>".
+added_lines() {
+    awk '
+        /^commit [0-9a-z]+$/ { c = substr($2, 1, 10); hdr = 0; next }
+        /^diff --cc / { hdr = 1; nc = 2; next }
+        /^diff --(git|combined) / { hdr = 1; nc = 1; next }
+        hdr && /^\+\+\+ / { f = substr($0, 5); sub(/^b\//, "", f); next }
+        /^@@/ { hdr = 0; if ($0 ~ /^@@@/) { match($0, /^@+/); nc = RLENGTH - 1 } next }
+        hdr { next }
+        { pre = substr($0, 1, nc); if (pre ~ /\+/ && pre !~ /-/) print f "@" c "\t" substr($0, nc + 1) }'
+}
+{ git log "${D[@]}" -U0 -p --diff-merges=dense-combined --format='commit %H' "$mb..HEAD"
+  echo "commit index"; git diff "${D[@]}" -U0 --cached; } | added_lines | run_scan
 
-# Commit messages and identities.
+# Commit messages, every line (the attribution lines carry only noreply addresses, which pass).
 git log --format='%H%x09%B' "$mb..HEAD" | awk -F'\t' 'NF > 1 { h = substr($1, 1, 10); print "commit " h "\t" $2; next } { print "commit " h "\t" $0 }' |
-    grep -v $'\tCo-Authored-By: Claude' | run_scan
+    run_scan
+
+# Commit identities: e-mails must be allowed ones, never machine identities; names never the host/user name.
 host=$(hostname -s 2>/dev/null || true)
-while IFS=$'\t' read -r h ae ce; do
+while IFS=$'\t' read -r h an ae cn ce; do
     for e in "$ae" "$ce"; do
-        if [[ "$e" =~ \.(local|lan|localdomain|internal|home)$ || "$e" == *"(none)"* ]] || { [ -n "$host" ] && [[ "${e,,}" == *"${host,,}"* ]]; }; then
-            report "commit ${h:0:10}: machine identity in author/committer e-mail '$e' (set user.name/user.email to the identity the user chose)"
+        if [[ "${e,,}" =~ \.(local|lan|localdomain|internal|home)$ || "$e" == *"(none)"* ]] || { [ -n "$host" ] && [[ "${e,,}" == *"${host,,}"* ]]; }; then
+            report "commit ${h:0:10}: machine identity in author/committer e-mail (set user.name/user.email to the identity the user chose)"
+        elif ! allowed_email "$e"; then
+            report "commit ${h:0:10}: author/committer e-mail is not a noreply address or in SYSONE_OUTGOING_ALLOW_EMAIL (set locally by the user)"
         fi
     done
-done < <(git log --format='%H%x09%ae%x09%ce' "$mb..HEAD")
+    for nm in "$an" "$cn"; do
+        for w in "${deny_words[@]}"; do
+            [[ "${nm,,}" =~ (^|[^a-z0-9])"${w,,}"([^a-z0-9]|$) ]] && report "commit ${h:0:10}: author/committer name contains a machine/user/denied word"
+        done
+    done
+done < <(git log --format='%H%x09%an%x09%ae%x09%cn%x09%ce' "$mb..HEAD")
 
 if [ "$problems" = 0 ]; then echo "check_outgoing: OK ($branch vs $base, $(printf '%s\n' "$paths" | grep -c .) paths)"; exit 0; fi
 echo "check_outgoing: FAILED ($problems problems): fix them; do not push, and do not paste the flagged text anywhere"
