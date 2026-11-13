@@ -41,6 +41,7 @@ def render(report: dict) -> str:
         "#   bf16_fork         qev bf16 batched fork vs sequential branches (batch-dependent kernel rounding)",
         "#   nvfp4_cross_process  NVFP4 QDQ per-question reference, 3 fresh processes, pairwise",
         "#   nvfp4_perq_vs_shared_prefix  NVFP4 QDQ per-question vs the shared-prefix served path (batched+seq)",
+        "#   nvfp4_fork        NVFP4 QDQ shared-prefix batched fork vs sequential branches (its batch dependence)",
         "# Probabilities are per option of each branch (softmax of the slot logits at T = 1); dp = |p_a - p_b|.",
         "# Quantiles are nearest-rank over all options of all compared branches. Tests must still print their",
         "# own p50/p99/max, not just pass/fail.",
@@ -95,6 +96,13 @@ def render(report: dict) -> str:
                    "§3.1 equivalence holds in exact arithmetic only, so this gate is wide; tighten it by comparing",
                    "sysone against the shared-prefix QDQ path once W4 can run the same packing."],
          ["nvfp4_cross_process", "nvfp4_perq_vs_shared_prefix"], e2e)
+    if g.get("nvfp4_fork"):
+        gate("batch_invariance.nvfp4",
+             ["The NVFP4 engine's batch invariance (N1): the same request alone vs packed with others vs alone in a",
+              "larger bucket (sysone vs itself). Envelope: the NVFP4 QDQ reference's own batch dependence (batched",
+              "fork vs sequential branches), the NVFP4 counterpart of [batch_invariance] (whose bf16_fork envelope",
+              "does not describe FP4 activation rounding). Derived before sysone NVFP4 was evaluated."],
+             ["nvfp4_fork"], [("dp_max", "dp_option", "max"), ("dlogit_max", "dlogit", "max")])
     nv = g.get("nvfp4_vs_bf16") or {}
     if nv:
         L.extend(["", "# Quality information only (no gate): NVFP4 QDQ vs bf16, same paths.", "[nvfp4.vs_bf16]",

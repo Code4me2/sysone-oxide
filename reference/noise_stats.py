@@ -56,6 +56,8 @@ GROUPS = {
     "bf16_path": ["bf16.per_question_vs_sequential", "bf16.per_question_vs_batched"],
     "nvfp4_cross_process": ["nvfp4.cross_process.r1_r2", "nvfp4.cross_process.r1_r3", "nvfp4.cross_process.r2_r3"],
     "nvfp4_perq_vs_shared_prefix": ["nvfp4.per_question_vs_batched", "nvfp4.per_question_vs_sequential"],
+    # N1: the NVFP4 QDQ reference's own batch dependence (shared-prefix batched fork vs sequential branches)
+    "nvfp4_fork": ["nvfp4.batched_vs_sequential"],
     "nvfp4_vs_bf16": ["nvfp4_vs_bf16.per_question", "nvfp4_vs_bf16.sequential"],
 }
 # hidden-state pairs (a, b): b = truth
