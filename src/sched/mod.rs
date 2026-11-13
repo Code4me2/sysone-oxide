@@ -7,6 +7,7 @@
 //! ```
 //! Each request gets its slot-logit rows back through a oneshot channel.
 
+pub mod affinity;
 pub mod batcher;
 pub mod metrics;
 pub mod pool;
@@ -25,7 +26,7 @@ use crate::contract::{DecisionBatch, DecisionEngine, MAX_SLOTS};
 use crate::frontend::Plan;
 pub use batcher::BatchPolicy;
 pub use metrics::Metrics;
-pub use pool::CpuPool;
+pub use pool::{CpuPool, PoolError};
 pub use queue::AdmissionQueue;
 
 /// A request the batcher can pack: one prefix and its suffixes.
@@ -35,6 +36,11 @@ pub trait Packable: Send + Sync {
     fn num_branches(&self) -> usize;
     /// Append to `batch`; returns the batch row of branch 0.
     fn push_into(&self, batch: &mut DecisionBatch) -> Result<usize>;
+    /// Whether this request wants `allowed_token_mass` (a `debug` request). A batch holding one runs through
+    /// [`DecisionEngine::run_with_mass`].
+    fn wants_mass(&self) -> bool {
+        false
+    }
 }
 
 impl Packable for Plan {
@@ -56,8 +62,12 @@ impl Packable for Plan {
 pub struct Scored {
     /// `num_branches × MAX_SLOTS` slot logits, branch-major.
     pub logits: Vec<f32>,
+    /// Per-branch `allowed_token_mass`, when the batch ran with masses and the engine reported them.
+    pub allowed_mass: Option<Vec<f64>>,
     /// Admission to the start of its engine step.
     pub queue_wait: Duration,
+    /// When its engine step started.
+    pub step_started: Instant,
     /// Its engine step's wall time.
     pub step: Duration,
     pub batch_tokens: usize,
@@ -83,6 +93,8 @@ pub struct Job {
 pub struct Packed {
     pub batch: DecisionBatch,
     pub jobs: Vec<(Job, usize)>,
+    /// Some job wants `allowed_token_mass`: run with [`DecisionEngine::run_with_mass`].
+    pub wants_mass: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -118,6 +130,11 @@ pub struct Scheduler {
 impl Scheduler {
     /// Start the GPU worker (building the engine on it) and the batcher.
     pub fn start(cfg: SchedConfig, factory: EngineFactory, metrics: Arc<Metrics>) -> Result<Self> {
+        Self::start_with(cfg, factory, metrics, None)
+    }
+
+    /// [`start`](Self::start), with the GPU worker and batcher threads pinned to `pin` (docs/PLATFORM.md P7).
+    pub fn start_with(cfg: SchedConfig, factory: EngineFactory, metrics: Arc<Metrics>, pin: Option<Vec<usize>>) -> Result<Self> {
         ensure!(cfg.token_budget > 0, "token budget must be positive");
         let (ready_tx, ready_rx) = mpsc::channel::<Result<usize>>();
         // The one-slot channel is the double buffer: one batch running, one packed and waiting.
@@ -125,7 +142,9 @@ impl Scheduler {
         let in_flight = Arc::new(AtomicUsize::new(0));
         let busy = in_flight.clone();
         let m = metrics.clone();
+        let gpu_pin = pin.clone();
         let gpu = std::thread::Builder::new().name("sysone-gpu".into()).spawn(move || {
+            affinity::maybe_pin(gpu_pin.as_deref(), "the GPU worker");
             let engine = match factory() {
                 Ok(e) => e,
                 Err(e) => {
@@ -148,7 +167,10 @@ impl Scheduler {
             BatchPolicy { token_budget: cfg.token_budget.min(max_tokens), max_wait: cfg.max_wait, max_tokens };
         let queue = Arc::new(AdmissionQueue::new(cfg.queue_capacity));
         let q = queue.clone();
-        let batcher = std::thread::Builder::new().name("sysone-batcher".into()).spawn(move || batcher::run(q, policy, tx, in_flight))?;
+        let batcher = std::thread::Builder::new().name("sysone-batcher".into()).spawn(move || {
+            affinity::maybe_pin(pin.as_deref(), "the batcher");
+            batcher::run(q, policy, tx, in_flight)
+        })?;
         Ok(Scheduler { queue, policy, metrics, threads: vec![batcher, gpu] })
     }
 
@@ -400,6 +422,68 @@ mod tests {
         let w = Arc::new(Fake { seed: 5, prefix: 3, suffixes: vec![(1, 2)] }) as Arc<dyn Packable>;
         let rx = sched.submit(vec![w]).unwrap().pop().unwrap();
         assert!(rx.blocking_recv().unwrap().unwrap_err().contains("device lost"));
+    }
+
+    /// A `Fake` that asks for `allowed_token_mass`.
+    struct Debug(Fake);
+
+    impl Packable for Debug {
+        fn num_tokens(&self) -> usize {
+            self.0.num_tokens()
+        }
+        fn num_branches(&self) -> usize {
+            self.0.num_branches()
+        }
+        fn push_into(&self, batch: &mut DecisionBatch) -> Result<usize> {
+            self.0.push_into(batch)
+        }
+        fn wants_mass(&self) -> bool {
+            true
+        }
+    }
+
+    /// Masses reach exactly the batches that hold a debug request, mapped to each request's own rows, and only
+    /// those batches pay for `run_with_mass`.
+    #[test]
+    fn masses_only_for_batches_with_a_debug_request() {
+        struct Counting {
+            inner: MockEngine,
+            with_mass: Arc<Mutex<Vec<bool>>>,
+        }
+        impl DecisionEngine for Counting {
+            fn max_tokens_per_step(&self) -> usize {
+                self.inner.max_tokens_per_step()
+            }
+            fn run(&mut self, batch: &DecisionBatch) -> Result<SlotLogits> {
+                self.with_mass.lock().unwrap().push(false);
+                self.inner.run(batch)
+            }
+            fn run_with_mass(&mut self, batch: &DecisionBatch) -> Result<crate::contract::MassReadout> {
+                self.with_mass.lock().unwrap().push(true);
+                self.inner.run_with_mass(batch)
+            }
+        }
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let c = calls.clone();
+        let factory: EngineFactory =
+            Box::new(move || Ok(Box::new(Counting { inner: MockEngine { max_tokens: 1 << 16 }, with_mass: c }) as Box<dyn DecisionEngine>));
+        let cfg = SchedConfig { token_budget: 1 << 15, max_wait: Duration::from_millis(50), queue_capacity: 64 };
+        let sched = Scheduler::start(cfg, factory, Arc::new(Metrics::new())).unwrap();
+        let plain = || Fake { seed: 1, prefix: 10, suffixes: vec![(3, 4), (2, 7)] };
+        let debug = Fake { seed: 2, prefix: 12, suffixes: vec![(4, 5), (1, 2), (2, 9)] };
+        // Alone, the debug request's masses: MockEngine's are batch-invariant.
+        let mut b = DecisionBatch::default();
+        debug.push_into(&mut b).unwrap();
+        let want = MockEngine { max_tokens: 1 << 16 }.run_with_mass(&b).unwrap().allowed_mass.unwrap();
+
+        let rxs = sched.submit(vec![Arc::new(plain()) as Arc<dyn Packable>, Arc::new(Debug(debug))]).unwrap();
+        let got: Vec<Scored> = rxs.into_iter().map(|rx| rx.blocking_recv().unwrap().unwrap()).collect();
+        assert_eq!(got[0].batch_requests, 2, "both requests in one batch");
+        assert_eq!(got[0].allowed_mass.as_ref().map(Vec::len), Some(2));
+        assert_eq!(got[1].allowed_mass.as_ref().unwrap(), &want);
+        let rx = sched.submit(vec![Arc::new(plain()) as Arc<dyn Packable>]).unwrap().pop().unwrap();
+        assert_eq!(rx.blocking_recv().unwrap().unwrap().allowed_mass, None);
+        assert_eq!(*calls.lock().unwrap(), [true, false]);
     }
 
     #[test]

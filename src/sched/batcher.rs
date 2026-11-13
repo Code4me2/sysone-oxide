@@ -30,11 +30,12 @@ pub struct Packer {
     budget: usize,
     batch: DecisionBatch,
     jobs: Vec<(Job, usize)>,
+    wants_mass: bool,
 }
 
 impl Packer {
     pub fn new(budget: usize) -> Self {
-        Packer { budget, batch: DecisionBatch::default(), jobs: Vec::new() }
+        Packer { budget, batch: DecisionBatch::default(), jobs: Vec::new(), wants_mass: false }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -60,7 +61,10 @@ impl Packer {
     pub fn add(&mut self, job: Job) {
         let before = (self.batch.token_ids.len(), self.batch.segments.len(), self.batch.answer_rows.len());
         match job.work.push_into(&mut self.batch) {
-            Ok(first) => self.jobs.push((job, first)),
+            Ok(first) => {
+                self.wants_mass |= job.work.wants_mass();
+                self.jobs.push((job, first));
+            }
             Err(e) => {
                 self.batch.token_ids.truncate(before.0);
                 self.batch.segments.truncate(before.1);
@@ -75,6 +79,7 @@ impl Packer {
     pub fn take(&mut self) -> Option<Packed> {
         let batch = std::mem::take(&mut self.batch);
         let jobs = std::mem::take(&mut self.jobs);
+        let wants_mass = std::mem::take(&mut self.wants_mass);
         if jobs.is_empty() {
             return None;
         }
@@ -84,7 +89,7 @@ impl Packer {
             }
             return None;
         }
-        Some(Packed { batch, jobs })
+        Some(Packed { batch, jobs, wants_mass })
     }
 }
 
