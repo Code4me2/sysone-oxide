@@ -154,6 +154,7 @@ It runs with the reference venv, always isolated: `/home/velvet/Desktop/sysone-r
 | `corpus_model/build_corpus.py` | Interim model corpus (`requests.jsonl`, 52 requests) until W1a's render corpus is on main. |
 | `run_golden.py` | Runs the corpus through qev's own FastAPI app on one path (`batched`, `sequential`, `per_question`) and writes `tests/golden/dev/model/runs/<name>.json`; hidden-state dumps for the 10 `dump_hidden` requests. |
 | `layer_dump.py` | Per-layer hidden states (after layers 0, 3, 4, 15, 31 and the final norm) at answer rows and sampled prefix rows. Importable, and a CLI for W4 (`--request` or `--ids`). |
+| `hidden_dense.py` | Gate (a) (Phase 2a A1): dense per-layer hidden dumps of the 10 `dump_hidden` requests (every prefix row, or every `P // 1024`-th row, plus every answer row: 3,829 rows per tap) for eight runs (fp32/bf16 served, bf16 per-question, three hidden-basis permutations of bf16 served as null realizations, two degraded-norm bf16 paths); their manifest; and the gate's validation (`gate`): null candidates pass, synthetic regressions fail → `tests/golden/dev/model/hidden_gate_report.json` and the `[model.hidden]` block of `tests/tolerances.toml`. |
 | `noise_stats.py` | Pairwise noise statistics between runs → `tests/golden/dev/model/noise_report.json`; `--write-tolerances` renders `tests/tolerances.toml` (via `tolerances.py`). |
 | `write_manifest.py` | sha256/shape manifest of the binary goldens (`tests/golden/dev/model/manifest.json`); `--check` verifies them. |
 | `run_all.sh` | Regenerates every run (bf16 + NVFP4 queue, then the fp32 queue; `all-parallel` overlaps them). |
@@ -162,6 +163,18 @@ Binary goldens (hidden-state safetensors) live in `/home/velvet/Desktop/sysone-r
 `.../golden/dev/logs/`. Prerequisites outside the repo: `sysone-ref/OneJev-patched` (installed editable, `--no-deps`,
 into the venv) and Python 3.12 headers extracted to `sysone-ref/pydev/` for Triton (compressed-tensors' FP4 QDQ
 kernels); `qevref.py` points `C_INCLUDE_PATH` there.
+
+Dense hidden dumps for gate (a) (`<sysone-ref>/golden/dev/hidden_dense/<run>/`, manifest
+`tests/golden/dev/model/hidden_dense_manifest.json`), one GPU job per run:
+
+```sh
+for r in fp32_served bf16_served bf16_perq bf16_norm_llama bf16_norm_bf16 bf16_perm1 bf16_perm2 bf16_perm3; do
+  scripts/gpu.sh $PY -I reference/hidden_dense.py dump --run $r; done     # ~2-6 min each
+$PY -I reference/hidden_dense.py manifest && $PY -I reference/hidden_dense.py manifest --check
+$PY -I reference/hidden_dense.py gate --write-tolerances                   # CPU, ~1 min
+```
+
+`noise_stats.py --write-tolerances` keeps the marked `[eval]` and `[model.hidden]` blocks other generators own.
 
 Reproduce: `bash reference/run_all.sh && venv/bin/python -I reference/noise_stats.py --write-tolerances &&
 venv/bin/python -I reference/write_manifest.py`.
