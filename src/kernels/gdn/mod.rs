@@ -555,7 +555,8 @@ pub unsafe fn gdn_chunk_scan_with(
     }
     .generics(tp_gen.iter().map(|g| g.to_string()).chain([opts.tp_fsb.to_string()]).collect())
     .compile_options(CompileOptions::default().num_worker_warps_per_cta(opts.tp_warps))
-    .grid(grid(plan.max_chunks, NUM_V_HEADS, 1));
+    // Heads fastest: the two v-heads of a k-head (and the heads of one chunk) read the same q, k rows together.
+    .grid(grid(NUM_V_HEADS, plan.max_chunks, 1));
     ops.push(tp.map(|_| ()));
     // The Phase 1 WY launch is fused into the scans; an empty op keeps the four-launch shape
     // (inverse, WY, prefix scan, suffix scan) that callers label and replay.
@@ -582,7 +583,9 @@ pub unsafe fn gdn_chunk_scan_with(
         }
         .generics(scan_gen.iter().map(|g| g.to_string()).chain([bv.to_string()]).collect())
         .compile_options(CompileOptions::default().num_worker_warps_per_cta(warps))
-        .grid(grid(plan.max_segs, NUM_V_HEADS, HEAD_DIM / bv));
+        // Value blocks fastest, then heads: the CTAs that read one chunk's q, k, Tinv and p (the value blocks of
+        // a head, and the two v-heads of a k-head) are launched together and share those reads through L2.
+        .grid(grid(HEAD_DIM / bv, NUM_V_HEADS, plan.max_segs));
         ops.push(scan.map(|_| ()));
     }
     Ok(ops)

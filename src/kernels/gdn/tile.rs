@@ -593,7 +593,7 @@ pub mod gdn_tile {
     ///   MMAs) reach `T_64`, with no sequential row loop.
     /// - `p = lower_incl((q k^T) ⊙ D)`, the masked intra-chunk attention.
     ///
-    /// Grid `(max_chunks, 32, 1)`. q, k: `[T, 2048]` f32; g, beta: `[T, 32]` f32; tinv, p out: `[T, 32 * 64]` f32
+    /// Grid `(32, max_chunks, 1)` (heads fastest). q, k: `[T, 2048]` f32; g, beta: `[T, 32]` f32; tinv, p out: `[T, 32 * 64]` f32
     /// (row i of the chunk at row start + i, columns h*64..).
     #[cutile::entry(unchecked_accesses = true)]
     pub unsafe fn gdn_chunk_tp<E: ElementType, const SPLIT: i32, EO: ElementType, const SPLIT_O: i32, const FSB: i32>(
@@ -607,9 +607,9 @@ pub mod gdn_tile {
         max_chunks: i32,
     ) {
         let pid: (i32, i32, i32) = get_tile_block_id();
-        let h = pid.1;
+        let h = pid.0;
         let tok: Token = new_token_unordered();
-        let (start, len): (i32, i32) = chunk_at(chunks_ptr, max_chunks, pid.0, tok);
+        let (start, len): (i32, i32) = chunk_at(chunks_ptr, max_chunks, pid.1, tok);
         if len > 0i32 {
             let g: Tensor<f32, { [-1, -1] }> = rows_f32(g_ptr, start, len, 32i32, 32i32, tok);
             let beta: Tensor<f32, { [-1, -1] }> = rows_f32(beta_ptr, start, len, 32i32, 32i32, tok);
@@ -695,7 +695,7 @@ pub mod gdn_tile {
     /// ```
     /// Only segments whose table `phase` equals `phase` run. Prefixes (phase 0) start from zero and write their
     /// final state to `state[slot]`; suffixes (phase 1) start from `state[slot]` and write nothing.
-    /// Grid `(max_segs, 32, 128 / BV)`. q, k: `[T, 2048]` f32; v: `[T, 4096]` bf16 view (row stride
+    /// Grid `(128 / BV, 32, max_segs)` (value blocks fastest). q, k: `[T, 2048]` f32; v: `[T, 4096]` bf16 view (row stride
     /// `v_stride`); g, beta: `[T, 32]` f32; tinv, p: `[T, 32 * 64]` f32; state: `[slots, 32, 128, 128]` f32;
     /// out: `[T, 4096]` bf16 with row stride `out_stride`.
     #[cutile::entry(unchecked_accesses = true)]
@@ -725,7 +725,7 @@ pub mod gdn_tile {
         let pid: (i32, i32, i32) = get_tile_block_id();
         let h = pid.1;
         let hk = h / 2i32;
-        let vb = pid.2;
+        let vb = pid.0;
         let vcol = h * (128i32 / BV) + vb;
         let tok: Token = new_token_unordered();
         let tab_base: PointerTile<*mut i32, { [] }> = pointer_to_tile(segs_ptr);
@@ -733,10 +733,10 @@ pub mod gdn_tile {
         let tab_strides: Array<{ [1] }> = Array::<{ [1] }> { dims: &[] };
         let tab: Tensor<i32, { [-1] }> = unsafe { make_tensor_view(tab_base, tab_shape, tab_strides, tok) };
         let tab_part: Partition<i32, { [1] }> = tab.partition(const_shape![1]);
-        let seg_start: i32 = table_at(&tab_part, pid.0 * 4i32);
-        let seg_len: i32 = table_at(&tab_part, pid.0 * 4i32 + 1i32);
-        let seg_phase: i32 = table_at(&tab_part, pid.0 * 4i32 + 2i32);
-        let slot: i32 = table_at(&tab_part, pid.0 * 4i32 + 3i32);
+        let seg_start: i32 = table_at(&tab_part, pid.2 * 4i32);
+        let seg_len: i32 = table_at(&tab_part, pid.2 * 4i32 + 1i32);
+        let seg_phase: i32 = table_at(&tab_part, pid.2 * 4i32 + 2i32);
+        let slot: i32 = table_at(&tab_part, pid.2 * 4i32 + 3i32);
         if seg_phase == phase {
             // state viewed as [slots * 32 * 128, 128] in [32, BV] tiles, held as four row blocks (k rows
             // 32j..32j+32); (slot, h) rows start at tile row (slot * 32 + h) * 4. The [64, 128] operands are
