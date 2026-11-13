@@ -369,6 +369,18 @@ struct Run {
 
 /// Run the whole mixer on `proj` with the given plan capacities and download every intermediate.
 fn run_gpu(proj: &[f64], segs: &[Segment], w: &GpuWeights, caps: Option<(usize, usize)>, s: &Arc<Stream>) -> Run {
+    run_gpu_with(proj, segs, w, caps, &GdnOptions::default(), s)
+}
+
+/// [`run_gpu`] with explicit scan options.
+fn run_gpu_with(
+    proj: &[f64],
+    segs: &[Segment],
+    w: &GpuWeights,
+    caps: Option<(usize, usize)>,
+    opts: &GdnOptions,
+    s: &Arc<Stream>,
+) -> Run {
     let t = proj.len() / PROJ_COLS;
     let plan = match caps {
         None => GdnPlan::new(segs, t, s).unwrap(),
@@ -378,7 +390,7 @@ fn run_gpu(proj: &[f64], segs: &[Segment], w: &GpuWeights, caps: Option<(usize, 
     let scratch = GdnScratch::new(t, plan.num_prefixes, s).unwrap();
     let out = api::zeros::<bf16>(&[t, VALUE_DIM]).sync_on(s).unwrap();
     let ops = unsafe {
-        gdn_mixer(&plan, DView::of(&proj_t).unwrap(), &w.view(), EPS, &scratch, DView::of(&out).unwrap()).unwrap()
+        gdn_mixer_with(&plan, DView::of(&proj_t).unwrap(), &w.view(), EPS, &scratch, DView::of(&out).unwrap(), opts).unwrap()
     };
     ops.sync_on(s).unwrap();
     Run {
@@ -609,5 +621,73 @@ fn plan_update_and_batch_invariance() {
             println!("plan step {step}: request rows bit-identical to a fresh single-request plan: {same}");
             assert!(same, "step {step}: request output depends on the rest of the batch or on plan reuse");
         }
+    });
+}
+
+/// The scan's tuning options (block sizes, warps, inverse blocking) must not change its accuracy: each variant
+/// is held to the default's tolerances against the f64 recurrence. The precision variants (DESIGN §1 "Precision
+/// knobs") are measured against the same oracle and reported; only the default precision must meet the
+/// fp32-grade tolerance, the faster ones are judged by the end-to-end gate.
+#[test]
+fn scan_options_and_precision_variants_vs_f64() {
+    on_test_thread(|| {
+        let ctx = Context::new(0).unwrap();
+        let s = ctx.new_stream().unwrap();
+        let mut rng = Rng(0x2545f4914f6cdd1d);
+        let batch = tree_batch();
+        let segs = &batch.segments;
+        let t = batch.num_tokens();
+        let w = weights(&mut rng);
+        let gw = GpuWeights::new(&w, &s);
+        let proj = projection(t, &mut rng);
+        let base = run_gpu(&proj, segs, &gw, None, &s);
+        // The oracle from the GPU's own scan inputs (conv and prep do not depend on the options).
+        let prep = Prep { q: base.q.clone(), k: base.k.clone(), g: base.g.clone(), beta: base.beta.clone() };
+        let v: Vec<f64> = (0..t).flat_map(|r| base.conv[r * CONV_DIM + 2 * KEY_DIM..][..VALUE_DIM].to_vec()).collect();
+        let (core, states) = scan_ref(&prep, &v, VALUE_DIM, segs, t);
+        let seg_head_rms = segment_head_rms(&core, segs, t);
+        let core_b: Vec<f64> = core.iter().map(|&x| r16(x)).collect();
+        let d = GdnOptions::default();
+        let variants: Vec<(&str, GdnOptions, bool)> = vec![
+            ("default", d, true),
+            ("prefix_bv 16, suffix_bv 128", GdnOptions { prefix_bv: 16, suffix_bv: 128, ..d }, true),
+            ("prefix_bv 64, suffix_bv 32", GdnOptions { prefix_bv: 64, suffix_bv: 32, ..d }, true),
+            ("tp_fsb 2 (doubling only)", GdnOptions { tp_fsb: 2, ..d }, true),
+            ("tp_fsb 64 (substitution only)", GdnOptions { tp_fsb: 64, ..d }, true),
+            ("8 warps", GdnOptions { scan_warps: 8, tp_warps: 8, ..d }, true),
+            ("precision Tf32", GdnOptions { precision: GdnPrecision::Tf32, ..d }, false),
+            ("precision Bf16Operands", GdnOptions { precision: GdnPrecision::Bf16Operands, ..d }, false),
+        ];
+        let mut fails = Vec::new();
+        for (name, opts, gated) in variants {
+            let run = run_gpu_with(&proj, segs, &gw, None, &opts, &s);
+            assert!(run.core.iter().all(|x| x.is_finite()), "{name}: non-finite scan output");
+            // Error beyond one bf16 rounding flip, in units of the (segment, head) rms (the scan tolerance is 5e-4).
+            let worst = run
+                .core
+                .iter()
+                .zip(&core_b)
+                .enumerate()
+                .map(|(i, (g, r))| ((g - r).abs() - ulp16(*r)).max(0.0) / seg_head_rms[i / 128].max(1e-30))
+                .fold(0f64, f64::max);
+            let mut state_worst = 0f64;
+            for (slot, st) in states.iter().enumerate() {
+                let rms = (st.iter().map(|x| x * x).sum::<f64>() / st.len() as f64).sqrt();
+                let got = &run.state[slot * STATE_ELEMS..][..STATE_ELEMS];
+                let e = got.iter().zip(st).map(|(g, r)| (g - r).abs()).fold(0f64, f64::max) / rms;
+                state_worst = state_worst.max(e);
+            }
+            let over = report(&format!("scan out [{name}]"), &run.core, &core_b, "1 bf16 ulp + 5e-4 * seg-head rms", |i, r| {
+                ulp16(r) + 5e-4 * seg_head_rms[i / 128]
+            });
+            println!(
+                "  {name}: max scan error {worst:.2e} x seg-head rms (tol 5e-4), max prefix-state error {state_worst:.2e} x state rms (tol 3e-4){}",
+                if gated { "" } else { " [reported only]" }
+            );
+            if gated && (over > 0 || state_worst > 3e-4) {
+                fails.push(format!("{name}: {over} scan elements over tolerance, state error {state_worst:.2e} x rms"));
+            }
+        }
+        assert!(fails.is_empty(), "failures: {fails:#?}");
     });
 }
