@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use sysone::api::query::py_int;
 use sysone::api::server::{self, AppState, ServerInfo};
-use sysone::contract::{DecisionEngine, MockEngine};
+use sysone::contract::{DecisionBatch, DecisionEngine, MockEngine, SlotLogits};
 use sysone::engine::config::ModelConfig;
 use sysone::frontend::{Frontend, Limits};
 use sysone::sched::{EngineFactory, SchedConfig};
@@ -57,6 +57,33 @@ struct Args {
     /// forward, which qev calls "batched").
     #[arg(long, default_value = "batched")]
     fork_mode: String,
+    /// Mock engine only: simulated fixed time per step (GB10 bf16 weight floor ≈ 57,000 us, docs/PHASE0.md).
+    #[arg(long, default_value_t = 0)]
+    mock_step_us: u64,
+    /// Mock engine only: simulated time per packed token (GB10 bf16 compute-bound ≈ 143,000 ns/token at ~7k tok/s).
+    #[arg(long, default_value_t = 0)]
+    mock_ns_per_token: u64,
+}
+
+/// `MockEngine` that sleeps like a real step would, for scheduler and load-generator work without a GPU.
+struct SimulatedEngine {
+    inner: MockEngine,
+    step: Duration,
+    per_token: Duration,
+}
+
+impl DecisionEngine for SimulatedEngine {
+    fn max_tokens_per_step(&self) -> usize {
+        self.inner.max_tokens_per_step()
+    }
+
+    fn run(&mut self, batch: &DecisionBatch) -> Result<SlotLogits> {
+        let t = self.step + self.per_token * batch.num_tokens() as u32;
+        if !t.is_zero() {
+            std::thread::sleep(t);
+        }
+        self.inner.run(batch)
+    }
 }
 
 fn main() -> Result<()> {
@@ -80,7 +107,13 @@ fn main() -> Result<()> {
     // The engine must take the largest request the limits admit in one step (requests are never split).
     let step = args.token_budget.max(args.max_request_tokens);
     let engine: EngineFactory = match args.engine {
-        EngineKind::Mock => Box::new(move || Ok(Box::new(MockEngine { max_tokens: step }) as Box<dyn DecisionEngine>)),
+        EngineKind::Mock => {
+            let (fixed, per_token) = (Duration::from_micros(args.mock_step_us), Duration::from_nanos(args.mock_ns_per_token));
+            Box::new(move || {
+                let inner = MockEngine { max_tokens: step };
+                Ok(Box::new(SimulatedEngine { inner, step: fixed, per_token }) as Box<dyn DecisionEngine>)
+            })
+        }
     };
     let sched = SchedConfig {
         token_budget: args.token_budget,

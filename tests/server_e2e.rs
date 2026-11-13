@@ -33,7 +33,8 @@ fn model_dir() -> PathBuf {
 }
 
 fn frontend(limits: Limits) -> Arc<Frontend> {
-    static CACHE: OnceLock<Mutex<HashMap<(usize, usize), Arc<Frontend>>>> = OnceLock::new();
+    type Cache = Mutex<HashMap<(usize, usize), Arc<Frontend>>>;
+    static CACHE: OnceLock<Cache> = OnceLock::new();
     let model = model_dir();
     assert!(model.join("tokenizer.json").exists(), "no checkpoint at {} (set SYSONE_MODEL_DIR)", model.display());
     let mut c = CACHE.get_or_init(Default::default).lock().unwrap();
@@ -430,7 +431,9 @@ async fn concurrent_results_equal_alone() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn full_queue_answers_503_then_recovers() {
-    let cfg = SchedConfig { token_budget: 16384, max_wait: Duration::ZERO, queue_capacity: 2 };
+    // A small budget, so that while the engine is held the batcher fills a batch, parks it in the slot, fills the
+    // next one, blocks handing it over, and the queue fills behind it.
+    let cfg = SchedConfig { token_budget: 600, max_wait: Duration::ZERO, queue_capacity: 2 };
     let srv = TestServer::start(cfg, Limits::default(), "batched").await;
     srv.set_gate(false);
     let mut pending = Vec::new();

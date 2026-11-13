@@ -122,9 +122,12 @@ async fn main() -> Result<()> {
         let mut c = Client::connect(&a.addr).await?;
         anyhow::Ok(c.get("/metrics").await?.text())
     };
-    let before = scrape().await.context("scraping /metrics before the run")?;
+    scrape().await.context("scraping /metrics")?;
     let start = Instant::now();
     let tasks: Vec<_> = (0..a.concurrency).map(|i| tokio::spawn(client(i, a.clone(), bodies.clone(), start))).collect();
+    // Server counters over the measured window only (from the end of warmup).
+    tokio::time::sleep(Duration::from_secs_f64(a.warmup_s)).await;
+    let before = scrape().await.context("scraping /metrics after warmup")?;
     let mut all = Tally::default();
     for t in tasks {
         let t = t.await??;

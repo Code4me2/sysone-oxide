@@ -3,11 +3,13 @@
 //! than the budget runs alone.
 //!
 //! It runs on its own thread and hands finished batches to the GPU worker through a one-slot channel, so batch
-//! n+1 is packed (and waits, built, in the slot) while the engine runs batch n.
+//! n+1 is packed while the engine runs batch n. While the engine is busy, `max_wait` does not close a batch: it
+//! keeps filling until the engine is free or the budget is reached (see [`run`]).
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::SyncSender;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::contract::DecisionBatch;
 use crate::sched::queue::{AdmissionQueue, Pop};
@@ -100,8 +102,16 @@ fn admit(job: Job, max_tokens: usize) -> Option<Job> {
     Some(job)
 }
 
+/// While the engine is busy past a batch's deadline, the batcher re-checks it this often.
+const BUSY_POLL: Duration = Duration::from_micros(200);
+
 /// The batcher loop. Returns when the queue is closed and drained, or the worker is gone.
-pub fn run(queue: Arc<AdmissionQueue<Job>>, policy: BatchPolicy, tx: SyncSender<Packed>) {
+///
+/// `in_flight` counts batches handed to the worker and not yet finished (the worker decrements it after each
+/// step). A batch is closed when it is full, or when its deadline has passed *and* the engine is idle: while the
+/// engine is still running batch n there is nothing to gain by closing batch n+1, so it keeps filling. Requests
+/// already queued are taken even past the deadline, up to the budget.
+pub fn run(queue: Arc<AdmissionQueue<Job>>, policy: BatchPolicy, tx: SyncSender<Packed>, in_flight: Arc<AtomicUsize>) {
     let mut carry: Option<Job> = None;
     let mut packer = Packer::new(policy.token_budget);
     loop {
@@ -117,9 +127,15 @@ pub fn run(queue: Arc<AdmissionQueue<Job>>, policy: BatchPolicy, tx: SyncSender<
         let deadline = first.admitted + policy.max_wait;
         packer.add(first);
         while !packer.full() {
-            // Requests already queued are taken even past the deadline (up to the budget): waiting longer
-            // would not make the batch any sooner.
-            match queue.pop(Some(deadline)) {
+            let now = Instant::now();
+            let wait_until = if now < deadline {
+                deadline
+            } else if in_flight.load(Ordering::Acquire) > 0 {
+                now + BUSY_POLL
+            } else {
+                now
+            };
+            match queue.pop(Some(wait_until)) {
                 Pop::Item(j) => {
                     let Some(j) = admit(j, policy.max_tokens) else { continue };
                     if packer.fits(&j) {
@@ -129,12 +145,17 @@ pub fn run(queue: Arc<AdmissionQueue<Job>>, policy: BatchPolicy, tx: SyncSender<
                         break;
                     }
                 }
-                Pop::Timeout | Pop::Closed => break,
+                Pop::Timeout => {
+                    if Instant::now() >= deadline && in_flight.load(Ordering::Acquire) == 0 {
+                        break;
+                    }
+                }
+                Pop::Closed => break,
             }
         }
-        if let Some(packed) = packer.take()
-            && let Err(e) = tx.send(packed)
-        {
+        let Some(packed) = packer.take() else { continue };
+        in_flight.fetch_add(1, Ordering::AcqRel);
+        if let Err(e) = tx.send(packed) {
             for (job, _) in e.0.jobs {
                 let _ = job.reply.send(Err("GPU worker stopped".into()));
             }

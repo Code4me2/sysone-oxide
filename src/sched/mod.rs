@@ -15,6 +15,7 @@ pub mod worker;
 
 use anyhow::{Context, Result, ensure};
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -121,6 +122,8 @@ impl Scheduler {
         let (ready_tx, ready_rx) = mpsc::channel::<Result<usize>>();
         // The one-slot channel is the double buffer: one batch running, one packed and waiting.
         let (tx, rx) = mpsc::sync_channel::<Packed>(1);
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let busy = in_flight.clone();
         let m = metrics.clone();
         let gpu = std::thread::Builder::new().name("sysone-gpu".into()).spawn(move || {
             let engine = match factory() {
@@ -131,7 +134,7 @@ impl Scheduler {
                 }
             };
             let _ = ready_tx.send(Ok(engine.max_tokens_per_step()));
-            worker::run(engine, rx, m);
+            worker::run(engine, rx, m, busy);
         })?;
         let max_tokens = match ready_rx.recv() {
             Ok(r) => r.context("building the engine")?,
@@ -145,7 +148,7 @@ impl Scheduler {
             BatchPolicy { token_budget: cfg.token_budget.min(max_tokens), max_wait: cfg.max_wait, max_tokens };
         let queue = Arc::new(AdmissionQueue::new(cfg.queue_capacity));
         let q = queue.clone();
-        let batcher = std::thread::Builder::new().name("sysone-batcher".into()).spawn(move || batcher::run(q, policy, tx))?;
+        let batcher = std::thread::Builder::new().name("sysone-batcher".into()).spawn(move || batcher::run(q, policy, tx, in_flight))?;
         Ok(Scheduler { queue, policy, metrics, threads: vec![batcher, gpu] })
     }
 
@@ -265,7 +268,9 @@ mod tests {
         l.data
     }
 
-    fn start(cfg: SchedConfig, max_tokens: usize, delay: Duration) -> (Scheduler, Arc<Mutex<Vec<(usize, usize)>>>) {
+    type Log = Arc<Mutex<Vec<(usize, usize)>>>;
+
+    fn start(cfg: SchedConfig, max_tokens: usize, delay: Duration) -> (Scheduler, Log) {
         let log = Arc::new(Mutex::new(Vec::new()));
         let l = log.clone();
         let factory: EngineFactory =
@@ -317,6 +322,26 @@ mod tests {
         assert!(packed > 0, "no batch held more than one request: {log:?}");
         let oversize = fakes.iter().filter(|f| f.num_tokens() > 1000).count();
         assert_eq!(log.iter().filter(|b| b.0 > 1000).count(), oversize);
+    }
+
+    /// With a 60 ms engine step and a request every 5 ms, a 1 ms max_wait must not cut batches to one request
+    /// while the engine is busy: the next batch keeps filling until the engine is free.
+    #[test]
+    fn keeps_packing_while_the_engine_is_busy() {
+        let cfg = SchedConfig { token_budget: 1 << 15, max_wait: Duration::from_millis(1), queue_capacity: 1024 };
+        let (sched, log) = start(cfg, 1 << 16, Duration::from_millis(60));
+        let mut rxs = Vec::new();
+        for i in 0..40 {
+            let w = Arc::new(Fake { seed: i, prefix: 50, suffixes: vec![(5, 4)] }) as Arc<dyn Packable>;
+            rxs.extend(sched.submit(vec![w]).unwrap());
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        for rx in rxs {
+            rx.blocking_recv().unwrap().unwrap();
+        }
+        let log = log.lock().unwrap();
+        let singles = log.iter().filter(|b| b.1 == 1).count();
+        assert!(log.len() <= 8 && singles <= 2, "batches (tokens, requests): {log:?}");
     }
 
     #[test]
