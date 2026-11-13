@@ -274,15 +274,28 @@ fn main() -> Result<()> {
             let mixer = time(args.iters, &s, &|| {
                 let mut ops = DeviceOpVec::with_capacity(4);
                 unsafe {
-                    ops.push(tree_conv1d_silu(&plan, pv.columns(0, CONV_DIM).unwrap(), &conv_w, conv).unwrap());
-                    ops.push(gdn_prep(&plan, conv, a, b, &w, &scratch).unwrap());
+                    if w3a {
+                        ops.push(tree_conv1d_silu(&plan, pv.columns(0, CONV_DIM).unwrap(), &conv_w, conv).unwrap());
+                        ops.push(gdn_prep(&plan, conv, a, b, &w, &scratch).unwrap());
+                    } else {
+                        ops.push(tree_conv1d_silu_qk(&plan, pv.columns(0, CONV_DIM).unwrap(), &conv_w, conv, &scratch).unwrap());
+                        ops.push(gdn_gates(&plan, conv, a, b, &w, &scratch).unwrap());
+                    }
                     ops.push(scan(&plan, v, &scratch, core).map(|_| ()));
                     ops.push(gated_rmsnorm(&plan, core, z, &norm_w, 1e-6, ov).unwrap());
                 }
                 ops
             })?;
-            let t_conv = time(args.iters, &s, &|| one(unsafe { tree_conv1d_silu(&plan, pv.columns(0, CONV_DIM).unwrap(), &conv_w, conv).unwrap() }))?;
-            let t_prep = time(args.iters, &s, &|| one(unsafe { gdn_prep(&plan, conv, a, b, &w, &scratch).unwrap() }))?;
+            // P1: conv also writes normalised q, k (prep = gates only); W3a: separate conv and prep.
+            let t_conv = time(args.iters, &s, &|| {
+                let x = pv.columns(0, CONV_DIM).unwrap();
+                one(unsafe {
+                    if w3a { tree_conv1d_silu(&plan, x, &conv_w, conv) } else { tree_conv1d_silu_qk(&plan, x, &conv_w, conv, &scratch) }.unwrap()
+                })
+            })?;
+            let t_prep = time(args.iters, &s, &|| {
+                one(unsafe { if w3a { gdn_prep(&plan, conv, a, b, &w, &scratch) } else { gdn_gates(&plan, conv, a, b, &w, &scratch) }.unwrap() })
+            })?;
             // The scan is several launches (W3a: inverse, WY, prefix scan, suffix scan; P1: inverse + p, prefix scan,
             // suffix scan); time each alone by replaying the full sequence and dropping the others (inputs stay valid
             // from the mixer run above).
