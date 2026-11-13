@@ -410,24 +410,47 @@ fn seg_attn_matches_reference() {
     let p = pack(&all);
     let dev = device_inputs(&p, &stream);
     let d = AttnTiles::default();
+    let small = AttnTiles::for_tokens(1024);
+    assert_eq!(small.d_split, 2, "for_tokens(1024) is expected to pick the column-split tiles");
+    // Gated: every shape the engine may pick at fp32-grade P, and the bf16 + f16 split, which measures
+    // inside the envelope. Reported only: P in 2 or 1 bf16 parts (precision knobs for the end-to-end gate,
+    // DESIGN.md §1).
     for (tiles, gate) in [
         (d, true),
         (AttnTiles { bm: 8, bn: 32, ..d }, true),
         (AttnTiles { bm: 16, bn: 64, warps: 0, ..d }, true),
+        (small, true),
+        (AttnTiles { d_split: 4, ..small }, true),
+        (AttnTiles { p_split: 2, residual_f16: true, ..d }, true),
         (AttnTiles { p_split: 2, ..d }, false),
         (AttnTiles { p_split: 1, ..d }, false),
+        (AttnTiles { p_split: 2, ..small }, false),
     ] {
         let plan = AttnPlan::new(&p.batch.segments, tiles.bm);
         let got = run_attn(&dev, &plan, tiles, bf16::NAN, &stream);
-        check_attn(&p, &got, &format!("bm={} bn={} p_split={}", tiles.bm, tiles.bn, tiles.p_split), gate);
+        let label = format!(
+            "bm={} bn={} p_split={}{} d_split={} warps={}",
+            tiles.bm,
+            tiles.bn,
+            tiles.p_split,
+            if tiles.residual_f16 { " (bf16 + f16)" } else { "" },
+            tiles.d_split,
+            tiles.warps
+        );
+        check_attn(&p, &got, &label, gate);
     }
 }
 
 #[test]
 fn seg_attn_branch_alone_is_bit_identical() {
+    for tiles in [AttnTiles::default(), AttnTiles::for_tokens(1024)] {
+        branch_alone_is_bit_identical(tiles);
+    }
+}
+
+fn branch_alone_is_bit_identical(tiles: AttnTiles) {
     let stream = setup();
     let reqs = requests();
-    let tiles = AttnTiles::default();
     let all: Vec<(&Req, Vec<usize>)> = reqs.iter().map(|r| (r, (0..r.suffixes.len()).collect())).collect();
     let packed = pack(&all);
     let dev = device_inputs(&packed, &stream);
@@ -454,16 +477,25 @@ fn seg_attn_branch_alone_is_bit_identical() {
             checked += 1;
         }
     }
-    println!("seg_attn branch invariance: {checked} branches bit-identical alone vs packed (tolerance: exact)");
+    println!(
+        "seg_attn branch invariance (bm={} d_split={}): {checked} branches bit-identical alone vs packed \
+         (tolerance: exact)",
+        tiles.bm, tiles.d_split
+    );
 }
 
 #[test]
 fn seg_attn_writes_only_its_rows() {
+    for tiles in [AttnTiles::default(), AttnTiles::for_tokens(1024)] {
+        writes_only_its_rows(tiles);
+    }
+}
+
+fn writes_only_its_rows(tiles: AttnTiles) {
     let stream = setup();
     let r = Req { id: 9, prefix: 40, suffixes: vec![5, 3, 20] };
     let p = pack(&[(&r, vec![0, 1, 2])]);
     let dev = device_inputs(&p, &stream);
-    let tiles = AttnTiles::default();
     let full = AttnPlan::new(&p.batch.segments, tiles.bm);
     // Only the items of the 5-row suffix (rows 40..45): a 16-row tile whose last 11 rows belong to others.
     let work: Vec<i32> = full.work.chunks(8).filter(|w| w[0] == 40).flatten().copied().collect();
@@ -475,5 +507,8 @@ fn seg_attn_writes_only_its_rows() {
         let expect = if (40..45).contains(&row) { HQ * D } else { 0 };
         assert_eq!(written, expect, "row {row}: {written} elements written");
     }
-    println!("seg_attn store clipping: rows outside the tile's segment untouched (tolerance: exact)");
+    println!(
+        "seg_attn store clipping (bm={} d_split={}): rows outside the tile's segment untouched (tolerance: exact)",
+        tiles.bm, tiles.d_split
+    );
 }
