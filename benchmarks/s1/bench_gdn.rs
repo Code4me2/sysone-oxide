@@ -109,6 +109,23 @@ struct Args {
     shapes: Vec<String>,
     #[arg(long, default_value_t = 10)]
     iters: usize,
+    /// Scan precision: fp32 (3xTF32, default), tf32, bf16.
+    #[arg(long, default_value = "fp32")]
+    precision: String,
+    /// Override the prefix / suffix scan value-column blocks and the warps per CTA.
+    #[arg(long)]
+    prefix_bv: Option<usize>,
+    #[arg(long)]
+    suffix_bv: Option<usize>,
+    #[arg(long)]
+    scan_warps: Option<i32>,
+    #[arg(long)]
+    tp_warps: Option<i32>,
+    #[arg(long)]
+    tp_fsb: Option<i32>,
+    /// Time the Phase 1 (W3a) four-launch scan instead (inverse, WY, prefix scan, suffix scan).
+    #[arg(long)]
+    w3a: bool,
 }
 
 const SUFFIXES: usize = 8;
@@ -183,6 +200,27 @@ fn main() -> Result<()> {
         _ => None,
     };
 
+    let mut opts = GdnOptions::default();
+    opts.precision = match args.precision.as_str() {
+        "fp32" => GdnPrecision::Fp32Split3,
+        "tf32" => GdnPrecision::Tf32,
+        "bf16" => GdnPrecision::Bf16Operands,
+        p => anyhow::bail!("unknown precision {p}"),
+    };
+    opts.prefix_bv = args.prefix_bv.unwrap_or(opts.prefix_bv);
+    opts.suffix_bv = args.suffix_bv.unwrap_or(opts.suffix_bv);
+    opts.scan_warps = args.scan_warps.unwrap_or(opts.scan_warps);
+    opts.tp_warps = args.tp_warps.unwrap_or(opts.tp_warps);
+    opts.tp_fsb = args.tp_fsb.unwrap_or(opts.tp_fsb);
+    let w3a = args.w3a;
+    println!("# {}", if w3a { "W3a scan (tinv, wy, scan_p, scan_s)".to_string() } else { format!("{opts:?} (tinv = Tinv + p, wy unused)") });
+    let scan = |plan: &GdnPlan, v: DView<bf16>, scratch: &GdnScratch, core: DView<bf16>| -> DeviceOpVec<()> {
+        // SAFETY: as for the other launches below.
+        unsafe {
+            if w3a { gdn_chunk_scan_w3a(plan, v, scratch, core) } else { gdn_chunk_scan_with(plan, v, scratch, core, &opts) }
+        }
+        .unwrap()
+    };
     println!(
         "{:>6} {:>6} {:>4} {:>4} | {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} | {:>8} {:>8} | {:>8} {:>6}",
         "T", "prefix", "reqs", "segs", "conv", "prep", "tinv", "wy", "scan_p", "scan_s", "norm", "sum", "mixer", "x24 ms", "fwd %"
@@ -209,25 +247,37 @@ fn main() -> Result<()> {
             v
         };
         // SAFETY (all launches below): every buffer outlives the synchronous timing loops.
-        let mixer = time(args.iters, &s, &|| unsafe { gdn_mixer(&plan, pv, &w, 1e-6, &scratch, ov).unwrap() })?;
-        let t_conv = time(args.iters, &s, &|| one(unsafe { tree_conv1d_silu(&plan, pv.columns(0, CONV_DIM).unwrap(), &conv_w, conv).unwrap() }))?;
         let a = pv.columns(CONV_DIM + VALUE_DIM, 32)?;
         let b = pv.columns(CONV_DIM + VALUE_DIM + 32, 32)?;
-        let t_prep = time(args.iters, &s, &|| one(unsafe { gdn_prep(&plan, conv, a, b, &w, &scratch).unwrap() }))?;
         let v = conv.columns(2 * KEY_DIM, VALUE_DIM)?;
+        let z = pv.columns(CONV_DIM, VALUE_DIM)?;
+        let mixer = time(args.iters, &s, &|| {
+            let mut ops = DeviceOpVec::with_capacity(4);
+            unsafe {
+                ops.push(tree_conv1d_silu(&plan, pv.columns(0, CONV_DIM).unwrap(), &conv_w, conv).unwrap());
+                ops.push(gdn_prep(&plan, conv, a, b, &w, &scratch).unwrap());
+                ops.push(scan(&plan, v, &scratch, core).map(|_| ()));
+                ops.push(gated_rmsnorm(&plan, core, z, &norm_w, 1e-6, ov).unwrap());
+            }
+            ops
+        })?;
+        let t_conv = time(args.iters, &s, &|| one(unsafe { tree_conv1d_silu(&plan, pv.columns(0, CONV_DIM).unwrap(), &conv_w, conv).unwrap() }))?;
+        let t_prep = time(args.iters, &s, &|| one(unsafe { gdn_prep(&plan, conv, a, b, &w, &scratch).unwrap() }))?;
+        // The scan is several launches (W3a: inverse, WY, prefix scan, suffix scan; P1: inverse + p, prefix scan,
+        // suffix scan); time each alone by replaying the full sequence and dropping the others (inputs stay valid
+        // from the mixer run above).
+        let n_ops = if w3a { 4 } else { 3 };
         let mut parts = [0f64; 4];
-        for (k, part) in parts.iter_mut().enumerate() {
-            // The scan is four launches (inverse, WY, prefix scan, suffix scan); time each alone by replaying the full
-            // sequence and dropping the others (inputs stay valid from the mixer run above).
-            *part = time(args.iters, &s, &|| {
-                let mut ops = unsafe { gdn_chunk_scan(&plan, v, &scratch, core).unwrap() };
+        for k in 0..n_ops {
+            let slot = if n_ops == 3 && k > 0 { k + 1 } else { k };
+            parts[slot] = time(args.iters, &s, &|| {
+                let mut ops = scan(&plan, v, &scratch, core);
                 let keep = ops.remove(k);
                 let mut v = DeviceOpVec::with_capacity(1);
                 v.push(keep);
                 v
             })?;
         }
-        let z = pv.columns(CONV_DIM, VALUE_DIM)?;
         let t_norm = time(args.iters, &s, &|| one(unsafe { gated_rmsnorm(&plan, core, z, &norm_w, 1e-6, ov).unwrap() }))?;
         let sum = t_conv + t_prep + parts.iter().sum::<f64>() + t_norm;
         let fwd = gemm_forward_ms(t).map(|g| format!("{:>5.1}%", 100.0 * 24.0 * mixer * 1e3 / (g + 24.0 * mixer * 1e3)));

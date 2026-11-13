@@ -356,14 +356,148 @@ pub unsafe fn gdn_prep(
     Ok(op.map(|_| ()).boxed())
 }
 
-/// The chunked gated delta rule over the plan's segment tree: WY transform (parallel over chunks), then the
-/// inter-chunk scan for prefixes (writing their final states into `scratch.state`), then for suffixes (starting
-/// from their parent's state). Reads `scratch.{q,k,g,beta}` and v (`[T, 4096]` bf16 view, normally columns
-/// 4096.. of the conv output); writes bf16 `[T, 4096]` into `out`.
+/// Arithmetic of the matrix products inside the chunked delta rule (DESIGN §1 "Precision knobs": the end-to-end
+/// gate decides whether a faster variant is acceptable; the default is the precise one).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum GdnPrecision {
+    /// Split TF32 ("3xTF32", ~2^-21 relative per product): fp32-grade, within the tolerances of
+    /// tests/kernels_gdn.rs.
+    #[default]
+    Fp32Split3,
+    /// One TF32 product (10-bit mantissa operands, fp32 accumulation) everywhere.
+    Tf32,
+    /// bf16 operands (fp32 accumulation) in the sequential scan; TF32 for the chunk inverse and the intra-chunk
+    /// attention, where bf16 would compound through the triangular solve.
+    Bf16Operands,
+}
+
+impl GdnPrecision {
+    /// `(element type, split)` generics of the scan kernels for the inverse and for the scan.
+    fn generics(self) -> ((&'static str, i32), (&'static str, i32)) {
+        match self {
+            Self::Fp32Split3 => (("tf32", 3), ("tf32", 3)),
+            Self::Tf32 => (("tf32", 1), ("tf32", 1)),
+            Self::Bf16Operands => (("tf32", 1), ("bf16", 1)),
+        }
+    }
+}
+
+/// Tuning and precision options of [`gdn_chunk_scan_with`] / [`gdn_mixer_with`]. `Default` is what
+/// [`gdn_chunk_scan`] and [`gdn_mixer`] use.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct GdnOptions {
+    pub precision: GdnPrecision,
+    /// Value columns per program of the prefix scan (phase 0: few, long segments; smaller blocks give more
+    /// programs). One of 16, 32, 64, 128.
+    pub prefix_bv: usize,
+    /// Value columns per program of the suffix scan (phase 1: many short segments).
+    pub suffix_bv: usize,
+    /// Warps per CTA of the scan kernels.
+    pub scan_warps: i32,
+    /// Warps per CTA of the chunk-inverse kernel.
+    pub tp_warps: i32,
+    /// Block size of the chunk inverse solved by forward substitution before block doubling takes over (a
+    /// power of two, 2..=64; 2 = doubling only, 64 = forward substitution only).
+    pub tp_fsb: i32,
+}
+
+impl Default for GdnOptions {
+    fn default() -> Self {
+        Self { precision: GdnPrecision::default(), prefix_bv: 32, suffix_bv: 64, scan_warps: 4, tp_warps: 4, tp_fsb: 16 }
+    }
+}
+
+/// The chunked gated delta rule over the plan's segment tree with default [`GdnOptions`]; see
+/// [`gdn_chunk_scan_with`].
 ///
 /// # Safety
 /// As for [`tree_conv1d_silu`].
 pub unsafe fn gdn_chunk_scan(
+    plan: &GdnPlan,
+    v: DView<bf16>,
+    scratch: &GdnScratch,
+    out: DView<bf16>,
+) -> Result<DeviceOpVec<()>> {
+    unsafe { gdn_chunk_scan_with(plan, v, scratch, out, &GdnOptions::default()) }
+}
+
+/// The chunked gated delta rule over the plan's segment tree, as three launches: the chunk inverse `Tinv` and
+/// masked intra-chunk attention `p` (parallel over chunks, into `scratch.{tinv,p}`), then the inter-chunk scan
+/// for prefixes (writing their final states into `scratch.state`), then for suffixes (starting from their
+/// parent's state). Reads `scratch.{q,k,g,beta}` and v (`[T, 4096]` bf16 view, normally columns 4096.. of the
+/// conv output); writes bf16 `[T, 4096]` into `out`.
+///
+/// # Safety
+/// As for [`tree_conv1d_silu`].
+pub unsafe fn gdn_chunk_scan_with(
+    plan: &GdnPlan,
+    v: DView<bf16>,
+    scratch: &GdnScratch,
+    out: DView<bf16>,
+    opts: &GdnOptions,
+) -> Result<DeviceOpVec<()>> {
+    let t = plan.tokens;
+    ensure!(t <= scratch.tokens, "plan has {t} tokens, scratch {}", scratch.tokens);
+    ensure!(plan.num_prefixes <= scratch.slots, "{} prefixes, scratch has {} state slots", plan.num_prefixes, scratch.slots);
+    v.check("v", t, VALUE_DIM)?;
+    out.check("scan output", t, VALUE_DIM)?;
+    ensure!(opts.tp_fsb >= 2 && opts.tp_fsb <= 64 && opts.tp_fsb.count_ones() == 1, "tp_fsb {} (power of two, 2..=64)", opts.tp_fsb);
+    for bv in [opts.prefix_bv, opts.suffix_bv] {
+        ensure!(matches!(bv, 16 | 32 | 64 | 128), "scan block of {bv} value columns (16, 32, 64 or 128)");
+    }
+    let sp = |t: &Tensor<f32>| t.device_pointer();
+    let ((tp_ty, tp_split), (scan_ty, scan_split)) = opts.precision.generics();
+    let mut ops = DeviceOpVec::with_capacity(3);
+    let tp = unsafe {
+        gdn_tile::gdn_chunk_tp(
+            sp(&scratch.q),
+            sp(&scratch.k),
+            sp(&scratch.g),
+            sp(&scratch.beta),
+            sp(&scratch.tinv),
+            sp(&scratch.p),
+            plan.chunks.device_pointer(),
+            value(plan.max_chunks as i32),
+        )
+    }
+    .generics(vec![tp_ty.to_string(), tp_split.to_string(), opts.tp_fsb.to_string()])
+    .compile_options(CompileOptions::default().num_worker_warps_per_cta(opts.tp_warps))
+    .grid(grid(plan.max_chunks, NUM_V_HEADS, 1));
+    ops.push(tp.map(|_| ()));
+    for (phase, bv) in [(0i32, opts.prefix_bv), (1, opts.suffix_bv)] {
+        let scan = unsafe {
+            gdn_tile::gdn_chunk_scan_fused(
+                sp(&scratch.q),
+                sp(&scratch.k),
+                v.ptr,
+                value(v.row_stride as i32),
+                sp(&scratch.g),
+                sp(&scratch.beta),
+                sp(&scratch.tinv),
+                sp(&scratch.p),
+                sp(&scratch.state),
+                out.ptr,
+                value(out.row_stride as i32),
+                plan.segs.device_pointer(),
+                value(plan.max_segs as i32),
+                value(scratch.slots as i32),
+                value(phase),
+            )
+        }
+        .generics(vec![scan_ty.to_string(), scan_split.to_string(), bv.to_string()])
+        .compile_options(CompileOptions::default().num_worker_warps_per_cta(opts.scan_warps))
+        .grid(grid(plan.max_segs, NUM_V_HEADS, HEAD_DIM / bv));
+        ops.push(scan.map(|_| ()));
+    }
+    Ok(ops)
+}
+
+/// The Phase 1 (W3a) four-launch scan: inverse by forward substitution, stored WY intermediates
+/// (`scratch.{w,u,qd,kd,p}`), then the state scan. Kept for comparison in `bench_gdn`.
+///
+/// # Safety
+/// As for [`tree_conv1d_silu`].
+pub unsafe fn gdn_chunk_scan_w3a(
     plan: &GdnPlan,
     v: DView<bf16>,
     scratch: &GdnScratch,
@@ -484,6 +618,22 @@ pub unsafe fn gdn_mixer(
     scratch: &GdnScratch,
     out: DView<bf16>,
 ) -> Result<DeviceOpVec<()>> {
+    unsafe { gdn_mixer_with(plan, proj, w, eps, scratch, out, &GdnOptions::default()) }
+}
+
+/// [`gdn_mixer`] with explicit [`GdnOptions`].
+///
+/// # Safety
+/// As for [`tree_conv1d_silu`].
+pub unsafe fn gdn_mixer_with(
+    plan: &GdnPlan,
+    proj: DView<bf16>,
+    w: &GdnWeights<'_>,
+    eps: f32,
+    scratch: &GdnScratch,
+    out: DView<bf16>,
+    opts: &GdnOptions,
+) -> Result<DeviceOpVec<()>> {
     if proj.cols != CONV_DIM + VALUE_DIM + 2 * NUM_V_HEADS {
         bail!("fused projection has {} columns, expected {}", proj.cols, CONV_DIM + VALUE_DIM + 2 * NUM_V_HEADS);
     }
@@ -497,7 +647,7 @@ pub unsafe fn gdn_mixer(
     unsafe {
         ops.push(tree_conv1d_silu(plan, qkv, w.conv_w, conv)?);
         ops.push(gdn_prep(plan, conv, a, b, w, scratch)?);
-        ops.push(gdn_chunk_scan(plan, conv.columns(2 * KEY_DIM, VALUE_DIM)?, scratch, core)?.map(|_| ()));
+        ops.push(gdn_chunk_scan_with(plan, conv.columns(2 * KEY_DIM, VALUE_DIM)?, scratch, core, opts)?.map(|_| ()));
         ops.push(gated_rmsnorm(plan, core, z, w.norm_w, eps, out)?);
     }
     Ok(ops)
