@@ -1,0 +1,5 @@
+source_sha256 cb660178feae7ef6a8b8a364f9f4279c9504d6c4ca1649af40a112b806eeb1f5
+ptx_sha256 e8fb018a61d0850f7bf42e1e0dee1a941bf6113c28587a5648ac31e6a6b8c808
+arch sm_120
+toolchain rustc 1.99.1 (58cf8f9c3 2026-10-13)
+cuda_oxide_backend_rev 11edcb6b153914bedc76643866d98babfd24b7c9
