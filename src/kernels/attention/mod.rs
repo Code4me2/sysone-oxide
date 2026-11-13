@@ -568,8 +568,9 @@ pub struct AttnTiles {
     pub bn: usize,
     /// Load pipelining hint.
     pub latency: usize,
-    /// bf16 parts P is split into for `P @ V` (1, 2 or 3). 3 matches the fp32 reference (default); 1 is the
-    /// classic flash-attention bf16 P, ~4x outside the reference's error envelope.
+    /// bf16 parts P is split into for `P @ V` (1, 2 or 3). 3 matches the fp32 reference (default); 2 keeps
+    /// max and p99 but rounds 0.18% of outputs differently (envelope 0.075%); 1 is the classic
+    /// flash-attention bf16 P, ~4x outside the reference's error envelope (tests/kernels_attn.rs).
     pub p_split: usize,
     /// Worker warps per tile block (`num_worker_warps_per_cta`); 0 leaves it to the compiler.
     pub warps: usize,
@@ -634,9 +635,12 @@ pub const SMALL_BATCH_TOKENS: usize = 2048;
 ///
 /// | T | default (d_split 1, 8 warps) | d_split 2, 4 warps, 2 blocks/SM | chosen |
 /// |---|---|---|---|
-/// | 1024 | 0.250 ms, 26.3 | 0.227 ms, 28.9 | d_split 2 |
-/// | 4096 | 4.858 ms, 37.5 | 4.972 ms, 36.7 | default |
-/// | 16384 | 76.07 ms, 37.9 | 78.49 ms, 36.8 | default |
+/// | 1024 | 0.249 ms, 26.4 | 0.226 ms, 29.1 | d_split 2 |
+/// | 2048 | 1.026 ms, 32.2 | 0.986 ms, 33.5 | d_split 2 |
+/// | 4096 | 4.859 ms, 37.5 | 4.972 ms, 36.7 | default |
+/// | 16384 | 76.14 ms, 37.9 | 78.49 ms, 36.8 | default |
+///
+/// Phase 1 (same shape, separate multiply and add for the running sum): 5.03 ms at 4096, 78.4 ms at 16384.
 ///
 /// `d_split = 2` runs the tensor cores at ~90 TFLOP/s against ~75 for the default, but computes `Q K^T`
 /// twice; it wins only when the default leaves SMs idle. With P split in three bf16 parts the MMA work is
