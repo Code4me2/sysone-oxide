@@ -28,8 +28,9 @@ struct Args {
     /// Packed step sizes (T buckets) to measure.
     #[arg(long, value_delimiter = ',', default_value = "1024,4096,16384")]
     tokens: Vec<usize>,
-    /// State length of each synthetic request, in words (about one token each).
-    #[arg(long, default_value_t = 800)]
+    /// State length of each synthetic request, in words (loadgen's vocabulary tokenizes to ~2 tokens per word,
+    /// so 350 words give requests of ~950 tokens with their 3 questions).
+    #[arg(long, default_value_t = 350)]
     state_tokens: usize,
     /// Timed graph replays per size.
     #[arg(long, default_value_t = 10)]
