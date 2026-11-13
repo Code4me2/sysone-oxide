@@ -25,6 +25,7 @@
 //! Every launcher here is `unsafe`: it hands raw device addresses to the kernel, so the caller must keep every
 //! buffer alive, and not written by anyone else, until the returned operation has completed on its stream.
 
+pub mod simt;
 pub mod tile;
 
 use crate::contract::Segment;

@@ -13,6 +13,7 @@ use cutile::prelude::*;
 use cutile::cuda_core::Stream;
 use sysone::contract::{DecisionBatch, Segment};
 use sysone::kernels::gdn::*;
+use sysone::kernels::gdn::simt;
 
 const PROJ_COLS: usize = CONV_DIM + VALUE_DIM + 2 * NUM_V_HEADS;
 const EPS: f32 = 1e-6;
@@ -609,5 +610,91 @@ fn plan_update_and_batch_invariance() {
             println!("plan step {step}: request rows bit-identical to a fresh single-request plan: {same}");
             assert!(same, "step {step}: request output depends on the rest of the batch or on plan reuse");
         }
+    });
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// SIMT (cuda-oxide) backend, stage by stage
+
+/// `(I + A)^-1` per (chunk, v-head) in f64 from the GPU's k, g, beta: the reference for both backends' `tinv`.
+fn tinv_ref(k: &[f64], g: &[f64], beta: &[f64], chunks: &[(usize, usize)], t: usize) -> Vec<f64> {
+    let mut out = vec![0f64; t * NUM_V_HEADS * CHUNK];
+    for &(start, len) in chunks {
+        for h in 0..NUM_V_HEADS {
+            let hk = h / 2;
+            let mut cum = vec![0f64; len];
+            let mut acc = 0f64;
+            for i in 0..len {
+                acc += g[(start + i) * 32 + h];
+                cum[i] = acc;
+            }
+            let kr = |i: usize| &k[(start + i) * KEY_DIM + hk * 128..][..128];
+            let mut a = vec![0f64; len * len];
+            for i in 0..len {
+                for j in 0..i {
+                    let dot: f64 = kr(i).iter().zip(kr(j)).map(|(x, y)| x * y).sum();
+                    a[i * len + j] = beta[(start + i) * 32 + h] * dot * (cum[i] - cum[j]).exp();
+                }
+            }
+            for c in 0..len {
+                let mut x = vec![0f64; len];
+                for i in c..len {
+                    let mut s = if i == c { 1.0 } else { 0.0 };
+                    for m in c..i {
+                        s -= a[i * len + m] * x[m];
+                    }
+                    x[i] = s;
+                }
+                for i in 0..len {
+                    out[(start + i) * NUM_V_HEADS * CHUNK + h * CHUNK + c] = x[i];
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The SIMT `Tinv` against the f64 inverse, next to the cuTile one, on the tree batch.
+#[test]
+fn simt_tinv_matches_f64_reference() {
+    on_test_thread(|| {
+        let ctx = Context::new(0).unwrap();
+        let s = ctx.new_stream().unwrap();
+        let mut rng = Rng(0x2545f4914f6cdd1d);
+        let batch = tree_batch();
+        let segs = &batch.segments;
+        let t = batch.num_tokens();
+        let w = weights(&mut rng);
+        let gw = GpuWeights::new(&w, &s);
+        let proj = projection(t, &mut rng);
+        let plan = GdnPlan::new(segs, t, &s).unwrap();
+        let proj_t = upload(to_bf16(&proj), &[t, PROJ_COLS], &s);
+        let scratch = GdnScratch::new(t, plan.num_prefixes, &s).unwrap();
+        let out = api::zeros::<bf16>(&[t, VALUE_DIM]).sync_on(&s).unwrap();
+        unsafe { gdn_mixer(&plan, DView::of(&proj_t).unwrap(), &gw.view(), EPS, &scratch, DView::of(&out).unwrap()).unwrap() }
+            .sync_on(&s)
+            .unwrap();
+        let simt_tinv = api::zeros::<f32>(&[t, NUM_V_HEADS * CHUNK]).sync_on(&s).unwrap();
+        unsafe { simt::chunk_tinv(&plan, scratch.conv_view().unwrap(), &scratch, &simt_tinv).unwrap() }.sync_on(&s).unwrap();
+        let k = to_f64(&download(&scratch.k, &s));
+        let g = to_f64(&download(&scratch.g, &s));
+        let beta = to_f64(&download(&scratch.beta, &s));
+        let tables = GdnTables::build(segs, t, GdnTables::num_chunks(segs), segs.len()).unwrap();
+        let chunks: Vec<(usize, usize)> = tables.chunks.chunks(4).map(|c| (c[0] as usize, c[1] as usize)).collect();
+        let want = tinv_ref(&k, &g, &beta, &chunks, t);
+        // Scale: the largest entry of each (chunk-row, head) row of the reference inverse.
+        let row_max: Vec<f64> = want.chunks(CHUNK).map(|r| r.iter().fold(0f64, |m, x| m.max(x.abs()))).collect();
+        let tile = to_f64(&download(&scratch.tinv, &s));
+        let simt = to_f64(&download(&simt_tinv, &s));
+        // Both are fp32 evaluations of an inverse whose conditioning amplifies rounding (measured: tile max 4.4e-5,
+        // SIMT 3.4e-5 x row max); the gate is that the SIMT error is no worse than the cuTile one.
+        let tol = |i: usize, _: f64| 1e-4 * row_max[i / CHUNK];
+        let a = report("tile tinv vs f64", &tile, &want, "1e-4 * row max", tol);
+        let b = report("simt tinv vs f64", &simt, &want, "1e-4 * row max", tol);
+        let max_rel = |got: &[f64]| got.iter().zip(&want).enumerate().map(|(i, (g, w))| (g - w).abs() / row_max[i / CHUNK]).fold(0f64, f64::max);
+        let (mt, ms) = (max_rel(&tile), max_rel(&simt));
+        println!("max |err| / row max: tile {mt:.2e}, simt {ms:.2e}");
+        assert_eq!(a + b, 0);
+        assert!(ms <= 1.5 * mt, "SIMT tinv error {ms:.2e} exceeds 1.5x the cuTile error {mt:.2e}");
     });
 }
