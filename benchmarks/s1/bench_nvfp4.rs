@@ -23,8 +23,12 @@ use sysone::kernels::nvfp4::{self, CheckpointProj, GemmKernel, GemmTiles, Nvfp4A
 struct Args {
     #[arg(long, value_delimiter = ',', default_value = "1024,4096,16384")]
     tokens: Vec<usize>,
+    /// Launches per timed batch.
     #[arg(long, default_value_t = 10)]
     iters: usize,
+    /// Timed batches per measurement; the best batch is reported (cuBLAS too).
+    #[arg(long, default_value_t = 3)]
+    reps: usize,
     /// Sweep tile configurations instead of only the default.
     #[arg(long)]
     sweep: bool,
@@ -76,7 +80,8 @@ fn tflops(t: usize, n: usize, k: usize, ms: f64) -> f64 {
 
 // ---- cuBLAS bf16 baseline (same call as hwprobe) ----
 
-fn cublas_ms(stream: &Arc<CudaStream>, blas: &CudaBlas, t: usize, n: usize, k: usize, iters: usize) -> Result<f64> {
+fn cublas_ms(stream: &Arc<CudaStream>, blas: &CudaBlas, t: usize, n: usize, k: usize, iters: usize, reps: usize)
+    -> Result<f64> {
     let mut rng = Rng(0x1234_5678_9abc_def1 ^ (n * k) as u64);
     let host: Vec<half::bf16> =
         (0..(1 << 20)).map(|_| half::bf16::from_f32(((rng.next() >> 40) as f32 / 16777216.0 - 0.5) * 0.1)).collect();
@@ -106,13 +111,17 @@ fn cublas_ms(stream: &Arc<CudaStream>, blas: &CudaBlas, t: usize, n: usize, k: u
         ldc: n as i32,
     };
     unsafe { blas.gemm(cfg, &w, &x, &mut y)? };
-    let start = stream.record_event(Some(CUevent_flags::CU_EVENT_DEFAULT))?;
-    for _ in 0..iters {
-        unsafe { blas.gemm(cfg, &w, &x, &mut y)? };
+    let mut best = f64::MAX;
+    for _ in 0..reps {
+        let start = stream.record_event(Some(CUevent_flags::CU_EVENT_DEFAULT))?;
+        for _ in 0..iters {
+            unsafe { blas.gemm(cfg, &w, &x, &mut y)? };
+        }
+        let end = stream.record_event(Some(CUevent_flags::CU_EVENT_DEFAULT))?;
+        end.synchronize()?;
+        best = best.min(start.elapsed_ms(&end)? as f64 / iters as f64);
     }
-    let end = stream.record_event(Some(CUevent_flags::CU_EVENT_DEFAULT))?;
-    end.synchronize()?;
-    Ok(start.elapsed_ms(&end)? as f64 / iters as f64)
+    Ok(best)
 }
 
 // ---- NVFP4 ----
@@ -175,7 +184,7 @@ fn main() -> Result<()> {
     for &t in &args.tokens {
         for &(name, n, k, _) in PROJS {
             if !name.starts_with("mlp.") {
-                bf16_ms.insert((t, name), cublas_ms(&cstream, &blas, t, n, k, args.iters)?);
+                bf16_ms.insert((t, name), cublas_ms(&cstream, &blas, t, n, k, args.iters, args.reps)?);
             }
         }
     }
@@ -221,7 +230,7 @@ fn main() -> Result<()> {
                 continue;
             }
             let (n, k) = (lin.n, lin.k);
-            let bf = cublas_ms(&cstream, &blas, t, n, k, args.iters)?;
+            let bf = cublas_ms(&cstream, &blas, t, n, k, args.iters, args.reps)?;
             // Quantize kernel (bf16 [T, K] -> NVFP4).
             let xh: Vec<bf16> = (0..t * k).map(|_| bf16::from_f32((rng.next() >> 40) as f32 / 16777216.0 - 0.5)).collect();
             let x: Arc<Tensor<bf16>> = api::copy_host_vec_to_device(&Arc::new(xh)).reshape(&[t, k]).sync_on(&stream)?.into();
@@ -229,7 +238,7 @@ fn main() -> Result<()> {
             let mut qbest = (if args.no_quant { 0.0 } else { f64::MAX }, QuantTiles::DEFAULT);
             for &qc in &quant_cfgs {
                 let igs = lin.input_global_scale;
-                let ms = time_batch(&stream, args.iters, 3, &mut act, |a, ctx| {
+                let ms = time_batch(&stream, args.iters, args.reps, &mut act, |a, ctx| {
                     Ok(unsafe { nvfp4::quantize_op(&x, igs, a, qc)?.execute(ctx)? })
                 })?;
                 let gbs = (t * k * 2 + t * k / 2 + t * k / 16) as f64 / (ms * 1e-3) / 1e9;
@@ -250,13 +259,13 @@ fn main() -> Result<()> {
                 }
                 let r = if gc.kernel == GemmKernel::Raw {
                     let mut st = Some(());
-                    time_batch(&stream, args.iters, 3, &mut st, |(), ctx| {
+                    time_batch(&stream, args.iters, args.reps, &mut st, |(), ctx| {
                         unsafe { nvfp4::gemm_op(&xp, &xs, lin, z.clone(), gc, sms)?.execute(ctx)? };
                         Ok(())
                     })
                 } else {
                     // The mapped kernel consumes its output partition; time it synchronously.
-                    time_batch(&stream, args.iters, 3, &mut zs, |zz, _| nvfp4::gemm(&xp, &xs, lin, zz, gc, sms, &stream))
+                    time_batch(&stream, args.iters, args.reps, &mut zs, |zz, _| nvfp4::gemm(&xp, &xs, lin, zz, gc, sms, &stream))
                 };
                 let cfg = format!("{}x{}x{} g{} p{}{}", gc.bm, gc.bn, gc.bk, gc.group_m, gc.blocks_per_sm,
                                   if gc.kernel == GemmKernel::Mapped { " mapped" } else { "" });

@@ -63,7 +63,20 @@
 //!
 //! - Activations: packed `[T, K/2]` (`f4e2m1fnx2`), scales `[T, K/16]` (`f8e4m3fn`), row-major, as quantized.
 //! - Weights: the checkpoint layout unchanged (`[N, K/2]`, `[N, K/16]` row-major), with gate and up concatenated
-//!   along N for the fused projection, plus the per-column `alpha` vector `[N]` f32. [`prepare_weights`] builds these.
+//!   along N for the fused projection, plus `alpha` (per column, and as `alpha_lo`/`alpha_hi` split at the gate/up
+//!   boundary). [`prepare_weights`] builds these once at load; [`Nvfp4Linear::upload`] puts them on the device.
+//!
+//! # Kernels
+//!
+//! - [`kernels::quantize_nvfp4`]: standalone quantization, one `[BR, BC]` tile per tile block.
+//!   [`kernels::nvfp4_quantize_tile`] is the same math as an inlinable device function for norm / SiLU·mul
+//!   epilogues (input must already be bf16-rounded, as in the reference).
+//! - [`kernels::gemm_nvfp4_raw`] (production, [`GemmKernel::Raw`]): `mmaf_scaled` over `[BM, BK] × [BK, BN]`
+//!   NVFP4 tiles, fp32 accumulate, grouped-M rasterization computed in the kernel from a 1-D grid (optionally
+//!   persistent), scalar alpha per half. No in-kernel bounds checks: [`gemm_op`] validates every shape first.
+//! - [`kernels::gemm_nvfp4`] ([`GemmKernel::Mapped`]): the same math through cutile's safe mapped-partition
+//!   schedule with a per-column alpha vector. Checked, but its `[BM, BN]` alpha broadcast and residual checks cost
+//!   registers (128×256 tiles collapse to ~6 TFLOP/s); kept as the checked variant for tests.
 
 use anyhow::{Result, bail, ensure};
 use cutile::cuda_core::{Stream, f4e2m1fnx2, f8e4m3fn};
