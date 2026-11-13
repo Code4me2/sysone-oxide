@@ -1,0 +1,9340 @@
+{
+ "root": "/home/velvet/Desktop/sysone-ref/golden/dev",
+ "about": "Binary dev goldens (per-layer hidden states) of the W1b runs; see reference/layer_dump.py for the layout. Hidden states are f32 upcasts of the model dtype's values.",
+ "provenance": {
+  "tier": "dev (GB10)",
+  "arch": "aarch64",
+  "python": "3.12.3",
+  "torch": "2.13.0+cu132",
+  "cuda_runtime": "13.2",
+  "gpu": "NVIDIA GB10",
+  "transformers": "5.19.0",
+  "compressed_tensors": "0.20.1",
+  "gdn_backend": "fla=no (torch_chunk_gated_delta_rule), causal_conv1d=no (torch conv1d)",
+  "attn_implementation": "sdpa (transformers default)",
+  "onejev": "81ce62f1597c91e46767d4d02d6ac2e18534fe94 + serve.patch",
+  "serve_patch_sha256": "f234c125f1d38d82104b9e1f24e75bde51e4401928acfba2fbf5c59ef2fb46b8",
+  "numerics": {
+   "cuda.matmul.allow_tf32": false,
+   "cudnn.allow_tf32": false,
+   "float32_matmul_precision": "highest",
+   "cuda.matmul.allow_bf16_reduced_precision_reduction": true
+  },
+  "model_files_sha256": {
+   "model.safetensors": "682f02348dfe4617dd21bba2915c12e805de8cf16327a61e895a831ea681d0ba"
+  },
+  "load_seconds": 134.2
+ },
+ "files": {
+  "bf16_batched/hidden_m000_noul_default.safetensors": {
+   "sha256": "8e1d9003433eb030092c885247aba313e2b73351571c28f67229a8f7be1c3407",
+   "bytes": 887080,
+   "metadata": {
+    "request": "m000_noul_default",
+    "nvfp4": "false",
+    "model": "elephant-1",
+    "dtype": "bfloat16",
+    "prefix_rows": "[0, 1, 12, 23, 35, 46, 56, 57]",
+    "mode": "served"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "bf16_batched",
+    "model": "elephant-1",
+    "dtype": "bfloat16",
+    "nvfp4": false,
+    "path": "batched",
+    "head_dtype": "float32",
+    "engine_fork_mode": "batched",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "bf16_batched/hidden_m005_choice_5.safetensors": {
+   "sha256": "66115f13f31f585639d13758a6206f41add700246dfdbed20cea9a658a2a4947",
+   "bytes": 887360,
+   "metadata": {
+    "mode": "served",
+    "prefix_rows": "[0, 1, 12, 23, 35, 46, 56, 57]",
+    "request": "m005_choice_5",
+    "nvfp4": "false",
+    "dtype": "bfloat16",
+    "model": "elephant-1"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      95
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "bf16_batched",
+    "model": "elephant-1",
+    "dtype": "bfloat16",
+    "nvfp4": false,
+    "path": "batched",
+    "head_dtype": "float32",
+    "engine_fork_mode": "batched",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "bf16_batched/hidden_m008_choice_27.safetensors": {
+   "sha256": "e4a0e765084b18078422a0dac59cd4ce4a15f8ebc8c46670660e4b7bf6f20e22",
+   "bytes": 889896,
+   "metadata": {
+    "dtype": "bfloat16",
+    "prefix_rows": "[0, 1, 13, 25, 38, 50, 61, 62]",
+    "model": "elephant-1",
+    "nvfp4": "false",
+    "request": "m008_choice_27",
+    "mode": "served"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      63
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      407
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "bf16_batched",
+    "model": "elephant-1",
+    "dtype": "bfloat16",
+    "nvfp4": false,
+    "path": "batched",
+    "head_dtype": "float32",
+    "engine_fork_mode": "batched",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "bf16_batched/hidden_m010_choice_255.safetensors": {
+   "sha256": "37d8394878ec5ad5ae41f87ffeb5b25007894c61f49bba66e76739c0089d3d07",
+   "bytes": 915536,
+   "metadata": {
+    "dtype": "bfloat16",
+    "nvfp4": "false",
+    "mode": "served",
+    "request": "m010_choice_255",
+    "model": "elephant-1",
+    "prefix_rows": "[0, 1, 13, 26, 40, 53, 64, 65]"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      66
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      3608
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "bf16_batched",
+    "model": "elephant-1",
+    "dtype": "bfloat16",
+    "nvfp4": false,
+    "path": "batched",
+    "head_dtype": "float32",
+    "engine_fork_mode": "batched",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "bf16_batched/hidden_m013_score_3.safetensors": {
+   "sha256": "380bb31b45fad1280f58e135b73d7b47b170a99bf467365f59d0876f9921d1c0",
+   "bytes": 887064,
+   "metadata": {
+    "mode": "served",
+    "dtype": "bfloat16",
+    "prefix_rows": "[0, 1, 12, 23, 35, 46, 56, 57]",
+    "nvfp4": "false",
+    "request": "m013_score_3",
+    "model": "elephant-1"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      59
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "bf16_batched",
+    "model": "elephant-1",
+    "dtype": "bfloat16",
+    "nvfp4": false,
+    "path": "batched",
+    "head_dtype": "float32",
+    "engine_fork_mode": "batched",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "bf16_batched/hidden_m019_state_json.safetensors": {
+   "sha256": "70a202e9c6a5b98b472830077ba9370347e1cb646ccd50e742b38520f862e718",
+   "bytes": 1085480,
+   "metadata": {
+    "prefix_rows": "[0, 1, 23, 45, 68, 90, 111, 112]",
+    "model": "elephant-1",
+    "mode": "served",
+    "request": "m019_state_json",
+    "dtype": "bfloat16",
+    "nvfp4": "false"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      113
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      72
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      79
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "bf16_batched",
+    "model": "elephant-1",
+    "dtype": "bfloat16",
+    "nvfp4": false,
+    "path": "batched",
+    "head_dtype": "float32",
+    "engine_fork_mode": "batched",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "bf16_batched/hidden_m026_unicode_state.safetensors": {
+   "sha256": "ef360118a2c08f45a977dc27b0529cf8719392d1e3892b853937d6a8ba3f9738",
+   "bytes": 1086224,
+   "metadata": {
+    "prefix_rows": "[0, 1, 43, 86, 129, 172, 213, 214]",
+    "model": "elephant-1",
+    "nvfp4": "false",
+    "mode": "served",
+    "dtype": "bfloat16",
+    "request": "m026_unicode_state"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      215
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      72
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      69
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "bf16_batched",
+    "model": "elephant-1",
+    "dtype": "bfloat16",
+    "nvfp4": false,
+    "path": "batched",
+    "head_dtype": "float32",
+    "engine_fork_mode": "batched",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "bf16_batched/hidden_m037_len1024_debias1.safetensors": {
+   "sha256": "54694f6f8e4b4ced229eb4b6f14a9aee5992cc7b30662f89c25e719cd0209e6c",
+   "bytes": 1093360,
+   "metadata": {
+    "dtype": "bfloat16",
+    "request": "m037_len1024_debias1",
+    "mode": "served",
+    "prefix_rows": "[0, 1, 214, 428, 641, 855, 1067, 1068]",
+    "model": "elephant-1",
+    "nvfp4": "false"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      1069
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      109
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      69
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "bf16_batched",
+    "model": "elephant-1",
+    "dtype": "bfloat16",
+    "nvfp4": false,
+    "path": "batched",
+    "head_dtype": "float32",
+    "engine_fork_mode": "batched",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "bf16_batched/hidden_m040_len4096_debias1.safetensors": {
+   "sha256": "4378d72e9111b8945edf8c205a209be3f48749d61f44df3f9637984c87857eda",
+   "bytes": 1117584,
+   "metadata": {
+    "mode": "served",
+    "dtype": "bfloat16",
+    "prefix_rows": "[0, 1, 828, 1656, 2485, 3313, 4139, 4140]",
+    "model": "elephant-1",
+    "request": "m040_len4096_debias1",
+    "nvfp4": "false"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      4141
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      74
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      59
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "bf16_batched",
+    "model": "elephant-1",
+    "dtype": "bfloat16",
+    "nvfp4": false,
+    "path": "batched",
+    "head_dtype": "float32",
+    "engine_fork_mode": "batched",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "bf16_batched/hidden_m044_len16000_debias1.safetensors": {
+   "sha256": "892e47b6596c36d5b5e8949f443eadf4f98b02a2473e443ed87a0a32d22ea3be",
+   "bytes": 1213216,
+   "metadata": {
+    "nvfp4": "false",
+    "dtype": "bfloat16",
+    "prefix_rows": "[0, 1, 3209, 6418, 9626, 12835, 16042, 16043]",
+    "model": "elephant-1",
+    "request": "m044_len16000_debias1",
+    "mode": "served"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      16044
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      102
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      79
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "bf16_batched",
+    "model": "elephant-1",
+    "dtype": "bfloat16",
+    "nvfp4": false,
+    "path": "batched",
+    "head_dtype": "float32",
+    "engine_fork_mode": "batched",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "bf16_perq_hidden/hidden_m000_noul_default.safetensors": {
+   "sha256": "99a62b71edb59b4a87ea859130cf4cb4c47216c2d62ec5a0326ab8310b39e22d",
+   "bytes": 887088,
+   "metadata": {
+    "prefix_rows": "[0, 1, 12, 23, 35, 46, 56, 57]",
+    "request": "m000_noul_default",
+    "mode": "per_question",
+    "nvfp4": "false",
+    "model": "elephant-1",
+    "dtype": "bfloat16"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "bf16_perq_hidden",
+    "model": "elephant-1",
+    "dtype": "bfloat16",
+    "nvfp4": false,
+    "path": "per_question",
+    "head_dtype": "float32",
+    "engine_fork_mode": "per_question",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "bf16_perq_hidden/hidden_m005_choice_5.safetensors": {
+   "sha256": "dcdd6a7dd95177783f8faed2d112d5fbcab3e9b2e4af3842ad362794ec5f7882",
+   "bytes": 887360,
+   "metadata": {
+    "nvfp4": "false",
+    "mode": "per_question",
+    "model": "elephant-1",
+    "dtype": "bfloat16",
+    "prefix_rows": "[0, 1, 12, 23, 35, 46, 56, 57]",
+    "request": "m005_choice_5"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      95
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "bf16_perq_hidden",
+    "model": "elephant-1",
+    "dtype": "bfloat16",
+    "nvfp4": false,
+    "path": "per_question",
+    "head_dtype": "float32",
+    "engine_fork_mode": "per_question",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "bf16_perq_hidden/hidden_m008_choice_27.safetensors": {
+   "sha256": "545b3cc5fd5eb11a2bb45068863f9b8c8b4af16872f385717ab95dfa08a9a9d9",
+   "bytes": 889904,
+   "metadata": {
+    "mode": "per_question",
+    "prefix_rows": "[0, 1, 13, 25, 38, 50, 61, 62]",
+    "request": "m008_choice_27",
+    "dtype": "bfloat16",
+    "model": "elephant-1",
+    "nvfp4": "false"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      63
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      407
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "bf16_perq_hidden",
+    "model": "elephant-1",
+    "dtype": "bfloat16",
+    "nvfp4": false,
+    "path": "per_question",
+    "head_dtype": "float32",
+    "engine_fork_mode": "per_question",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "bf16_perq_hidden/hidden_m010_choice_255.safetensors": {
+   "sha256": "76ddf6717874dabd2f9e39c8fe25ba2140e5b0f5e4f2939699f34e2cb31265b4",
+   "bytes": 915536,
+   "metadata": {
+    "mode": "per_question",
+    "request": "m010_choice_255",
+    "nvfp4": "false",
+    "prefix_rows": "[0, 1, 13, 26, 40, 53, 64, 65]",
+    "model": "elephant-1",
+    "dtype": "bfloat16"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      66
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      3608
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "bf16_perq_hidden",
+    "model": "elephant-1",
+    "dtype": "bfloat16",
+    "nvfp4": false,
+    "path": "per_question",
+    "head_dtype": "float32",
+    "engine_fork_mode": "per_question",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "bf16_perq_hidden/hidden_m013_score_3.safetensors": {
+   "sha256": "d0aec2e937d6a82ddb2291bf4c77b255ef9a19abb37f41395967085f082d0143",
+   "bytes": 887072,
+   "metadata": {
+    "prefix_rows": "[0, 1, 12, 23, 35, 46, 56, 57]",
+    "model": "elephant-1",
+    "dtype": "bfloat16",
+    "request": "m013_score_3",
+    "nvfp4": "false",
+    "mode": "per_question"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      59
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "bf16_perq_hidden",
+    "model": "elephant-1",
+    "dtype": "bfloat16",
+    "nvfp4": false,
+    "path": "per_question",
+    "head_dtype": "float32",
+    "engine_fork_mode": "per_question",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "bf16_perq_hidden/hidden_m019_state_json.safetensors": {
+   "sha256": "9f2a0a400f6230c50dc1a92ba76e4ad339d4e11d1e8d0c799d12cba0a1cddcad",
+   "bytes": 1085488,
+   "metadata": {
+    "prefix_rows": "[0, 1, 23, 45, 68, 90, 111, 112]",
+    "dtype": "bfloat16",
+    "mode": "per_question",
+    "model": "elephant-1",
+    "nvfp4": "false",
+    "request": "m019_state_json"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      113
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      72
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      79
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "bf16_perq_hidden",
+    "model": "elephant-1",
+    "dtype": "bfloat16",
+    "nvfp4": false,
+    "path": "per_question",
+    "head_dtype": "float32",
+    "engine_fork_mode": "per_question",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "bf16_perq_hidden/hidden_m026_unicode_state.safetensors": {
+   "sha256": "b2940d0ce589fba1f8f5b229f8a9386f2e35e63a5b50cad13aacd906584ea34b",
+   "bytes": 1086232,
+   "metadata": {
+    "prefix_rows": "[0, 1, 43, 86, 129, 172, 213, 214]",
+    "nvfp4": "false",
+    "mode": "per_question",
+    "model": "elephant-1",
+    "dtype": "bfloat16",
+    "request": "m026_unicode_state"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      215
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      72
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      69
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "bf16_perq_hidden",
+    "model": "elephant-1",
+    "dtype": "bfloat16",
+    "nvfp4": false,
+    "path": "per_question",
+    "head_dtype": "float32",
+    "engine_fork_mode": "per_question",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "bf16_perq_hidden/hidden_m037_len1024_debias1.safetensors": {
+   "sha256": "418019eb8189d14c5a216a104cfdfc90f1f2f71856fe7ab325d4377530ada77a",
+   "bytes": 1093368,
+   "metadata": {
+    "dtype": "bfloat16",
+    "request": "m037_len1024_debias1",
+    "model": "elephant-1",
+    "prefix_rows": "[0, 1, 214, 428, 641, 855, 1067, 1068]",
+    "nvfp4": "false",
+    "mode": "per_question"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      1069
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      109
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      69
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "bf16_perq_hidden",
+    "model": "elephant-1",
+    "dtype": "bfloat16",
+    "nvfp4": false,
+    "path": "per_question",
+    "head_dtype": "float32",
+    "engine_fork_mode": "per_question",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "bf16_perq_hidden/hidden_m040_len4096_debias1.safetensors": {
+   "sha256": "5a4ebb8412fc4575c15a132b89e11b7bc6c43df716f15e56c2d69a89d53a4288",
+   "bytes": 1117592,
+   "metadata": {
+    "request": "m040_len4096_debias1",
+    "dtype": "bfloat16",
+    "nvfp4": "false",
+    "mode": "per_question",
+    "model": "elephant-1",
+    "prefix_rows": "[0, 1, 828, 1656, 2485, 3313, 4139, 4140]"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      4141
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      74
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      59
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "bf16_perq_hidden",
+    "model": "elephant-1",
+    "dtype": "bfloat16",
+    "nvfp4": false,
+    "path": "per_question",
+    "head_dtype": "float32",
+    "engine_fork_mode": "per_question",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "bf16_perq_hidden/hidden_m044_len16000_debias1.safetensors": {
+   "sha256": "6111384375ea8a46025b28d814a6003536045470f9c7efa03cd89594ae9a3e03",
+   "bytes": 1213224,
+   "metadata": {
+    "model": "elephant-1",
+    "dtype": "bfloat16",
+    "request": "m044_len16000_debias1",
+    "nvfp4": "false",
+    "mode": "per_question",
+    "prefix_rows": "[0, 1, 3209, 6418, 9626, 12835, 16042, 16043]"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      16044
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      102
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      79
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "bf16_perq_hidden",
+    "model": "elephant-1",
+    "dtype": "bfloat16",
+    "nvfp4": false,
+    "path": "per_question",
+    "head_dtype": "float32",
+    "engine_fork_mode": "per_question",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "bf16_sequential/hidden_m000_noul_default.safetensors": {
+   "sha256": "7eb978b6b2c754270f5e62a7cee9d271f1c77c0aa020da69bd37a0a7ca46f56d",
+   "bytes": 887080,
+   "metadata": {
+    "model": "elephant-1",
+    "request": "m000_noul_default",
+    "mode": "served",
+    "nvfp4": "false",
+    "dtype": "bfloat16",
+    "prefix_rows": "[0, 1, 12, 23, 35, 46, 56, 57]"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "bf16_sequential",
+    "model": "elephant-1",
+    "dtype": "bfloat16",
+    "nvfp4": false,
+    "path": "sequential",
+    "head_dtype": "float32",
+    "engine_fork_mode": "sequential",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "bf16_sequential/hidden_m005_choice_5.safetensors": {
+   "sha256": "448a5ec6b5e834a7a3537f41dc2847e2971406669d3a39052c8d540f3d2e6923",
+   "bytes": 887360,
+   "metadata": {
+    "request": "m005_choice_5",
+    "prefix_rows": "[0, 1, 12, 23, 35, 46, 56, 57]",
+    "model": "elephant-1",
+    "mode": "served",
+    "dtype": "bfloat16",
+    "nvfp4": "false"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      95
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "bf16_sequential",
+    "model": "elephant-1",
+    "dtype": "bfloat16",
+    "nvfp4": false,
+    "path": "sequential",
+    "head_dtype": "float32",
+    "engine_fork_mode": "sequential",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "bf16_sequential/hidden_m008_choice_27.safetensors": {
+   "sha256": "d0bba108e2cbdff189aafa674d2c178a4a7a4b89a23a1dfb85026901d883d065",
+   "bytes": 889896,
+   "metadata": {
+    "nvfp4": "false",
+    "dtype": "bfloat16",
+    "request": "m008_choice_27",
+    "mode": "served",
+    "prefix_rows": "[0, 1, 13, 25, 38, 50, 61, 62]",
+    "model": "elephant-1"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      63
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      407
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "bf16_sequential",
+    "model": "elephant-1",
+    "dtype": "bfloat16",
+    "nvfp4": false,
+    "path": "sequential",
+    "head_dtype": "float32",
+    "engine_fork_mode": "sequential",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "bf16_sequential/hidden_m010_choice_255.safetensors": {
+   "sha256": "f7ec4f7d14afd8e173fae13d06101ad980e7d21cdf8e5f381e5b75e2032e7a35",
+   "bytes": 915536,
+   "metadata": {
+    "nvfp4": "false",
+    "model": "elephant-1",
+    "mode": "served",
+    "request": "m010_choice_255",
+    "prefix_rows": "[0, 1, 13, 26, 40, 53, 64, 65]",
+    "dtype": "bfloat16"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      66
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      3608
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "bf16_sequential",
+    "model": "elephant-1",
+    "dtype": "bfloat16",
+    "nvfp4": false,
+    "path": "sequential",
+    "head_dtype": "float32",
+    "engine_fork_mode": "sequential",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "bf16_sequential/hidden_m013_score_3.safetensors": {
+   "sha256": "a46a7ea2b6b7b61f1d45ffff89eeb41fd0e6da410ba36ad47c212a4b29608341",
+   "bytes": 887064,
+   "metadata": {
+    "model": "elephant-1",
+    "request": "m013_score_3",
+    "mode": "served",
+    "prefix_rows": "[0, 1, 12, 23, 35, 46, 56, 57]",
+    "nvfp4": "false",
+    "dtype": "bfloat16"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      59
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "bf16_sequential",
+    "model": "elephant-1",
+    "dtype": "bfloat16",
+    "nvfp4": false,
+    "path": "sequential",
+    "head_dtype": "float32",
+    "engine_fork_mode": "sequential",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "bf16_sequential/hidden_m019_state_json.safetensors": {
+   "sha256": "70f1826149a0ba75d50828145e92ea90cc424ef1efab2610ed667c3743ba6ded",
+   "bytes": 1085480,
+   "metadata": {
+    "request": "m019_state_json",
+    "model": "elephant-1",
+    "nvfp4": "false",
+    "prefix_rows": "[0, 1, 23, 45, 68, 90, 111, 112]",
+    "dtype": "bfloat16",
+    "mode": "served"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      113
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      72
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      79
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "bf16_sequential",
+    "model": "elephant-1",
+    "dtype": "bfloat16",
+    "nvfp4": false,
+    "path": "sequential",
+    "head_dtype": "float32",
+    "engine_fork_mode": "sequential",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "bf16_sequential/hidden_m026_unicode_state.safetensors": {
+   "sha256": "5231564210aeae27669971f11dbdbfeb80e6ba18e22730b350cd9cc0d77a21a5",
+   "bytes": 1086224,
+   "metadata": {
+    "nvfp4": "false",
+    "prefix_rows": "[0, 1, 43, 86, 129, 172, 213, 214]",
+    "model": "elephant-1",
+    "dtype": "bfloat16",
+    "mode": "served",
+    "request": "m026_unicode_state"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      215
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      72
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      69
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "bf16_sequential",
+    "model": "elephant-1",
+    "dtype": "bfloat16",
+    "nvfp4": false,
+    "path": "sequential",
+    "head_dtype": "float32",
+    "engine_fork_mode": "sequential",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "bf16_sequential/hidden_m037_len1024_debias1.safetensors": {
+   "sha256": "1ecb55d38337ffb76fd943fa160d6e791bdf0cf2bc5469c1abc397a4983b146d",
+   "bytes": 1093360,
+   "metadata": {
+    "request": "m037_len1024_debias1",
+    "dtype": "bfloat16",
+    "nvfp4": "false",
+    "mode": "served",
+    "model": "elephant-1",
+    "prefix_rows": "[0, 1, 214, 428, 641, 855, 1067, 1068]"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      1069
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      109
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      69
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "bf16_sequential",
+    "model": "elephant-1",
+    "dtype": "bfloat16",
+    "nvfp4": false,
+    "path": "sequential",
+    "head_dtype": "float32",
+    "engine_fork_mode": "sequential",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "bf16_sequential/hidden_m040_len4096_debias1.safetensors": {
+   "sha256": "5b09e6d774cd30898aeb1b11e6a1269ce768c02af01806959b7e508f81ba4d7b",
+   "bytes": 1117584,
+   "metadata": {
+    "dtype": "bfloat16",
+    "model": "elephant-1",
+    "nvfp4": "false",
+    "mode": "served",
+    "request": "m040_len4096_debias1",
+    "prefix_rows": "[0, 1, 828, 1656, 2485, 3313, 4139, 4140]"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      4141
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      74
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      59
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "bf16_sequential",
+    "model": "elephant-1",
+    "dtype": "bfloat16",
+    "nvfp4": false,
+    "path": "sequential",
+    "head_dtype": "float32",
+    "engine_fork_mode": "sequential",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "bf16_sequential/hidden_m044_len16000_debias1.safetensors": {
+   "sha256": "cec30f65a16aa55d68537824bbba659d0e0f6c4d82e6aee219ddaeceba653037",
+   "bytes": 1213216,
+   "metadata": {
+    "prefix_rows": "[0, 1, 3209, 6418, 9626, 12835, 16042, 16043]",
+    "request": "m044_len16000_debias1",
+    "model": "elephant-1",
+    "mode": "served",
+    "dtype": "bfloat16",
+    "nvfp4": "false"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      16044
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      102
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      79
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "bf16_sequential",
+    "model": "elephant-1",
+    "dtype": "bfloat16",
+    "nvfp4": false,
+    "path": "sequential",
+    "head_dtype": "float32",
+    "engine_fork_mode": "sequential",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "fp32_batched/hidden_m000_noul_default.safetensors": {
+   "sha256": "93131705ebbf9d942037fc31c837ce103a304f203c3c85c2835dee2c551cdbf5",
+   "bytes": 887080,
+   "metadata": {
+    "model": "elephant-1",
+    "nvfp4": "false",
+    "request": "m000_noul_default",
+    "prefix_rows": "[0, 1, 12, 23, 35, 46, 56, 57]",
+    "mode": "served",
+    "dtype": "float32"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "fp32_batched",
+    "model": "elephant-1",
+    "dtype": "float32",
+    "nvfp4": false,
+    "path": "batched",
+    "head_dtype": "float32",
+    "engine_fork_mode": "batched",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "fp32_batched/hidden_m005_choice_5.safetensors": {
+   "sha256": "29421e437679f8c22d795f2f03bcdc3dd39cceaa2c81248010bd5500888c3cca",
+   "bytes": 887360,
+   "metadata": {
+    "nvfp4": "false",
+    "model": "elephant-1",
+    "dtype": "float32",
+    "mode": "served",
+    "request": "m005_choice_5",
+    "prefix_rows": "[0, 1, 12, 23, 35, 46, 56, 57]"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      95
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "fp32_batched",
+    "model": "elephant-1",
+    "dtype": "float32",
+    "nvfp4": false,
+    "path": "batched",
+    "head_dtype": "float32",
+    "engine_fork_mode": "batched",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "fp32_batched/hidden_m008_choice_27.safetensors": {
+   "sha256": "97e57b4062fac3603b87e6b38e23044c69e0c827cbac1f38cadb5e7a466be34f",
+   "bytes": 889896,
+   "metadata": {
+    "dtype": "float32",
+    "prefix_rows": "[0, 1, 13, 25, 38, 50, 61, 62]",
+    "model": "elephant-1",
+    "mode": "served",
+    "nvfp4": "false",
+    "request": "m008_choice_27"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      63
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      407
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "fp32_batched",
+    "model": "elephant-1",
+    "dtype": "float32",
+    "nvfp4": false,
+    "path": "batched",
+    "head_dtype": "float32",
+    "engine_fork_mode": "batched",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "fp32_batched/hidden_m010_choice_255.safetensors": {
+   "sha256": "e3e133ab43534234f797e107160868cb441aebe27c7a1c773e3a881a7dc2fb45",
+   "bytes": 915536,
+   "metadata": {
+    "dtype": "float32",
+    "model": "elephant-1",
+    "mode": "served",
+    "nvfp4": "false",
+    "prefix_rows": "[0, 1, 13, 26, 40, 53, 64, 65]",
+    "request": "m010_choice_255"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      66
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      3608
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "fp32_batched",
+    "model": "elephant-1",
+    "dtype": "float32",
+    "nvfp4": false,
+    "path": "batched",
+    "head_dtype": "float32",
+    "engine_fork_mode": "batched",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "fp32_batched/hidden_m013_score_3.safetensors": {
+   "sha256": "f7fe20c7eb6916e9692487834528eb977d941a5a2661d97a36d9b13d63e1098c",
+   "bytes": 887064,
+   "metadata": {
+    "request": "m013_score_3",
+    "dtype": "float32",
+    "prefix_rows": "[0, 1, 12, 23, 35, 46, 56, 57]",
+    "model": "elephant-1",
+    "mode": "served",
+    "nvfp4": "false"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      59
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "fp32_batched",
+    "model": "elephant-1",
+    "dtype": "float32",
+    "nvfp4": false,
+    "path": "batched",
+    "head_dtype": "float32",
+    "engine_fork_mode": "batched",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "fp32_batched/hidden_m019_state_json.safetensors": {
+   "sha256": "fef2db86486dd96c56af7e8b7ceaa467e6bc12aace1c60b9a25126e63e4b902a",
+   "bytes": 1085480,
+   "metadata": {
+    "mode": "served",
+    "request": "m019_state_json",
+    "prefix_rows": "[0, 1, 23, 45, 68, 90, 111, 112]",
+    "nvfp4": "false",
+    "dtype": "float32",
+    "model": "elephant-1"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      113
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      72
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      79
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "fp32_batched",
+    "model": "elephant-1",
+    "dtype": "float32",
+    "nvfp4": false,
+    "path": "batched",
+    "head_dtype": "float32",
+    "engine_fork_mode": "batched",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "fp32_batched/hidden_m026_unicode_state.safetensors": {
+   "sha256": "4885f98ae2775c63e79c50231d6becf5a7535e5f880a6e473ab89cee90ae7992",
+   "bytes": 1086224,
+   "metadata": {
+    "mode": "served",
+    "prefix_rows": "[0, 1, 43, 86, 129, 172, 213, 214]",
+    "dtype": "float32",
+    "request": "m026_unicode_state",
+    "nvfp4": "false",
+    "model": "elephant-1"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      215
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      72
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      69
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "fp32_batched",
+    "model": "elephant-1",
+    "dtype": "float32",
+    "nvfp4": false,
+    "path": "batched",
+    "head_dtype": "float32",
+    "engine_fork_mode": "batched",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "fp32_batched/hidden_m037_len1024_debias1.safetensors": {
+   "sha256": "dcf6fa0ed1aeb7c2126189439943049ba66edda18f28ec9da9fb1d12fdd2a75a",
+   "bytes": 1093360,
+   "metadata": {
+    "request": "m037_len1024_debias1",
+    "dtype": "float32",
+    "model": "elephant-1",
+    "nvfp4": "false",
+    "mode": "served",
+    "prefix_rows": "[0, 1, 214, 428, 641, 855, 1067, 1068]"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      1069
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      109
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      69
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "fp32_batched",
+    "model": "elephant-1",
+    "dtype": "float32",
+    "nvfp4": false,
+    "path": "batched",
+    "head_dtype": "float32",
+    "engine_fork_mode": "batched",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "fp32_batched/hidden_m040_len4096_debias1.safetensors": {
+   "sha256": "b94bae851cfa34682e3512dc56bca65deedc271756a6d225dbb000b60226ab32",
+   "bytes": 1117584,
+   "metadata": {
+    "request": "m040_len4096_debias1",
+    "dtype": "float32",
+    "mode": "served",
+    "prefix_rows": "[0, 1, 828, 1656, 2485, 3313, 4139, 4140]",
+    "model": "elephant-1",
+    "nvfp4": "false"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      4141
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      74
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      59
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "fp32_batched",
+    "model": "elephant-1",
+    "dtype": "float32",
+    "nvfp4": false,
+    "path": "batched",
+    "head_dtype": "float32",
+    "engine_fork_mode": "batched",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "fp32_batched/hidden_m044_len16000_debias1.safetensors": {
+   "sha256": "5039f5b0af6f7328bcf2cc63e4b115a38c0a8da67c8c74a5f7ce02eb6cc4fee1",
+   "bytes": 1213216,
+   "metadata": {
+    "model": "elephant-1",
+    "nvfp4": "false",
+    "prefix_rows": "[0, 1, 3209, 6418, 9626, 12835, 16042, 16043]",
+    "mode": "served",
+    "request": "m044_len16000_debias1",
+    "dtype": "float32"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      16044
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      102
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      79
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "fp32_batched",
+    "model": "elephant-1",
+    "dtype": "float32",
+    "nvfp4": false,
+    "path": "batched",
+    "head_dtype": "float32",
+    "engine_fork_mode": "batched",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "fp32_sequential/hidden_m000_noul_default.safetensors": {
+   "sha256": "48eadd0f0872370e626dc9d6e7f193c923ca338a497eec5890fd227de813e0c8",
+   "bytes": 887080,
+   "metadata": {
+    "prefix_rows": "[0, 1, 12, 23, 35, 46, 56, 57]",
+    "request": "m000_noul_default",
+    "mode": "served",
+    "dtype": "float32",
+    "model": "elephant-1",
+    "nvfp4": "false"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "fp32_sequential",
+    "model": "elephant-1",
+    "dtype": "float32",
+    "nvfp4": false,
+    "path": "sequential",
+    "head_dtype": "float32",
+    "engine_fork_mode": "sequential",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "fp32_sequential/hidden_m005_choice_5.safetensors": {
+   "sha256": "5add998054ed08c05157c99a81b50e9c34ca440670b7d7fef4ea79ce42b77b61",
+   "bytes": 887360,
+   "metadata": {
+    "prefix_rows": "[0, 1, 12, 23, 35, 46, 56, 57]",
+    "model": "elephant-1",
+    "mode": "served",
+    "request": "m005_choice_5",
+    "dtype": "float32",
+    "nvfp4": "false"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      95
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "fp32_sequential",
+    "model": "elephant-1",
+    "dtype": "float32",
+    "nvfp4": false,
+    "path": "sequential",
+    "head_dtype": "float32",
+    "engine_fork_mode": "sequential",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "fp32_sequential/hidden_m008_choice_27.safetensors": {
+   "sha256": "de402aaa322450c882f8df6463f35e20397a91c43878e943bda100141ad19420",
+   "bytes": 889896,
+   "metadata": {
+    "dtype": "float32",
+    "request": "m008_choice_27",
+    "mode": "served",
+    "model": "elephant-1",
+    "nvfp4": "false",
+    "prefix_rows": "[0, 1, 13, 25, 38, 50, 61, 62]"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      63
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      407
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "fp32_sequential",
+    "model": "elephant-1",
+    "dtype": "float32",
+    "nvfp4": false,
+    "path": "sequential",
+    "head_dtype": "float32",
+    "engine_fork_mode": "sequential",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "fp32_sequential/hidden_m010_choice_255.safetensors": {
+   "sha256": "966a9a94d913c0a1608556db35560cd59dd7f0c342cb4d9144cab00883ae833e",
+   "bytes": 915536,
+   "metadata": {
+    "dtype": "float32",
+    "nvfp4": "false",
+    "prefix_rows": "[0, 1, 13, 26, 40, 53, 64, 65]",
+    "mode": "served",
+    "model": "elephant-1",
+    "request": "m010_choice_255"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      66
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      3608
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "fp32_sequential",
+    "model": "elephant-1",
+    "dtype": "float32",
+    "nvfp4": false,
+    "path": "sequential",
+    "head_dtype": "float32",
+    "engine_fork_mode": "sequential",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "fp32_sequential/hidden_m013_score_3.safetensors": {
+   "sha256": "0b122b8f122e2c281be0239f47b6f614669251c4688ce135609bc191f91fdfb0",
+   "bytes": 887064,
+   "metadata": {
+    "mode": "served",
+    "prefix_rows": "[0, 1, 12, 23, 35, 46, 56, 57]",
+    "dtype": "float32",
+    "request": "m013_score_3",
+    "nvfp4": "false",
+    "model": "elephant-1"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      59
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "fp32_sequential",
+    "model": "elephant-1",
+    "dtype": "float32",
+    "nvfp4": false,
+    "path": "sequential",
+    "head_dtype": "float32",
+    "engine_fork_mode": "sequential",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "fp32_sequential/hidden_m019_state_json.safetensors": {
+   "sha256": "d5b86d0129cc2fbb2f27b801b3cbca70fbe87bb35bc77a86fd4d820505163a04",
+   "bytes": 1085480,
+   "metadata": {
+    "prefix_rows": "[0, 1, 23, 45, 68, 90, 111, 112]",
+    "request": "m019_state_json",
+    "model": "elephant-1",
+    "dtype": "float32",
+    "mode": "served",
+    "nvfp4": "false"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      113
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      72
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      79
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "fp32_sequential",
+    "model": "elephant-1",
+    "dtype": "float32",
+    "nvfp4": false,
+    "path": "sequential",
+    "head_dtype": "float32",
+    "engine_fork_mode": "sequential",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "fp32_sequential/hidden_m026_unicode_state.safetensors": {
+   "sha256": "99dfb8352dca3b081a706290b449dc01f3b224d605e7a2a506b30236702b1c42",
+   "bytes": 1086224,
+   "metadata": {
+    "request": "m026_unicode_state",
+    "model": "elephant-1",
+    "nvfp4": "false",
+    "dtype": "float32",
+    "mode": "served",
+    "prefix_rows": "[0, 1, 43, 86, 129, 172, 213, 214]"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      215
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      72
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      69
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "fp32_sequential",
+    "model": "elephant-1",
+    "dtype": "float32",
+    "nvfp4": false,
+    "path": "sequential",
+    "head_dtype": "float32",
+    "engine_fork_mode": "sequential",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "fp32_sequential/hidden_m037_len1024_debias1.safetensors": {
+   "sha256": "79d0ebfc098e677d8d08125002b964581c478413c264099a2a012f4a071b381d",
+   "bytes": 1093360,
+   "metadata": {
+    "mode": "served",
+    "request": "m037_len1024_debias1",
+    "model": "elephant-1",
+    "nvfp4": "false",
+    "dtype": "float32",
+    "prefix_rows": "[0, 1, 214, 428, 641, 855, 1067, 1068]"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      1069
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      109
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      69
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "fp32_sequential",
+    "model": "elephant-1",
+    "dtype": "float32",
+    "nvfp4": false,
+    "path": "sequential",
+    "head_dtype": "float32",
+    "engine_fork_mode": "sequential",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "fp32_sequential/hidden_m040_len4096_debias1.safetensors": {
+   "sha256": "612d949140e6fe8b819d79b5be52f86bb62d10838f80fd69e5aafef6d78cfe58",
+   "bytes": 1117584,
+   "metadata": {
+    "model": "elephant-1",
+    "request": "m040_len4096_debias1",
+    "mode": "served",
+    "dtype": "float32",
+    "prefix_rows": "[0, 1, 828, 1656, 2485, 3313, 4139, 4140]",
+    "nvfp4": "false"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      4141
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      74
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      59
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "fp32_sequential",
+    "model": "elephant-1",
+    "dtype": "float32",
+    "nvfp4": false,
+    "path": "sequential",
+    "head_dtype": "float32",
+    "engine_fork_mode": "sequential",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "fp32_sequential/hidden_m044_len16000_debias1.safetensors": {
+   "sha256": "fa03f15b891197d5f905f784bf5c6a8164344573aa5691f00da70c3a7d0ec3ad",
+   "bytes": 1213216,
+   "metadata": {
+    "mode": "served",
+    "nvfp4": "false",
+    "dtype": "float32",
+    "model": "elephant-1",
+    "prefix_rows": "[0, 1, 3209, 6418, 9626, 12835, 16042, 16043]",
+    "request": "m044_len16000_debias1"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      16044
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      102
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      79
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "fp32_sequential",
+    "model": "elephant-1",
+    "dtype": "float32",
+    "nvfp4": false,
+    "path": "sequential",
+    "head_dtype": "float32",
+    "engine_fork_mode": "sequential",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "nvfp4_perq_r1/hidden_m000_noul_default.safetensors": {
+   "sha256": "4fb9fbd36d6905532330d2501979fbef01811829fd76510f431a8d050d1e0a12",
+   "bytes": 887096,
+   "metadata": {
+    "prefix_rows": "[0, 1, 12, 23, 35, 46, 56, 57]",
+    "model": "elephant-1-nvfp4-mlp",
+    "mode": "per_question",
+    "nvfp4": "true",
+    "dtype": "bfloat16",
+    "request": "m000_noul_default"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "nvfp4_perq_r1",
+    "model": "elephant-1-nvfp4-mlp",
+    "dtype": "bfloat16",
+    "nvfp4": true,
+    "path": "per_question",
+    "head_dtype": "float32",
+    "engine_fork_mode": "per_question",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "nvfp4_perq_r1/hidden_m005_choice_5.safetensors": {
+   "sha256": "ca02775e068bc1d4473dcffdf7637a18bbd23f2f05251165c72d45a8de3a64ca",
+   "bytes": 887376,
+   "metadata": {
+    "request": "m005_choice_5",
+    "model": "elephant-1-nvfp4-mlp",
+    "mode": "per_question",
+    "prefix_rows": "[0, 1, 12, 23, 35, 46, 56, 57]",
+    "nvfp4": "true",
+    "dtype": "bfloat16"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      95
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "nvfp4_perq_r1",
+    "model": "elephant-1-nvfp4-mlp",
+    "dtype": "bfloat16",
+    "nvfp4": true,
+    "path": "per_question",
+    "head_dtype": "float32",
+    "engine_fork_mode": "per_question",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "nvfp4_perq_r1/hidden_m008_choice_27.safetensors": {
+   "sha256": "a60d8da6eed1443fc15fcb646b87a1964acf28788db056e01a1a4e0bf88e1a37",
+   "bytes": 889912,
+   "metadata": {
+    "mode": "per_question",
+    "nvfp4": "true",
+    "request": "m008_choice_27",
+    "model": "elephant-1-nvfp4-mlp",
+    "dtype": "bfloat16",
+    "prefix_rows": "[0, 1, 13, 25, 38, 50, 61, 62]"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      63
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      407
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "nvfp4_perq_r1",
+    "model": "elephant-1-nvfp4-mlp",
+    "dtype": "bfloat16",
+    "nvfp4": true,
+    "path": "per_question",
+    "head_dtype": "float32",
+    "engine_fork_mode": "per_question",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "nvfp4_perq_r1/hidden_m010_choice_255.safetensors": {
+   "sha256": "b243a2acde7884d8c3bfef55f052931bb27d64ad7082c89dcc50f7a8338294cd",
+   "bytes": 915552,
+   "metadata": {
+    "request": "m010_choice_255",
+    "nvfp4": "true",
+    "model": "elephant-1-nvfp4-mlp",
+    "mode": "per_question",
+    "dtype": "bfloat16",
+    "prefix_rows": "[0, 1, 13, 26, 40, 53, 64, 65]"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      66
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      3608
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "nvfp4_perq_r1",
+    "model": "elephant-1-nvfp4-mlp",
+    "dtype": "bfloat16",
+    "nvfp4": true,
+    "path": "per_question",
+    "head_dtype": "float32",
+    "engine_fork_mode": "per_question",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "nvfp4_perq_r1/hidden_m013_score_3.safetensors": {
+   "sha256": "49bda4fcfde6d62924d725954211ab1a6c5a8fdbf95596c5a62f1cb594cc8138",
+   "bytes": 887080,
+   "metadata": {
+    "model": "elephant-1-nvfp4-mlp",
+    "nvfp4": "true",
+    "prefix_rows": "[0, 1, 12, 23, 35, 46, 56, 57]",
+    "request": "m013_score_3",
+    "mode": "per_question",
+    "dtype": "bfloat16"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      59
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "nvfp4_perq_r1",
+    "model": "elephant-1-nvfp4-mlp",
+    "dtype": "bfloat16",
+    "nvfp4": true,
+    "path": "per_question",
+    "head_dtype": "float32",
+    "engine_fork_mode": "per_question",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "nvfp4_perq_r1/hidden_m019_state_json.safetensors": {
+   "sha256": "6e1136b1242b5b8f66333503df50bf01f07daf93e9d7574f84ab92bcc9335d5b",
+   "bytes": 1085496,
+   "metadata": {
+    "prefix_rows": "[0, 1, 23, 45, 68, 90, 111, 112]",
+    "nvfp4": "true",
+    "model": "elephant-1-nvfp4-mlp",
+    "dtype": "bfloat16",
+    "request": "m019_state_json",
+    "mode": "per_question"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      113
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      72
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      79
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "nvfp4_perq_r1",
+    "model": "elephant-1-nvfp4-mlp",
+    "dtype": "bfloat16",
+    "nvfp4": true,
+    "path": "per_question",
+    "head_dtype": "float32",
+    "engine_fork_mode": "per_question",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "nvfp4_perq_r1/hidden_m026_unicode_state.safetensors": {
+   "sha256": "e36ab69fd91d103759c8e0a41cc532fb2e21af940c7c5da07832d76a624779ba",
+   "bytes": 1086240,
+   "metadata": {
+    "request": "m026_unicode_state",
+    "mode": "per_question",
+    "dtype": "bfloat16",
+    "nvfp4": "true",
+    "model": "elephant-1-nvfp4-mlp",
+    "prefix_rows": "[0, 1, 43, 86, 129, 172, 213, 214]"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      215
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      72
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      69
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "nvfp4_perq_r1",
+    "model": "elephant-1-nvfp4-mlp",
+    "dtype": "bfloat16",
+    "nvfp4": true,
+    "path": "per_question",
+    "head_dtype": "float32",
+    "engine_fork_mode": "per_question",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "nvfp4_perq_r1/hidden_m037_len1024_debias1.safetensors": {
+   "sha256": "510f01b51fdba897e18d832f2cc1524e4080b8d1b02200ad9cc76a4393180b41",
+   "bytes": 1093376,
+   "metadata": {
+    "prefix_rows": "[0, 1, 214, 428, 641, 855, 1067, 1068]",
+    "mode": "per_question",
+    "nvfp4": "true",
+    "dtype": "bfloat16",
+    "model": "elephant-1-nvfp4-mlp",
+    "request": "m037_len1024_debias1"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      1069
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      109
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      69
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "nvfp4_perq_r1",
+    "model": "elephant-1-nvfp4-mlp",
+    "dtype": "bfloat16",
+    "nvfp4": true,
+    "path": "per_question",
+    "head_dtype": "float32",
+    "engine_fork_mode": "per_question",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "nvfp4_perq_r1/hidden_m040_len4096_debias1.safetensors": {
+   "sha256": "22741565bbc5966f6b6494de72ba6f56ee5a2af28c8a3061143f8dbf3d340c12",
+   "bytes": 1117600,
+   "metadata": {
+    "prefix_rows": "[0, 1, 828, 1656, 2485, 3313, 4139, 4140]",
+    "mode": "per_question",
+    "dtype": "bfloat16",
+    "nvfp4": "true",
+    "model": "elephant-1-nvfp4-mlp",
+    "request": "m040_len4096_debias1"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      4141
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      74
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      59
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "nvfp4_perq_r1",
+    "model": "elephant-1-nvfp4-mlp",
+    "dtype": "bfloat16",
+    "nvfp4": true,
+    "path": "per_question",
+    "head_dtype": "float32",
+    "engine_fork_mode": "per_question",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "nvfp4_perq_r1/hidden_m044_len16000_debias1.safetensors": {
+   "sha256": "b0b78f117a62c9591bbdb7dce2a891f8438cd228672a915ff079283910aaa699",
+   "bytes": 1213232,
+   "metadata": {
+    "model": "elephant-1-nvfp4-mlp",
+    "request": "m044_len16000_debias1",
+    "prefix_rows": "[0, 1, 3209, 6418, 9626, 12835, 16042, 16043]",
+    "nvfp4": "true",
+    "dtype": "bfloat16",
+    "mode": "per_question"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      16044
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      102
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      79
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "nvfp4_perq_r1",
+    "model": "elephant-1-nvfp4-mlp",
+    "dtype": "bfloat16",
+    "nvfp4": true,
+    "path": "per_question",
+    "head_dtype": "float32",
+    "engine_fork_mode": "per_question",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "nvfp4_sequential/hidden_m000_noul_default.safetensors": {
+   "sha256": "3d22c4b5cfefb1f627fc2db5aacc5ac9fcb63f8ebbc7fe5e544d8d805b3253c2",
+   "bytes": 887088,
+   "metadata": {
+    "model": "elephant-1-nvfp4-mlp",
+    "mode": "served",
+    "dtype": "bfloat16",
+    "prefix_rows": "[0, 1, 12, 23, 35, 46, 56, 57]",
+    "nvfp4": "true",
+    "request": "m000_noul_default"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "nvfp4_sequential",
+    "model": "elephant-1-nvfp4-mlp",
+    "dtype": "bfloat16",
+    "nvfp4": true,
+    "path": "sequential",
+    "head_dtype": "float32",
+    "engine_fork_mode": "sequential",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "nvfp4_sequential/hidden_m005_choice_5.safetensors": {
+   "sha256": "4fd8dac1f05917eae50ac25d1cd2db7399f6b3bd2c069bb1dd8a48871338e289",
+   "bytes": 887368,
+   "metadata": {
+    "mode": "served",
+    "prefix_rows": "[0, 1, 12, 23, 35, 46, 56, 57]",
+    "nvfp4": "true",
+    "request": "m005_choice_5",
+    "model": "elephant-1-nvfp4-mlp",
+    "dtype": "bfloat16"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      95
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "nvfp4_sequential",
+    "model": "elephant-1-nvfp4-mlp",
+    "dtype": "bfloat16",
+    "nvfp4": true,
+    "path": "sequential",
+    "head_dtype": "float32",
+    "engine_fork_mode": "sequential",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "nvfp4_sequential/hidden_m008_choice_27.safetensors": {
+   "sha256": "2204f6554f144a6abec0dc4b851fa96231a4155e9a8a8b248e536099bb83bec7",
+   "bytes": 889904,
+   "metadata": {
+    "request": "m008_choice_27",
+    "dtype": "bfloat16",
+    "mode": "served",
+    "prefix_rows": "[0, 1, 13, 25, 38, 50, 61, 62]",
+    "model": "elephant-1-nvfp4-mlp",
+    "nvfp4": "true"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      63
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      407
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "nvfp4_sequential",
+    "model": "elephant-1-nvfp4-mlp",
+    "dtype": "bfloat16",
+    "nvfp4": true,
+    "path": "sequential",
+    "head_dtype": "float32",
+    "engine_fork_mode": "sequential",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "nvfp4_sequential/hidden_m010_choice_255.safetensors": {
+   "sha256": "e1d6beec6b638cb0073da8c91c3cb72f5d0c2b6bccb986456a700b60e09feb59",
+   "bytes": 915544,
+   "metadata": {
+    "request": "m010_choice_255",
+    "prefix_rows": "[0, 1, 13, 26, 40, 53, 64, 65]",
+    "mode": "served",
+    "dtype": "bfloat16",
+    "model": "elephant-1-nvfp4-mlp",
+    "nvfp4": "true"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      66
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      3608
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "nvfp4_sequential",
+    "model": "elephant-1-nvfp4-mlp",
+    "dtype": "bfloat16",
+    "nvfp4": true,
+    "path": "sequential",
+    "head_dtype": "float32",
+    "engine_fork_mode": "sequential",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "nvfp4_sequential/hidden_m013_score_3.safetensors": {
+   "sha256": "5e0132555f248d5e4463a0a6c0293f6c792bb6a3111c8acc12d74f156c78e997",
+   "bytes": 887072,
+   "metadata": {
+    "model": "elephant-1-nvfp4-mlp",
+    "dtype": "bfloat16",
+    "prefix_rows": "[0, 1, 12, 23, 35, 46, 56, 57]",
+    "mode": "served",
+    "nvfp4": "true",
+    "request": "m013_score_3"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      58
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      59
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      1,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "nvfp4_sequential",
+    "model": "elephant-1-nvfp4-mlp",
+    "dtype": "bfloat16",
+    "nvfp4": true,
+    "path": "sequential",
+    "head_dtype": "float32",
+    "engine_fork_mode": "sequential",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "nvfp4_sequential/hidden_m019_state_json.safetensors": {
+   "sha256": "1d00f5056bc33bd82edee35a1d508f16cb31683c522b231d5249a884d8d4b6b2",
+   "bytes": 1085488,
+   "metadata": {
+    "model": "elephant-1-nvfp4-mlp",
+    "nvfp4": "true",
+    "mode": "served",
+    "request": "m019_state_json",
+    "prefix_rows": "[0, 1, 23, 45, 68, 90, 111, 112]",
+    "dtype": "bfloat16"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      113
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      72
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      79
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "nvfp4_sequential",
+    "model": "elephant-1-nvfp4-mlp",
+    "dtype": "bfloat16",
+    "nvfp4": true,
+    "path": "sequential",
+    "head_dtype": "float32",
+    "engine_fork_mode": "sequential",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "nvfp4_sequential/hidden_m026_unicode_state.safetensors": {
+   "sha256": "f47f50570e9708699c7da5c4311493f34d176108a9d683b34276861ade6a1a4e",
+   "bytes": 1086232,
+   "metadata": {
+    "model": "elephant-1-nvfp4-mlp",
+    "prefix_rows": "[0, 1, 43, 86, 129, 172, 213, 214]",
+    "mode": "served",
+    "request": "m026_unicode_state",
+    "dtype": "bfloat16",
+    "nvfp4": "true"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      215
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      72
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      69
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "nvfp4_sequential",
+    "model": "elephant-1-nvfp4-mlp",
+    "dtype": "bfloat16",
+    "nvfp4": true,
+    "path": "sequential",
+    "head_dtype": "float32",
+    "engine_fork_mode": "sequential",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "nvfp4_sequential/hidden_m037_len1024_debias1.safetensors": {
+   "sha256": "b0697394d20df8c414640f70ea5f7396c732796702ca9e7aba1ea34efd280900",
+   "bytes": 1093368,
+   "metadata": {
+    "prefix_rows": "[0, 1, 214, 428, 641, 855, 1067, 1068]",
+    "dtype": "bfloat16",
+    "request": "m037_len1024_debias1",
+    "nvfp4": "true",
+    "model": "elephant-1-nvfp4-mlp",
+    "mode": "served"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      1069
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      109
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      69
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "nvfp4_sequential",
+    "model": "elephant-1-nvfp4-mlp",
+    "dtype": "bfloat16",
+    "nvfp4": true,
+    "path": "sequential",
+    "head_dtype": "float32",
+    "engine_fork_mode": "sequential",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "nvfp4_sequential/hidden_m040_len4096_debias1.safetensors": {
+   "sha256": "cac7f1ae172e1d319dc1a7b8fe0661dae738219728d642c87dca9d5b87400181",
+   "bytes": 1117592,
+   "metadata": {
+    "request": "m040_len4096_debias1",
+    "dtype": "bfloat16",
+    "nvfp4": "true",
+    "mode": "served",
+    "prefix_rows": "[0, 1, 828, 1656, 2485, 3313, 4139, 4140]",
+    "model": "elephant-1-nvfp4-mlp"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      4141
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      74
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      59
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "nvfp4_sequential",
+    "model": "elephant-1-nvfp4-mlp",
+    "dtype": "bfloat16",
+    "nvfp4": true,
+    "path": "sequential",
+    "head_dtype": "float32",
+    "engine_fork_mode": "sequential",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  },
+  "nvfp4_sequential/hidden_m044_len16000_debias1.safetensors": {
+   "sha256": "1de1cceda62ed65b4ae5f8e0cb53c27cc99cecd429d6352b608f5e3359c1c50c",
+   "bytes": 1213224,
+   "metadata": {
+    "mode": "served",
+    "nvfp4": "true",
+    "request": "m044_len16000_debias1",
+    "dtype": "bfloat16",
+    "model": "elephant-1-nvfp4-mlp",
+    "prefix_rows": "[0, 1, 3209, 6418, 9626, 12835, 16042, 16043]"
+   },
+   "tensors": {
+    "ids/prefix": {
+     "dtype": "I64",
+     "shape": [
+      16044
+     ]
+    },
+    "ids/suffix0": {
+     "dtype": "I64",
+     "shape": [
+      60
+     ]
+    },
+    "ids/suffix1": {
+     "dtype": "I64",
+     "shape": [
+      102
+     ]
+    },
+    "ids/suffix2": {
+     "dtype": "I64",
+     "shape": [
+      79
+     ]
+    },
+    "layer0/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer0/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer15/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer15/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer3/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer3/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer31/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer31/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "layer4/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "layer4/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "norm/answer": {
+     "dtype": "F32",
+     "shape": [
+      3,
+      4096
+     ]
+    },
+    "norm/prefix": {
+     "dtype": "F32",
+     "shape": [
+      8,
+      4096
+     ]
+    },
+    "prefix_rows": {
+     "dtype": "I64",
+     "shape": [
+      8
+     ]
+    }
+   },
+   "run": {
+    "name": "nvfp4_sequential",
+    "model": "elephant-1-nvfp4-mlp",
+    "dtype": "bfloat16",
+    "nvfp4": true,
+    "path": "sequential",
+    "head_dtype": "float32",
+    "engine_fork_mode": "sequential",
+    "corpus": "reference/corpus_model/requests.jsonl",
+    "corpus_sha256": "ea00456c94112d3e83fbde9eb51726ab198c3648a3885ab21685e5e2906ac0ba"
+   }
+  }
+ }
+}
