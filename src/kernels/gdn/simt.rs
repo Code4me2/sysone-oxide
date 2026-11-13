@@ -98,11 +98,14 @@ pub unsafe fn chunk_tinv(plan: &GdnPlan, conv: DView<bf16>, scratch: &GdnScratch
 
 
 /// The SIMT chunked gated delta rule, as four operations like the cuTile scan (`gdn_chunk_scan`): `Tinv` per
-/// (chunk, v-head) into `scratch.tinv`, an empty operation in the slot of the cuTile WY launch, then the fused
-/// scan for prefixes (writing their final states into `scratch.state`) and for suffixes (from their parent's
-/// state). q, k and v are read from the conv output `conv` (`[T, 8192]` bf16: q | k | v) and normalised in-kernel;
-/// g and beta from `scratch`. Writes bf16 `[T, 4096]` into `out`. `scratch.q`, `scratch.k` and the WY buffers are
-/// not used.
+/// (chunk, v-head) into `scratch.tinv`; in the slot of the cuTile WY launch, a guard that writes NaN over the output
+/// of segments whose state slot is past `scratch.slots` (only possible in a graph replayed after
+/// `GdnPlan::update` with a scratch not sized by `GdnScratch::for_plan`; the check below covers direct launches);
+/// then the fused scan for prefixes (writing their final states into `scratch.state`) and for suffixes (from their
+/// parent's state).
+/// q, k and v are read from the conv output `conv` (`[T, 8192]` bf16: q | k | v) and normalised in-kernel; g and
+/// beta from `scratch`. Writes bf16 `[T, 4096]` into `out`. `scratch.q`, `scratch.k` and the WY buffers are not
+/// used.
 ///
 /// # Safety
 /// Every buffer must stay alive and unaliased by other writers until the returned operations complete.
@@ -116,7 +119,15 @@ pub unsafe fn chunk_scan(plan: &GdnPlan, conv: DView<bf16>, scratch: &GdnScratch
     check_pairs("scan output", &out)?;
     let mut ops = DeviceOpVec::with_capacity(4);
     ops.push(unsafe { chunk_tinv(plan, conv, scratch, &scratch.tinv)? });
-    ops.push(value(()).boxed());
+    ops.push(unsafe {
+        launch(
+            "gdn_simt_slot_guard",
+            (plan.max_segs as u32, 1, 1),
+            (256, 1, 1),
+            0,
+            &[vptr(&out), Arg::I32(out.row_stride as i32), ptr(&plan.segs), Arg::I32(plan.max_segs as i32), Arg::I32(scratch.slots as i32)],
+        )?
+    });
     for phase in [0i32, 1] {
         ops.push(unsafe {
             launch(

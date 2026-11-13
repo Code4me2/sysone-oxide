@@ -543,13 +543,25 @@ fn kernels_match_f64_references(backend: GdnBackend) {
             }),
         );
         // Prefix states (f32) per prefix, relative to that prefix's state rms. Envelope: transformers' own f32
-        // `torch_chunk_gated_delta_rule` (GPU, TF32 off) vs the f64 recurrence on these inputs reaches 1.1e-4 x rms
-        // (measured with the GDN_DUMP_DIR dump); the tolerance is 3e-4 x rms.
+        // `torch_chunk_gated_delta_rule` (GPU, TF32 off) vs the f64 recurrence on these inputs, per prefix
+        // (`reference/gdn_envelope.py` on the GDN_DUMP_DIR dump of this test; max abs error / state rms). The gate is
+        // twice the batch's worst envelope (prefix 4: 1.13e-4), i.e. 2.2e-4 x rms on every prefix; the ratio to
+        // transformers' error on the same prefix is printed as well (docs/G1.md, "Accuracy").
+        const TRANSFORMERS_STATE_ENVELOPE: [f64; 6] = [6.20e-6, 6.53e-6, 2.91e-5, 4.99e-6, 1.128e-4, 1.55e-5];
+        const STATE_TOL: f64 = 2.2e-4;
+        assert_eq!(states.len(), TRANSFORMERS_STATE_ENVELOPE.len(), "tree batch changed: re-measure the envelope");
         for (slot, st) in states.iter().enumerate() {
             let rms = (st.iter().map(|x| x * x).sum::<f64>() / st.len() as f64).sqrt();
             let got = &run.state[slot * STATE_ELEMS..][..STATE_ELEMS];
             let name = format!("prefix {slot} final state (f32)");
-            check(&name.clone(), report(&name, got, st, "3e-4 * state rms", |_, _| 3e-4 * rms));
+            check(&name.clone(), report(&name, got, st, "2.2e-4 * state rms", |_, _| STATE_TOL * rms));
+            let err = got.iter().zip(st).map(|(g, r)| (g - r).abs()).fold(0f64, f64::max) / rms;
+            let env = TRANSFORMERS_STATE_ENVELOPE[slot];
+            println!(
+                "[{}] prefix {slot}: state error {err:.2e} x rms; transformers f32 {env:.2e} x rms ({:.2}x it); gate {STATE_TOL:.1e}",
+                backend.name(),
+                err / env
+            );
         }
 
         // 4. gated RMSNorm from the GPU scan output and z.
@@ -843,6 +855,54 @@ fn graph_replay(backend: GdnBackend) {
         println!("[{}] graph replay {step} ({n} tokens): bit-identical to eager: {same}", backend.name());
         assert!(same, "[{}] graph replay {step} differs from the eager run", backend.name());
     }
+}
+
+/// A replayed SIMT mixer whose plan was updated to more prefixes than its scratch has state slots (a scratch not
+/// sized with `GdnScratch::for_plan`) must not leave the previous output in place: the scan writes NaN over the
+/// segments without a slot. The launch-time check (`num_prefixes <= slots`) cannot see a replay.
+#[test]
+fn simt_replay_past_slot_capacity_is_nan() {
+    if !backends().contains(&GdnBackend::Simt) {
+        return;
+    }
+    on_test_thread(|| {
+        use cuda_async::cuda_graph::CudaGraph;
+        let ctx = Context::new(0).unwrap();
+        let s = ctx.new_stream().unwrap();
+        let mut rng = Rng(0x0dd5eed0dd5eed00);
+        let w = weights(&mut rng);
+        let gw = GpuWeights::new(&w, &s);
+        let mut one = DecisionBatch::default();
+        one.push_request(&[1; 100], &[(&[2; 20], 2)]).unwrap();
+        let mut two = DecisionBatch::default();
+        two.push_request(&[3; 70], &[(&[4; 10], 2)]).unwrap();
+        two.push_request(&[5; 30], &[(&[6; 10], 2)]).unwrap();
+        let t = 120;
+        let caps = (GdnTables::chunk_capacity(t, 4), 4);
+        let mut plan = GdnPlan::with_capacity(&one.segments, t, caps.0, caps.1, &s).unwrap();
+        // One slot: enough for `one` (the launch-time check passes), not for `two`.
+        let scratch = GdnScratch::for_backend(GdnBackend::Simt, t, 1, &s).unwrap();
+        let input = upload(to_bf16(&projection(t, &mut rng)), &[t, PROJ_COLS], &s);
+        let out = api::zeros::<bf16>(&[t, VALUE_DIM]).sync_on(&s).unwrap();
+        // SAFETY: input, out, the plan tables and the scratch outlive the graph.
+        let ops = unsafe {
+            gdn_mixer_with(&plan, DView::of(&input).unwrap(), &gw.view(), EPS, &scratch, DView::of(&out).unwrap(), &GdnBackend::Simt.options())
+                .unwrap()
+        };
+        let graph = CudaGraph::capture(s.clone(), ops).unwrap();
+        graph.launch().sync_on(graph.stream()).unwrap();
+        let first = bf16_to_f64(&download(&scratch.core, &s));
+        assert!(first.iter().all(|x| x.is_finite()), "in-capacity replay produced non-finite output");
+        plan.update(&two.segments, &s).unwrap();
+        graph.launch().sync_on(graph.stream()).unwrap();
+        let core = bf16_to_f64(&download(&scratch.core, &s));
+        // Second request: prefix rows 80..110 and its suffix 110..120 use slot 1, which does not exist.
+        let row_nan = |r: usize| core[r * VALUE_DIM..][..VALUE_DIM].iter().all(|x| x.is_nan());
+        let row_finite = |r: usize| core[r * VALUE_DIM..][..VALUE_DIM].iter().all(|x| x.is_finite());
+        assert!((0..80).all(row_finite), "the request with a state slot must still be computed");
+        assert!((80..120).all(row_nan), "segments past the slot capacity must be NaN, not stale output");
+        println!("[simt] replay past the slot capacity: rows of the slotless request are NaN, the others finite");
+    });
 }
 
 /// The scan's tuning options (block sizes, warps, inverse blocking) must not change its accuracy: each variant

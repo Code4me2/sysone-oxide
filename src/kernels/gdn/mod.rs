@@ -255,6 +255,11 @@ impl GdnPlan {
     }
 
     /// Rewrite the tables in place for another batch with the same capacities (for graph replay).
+    ///
+    /// The launchers check `num_prefixes <= scratch.slots` when they build their operations, which a replayed graph
+    /// does not repeat: size the scratch of a captured mixer with [`GdnScratch::for_plan`] (one slot per segment the
+    /// plan can hold). If a replay still sees more prefixes than slots, the SIMT path writes NaN over the affected
+    /// segments' output (it never leaves stale output); the cuTile scan does not detect it.
     pub fn update(&mut self, segments: &[Segment], stream: &Arc<Stream>) -> Result<()> {
         let t = GdnTables::build(segments, self.tokens, self.max_chunks, self.max_segs)?;
         let chunks = api::copy_host_vec_to_device(&Arc::new(t.chunks)).sync_on(stream)?;

@@ -263,7 +263,7 @@ GEMM runs on cuBLAS with f32 output. `allowed_token_mass` is not implemented in 
 | `seg_attn_gqa_d256` | Tile | Adapt `fmha_prefill_gqa`: non-causal, segment table, D=256 (check smem; may need BN=32/64), gate epilogue. |
 | `tree_conv1d_silu` | SIMT | Gather via the parent table; 8192 channels, kernel 4. |
 | `gdn_prep` | Tile | split/repeat/l2norm/softplus/sigmoid, f32 out. |
-| `gdn_chunk_scan` | Tile, or SIMT (`GdnOptions::backend`) | WY/UT form as in `torch_chunk_gated_delta_rule`: per 64-chunk, `A = (k_β kᵀ)⊙decay`, unit-lower-triangular solve, then the inter-chunk scan. Varlen over segments, initial state from the parent. Tile (P1): 3xTF32 matmuls, blocked chunk inverse, scan recomputing the WY operands (Tinv and P stored). SIMT (G1, cuda-oxide, `kernels-simt/`, docs/G1.md): `gdn_simt_tinv` (exact bf16 Gram + blocked 16×16 fp32 solve, only Tinv stored) and `gdn_simt_scan` (recomputes every WY operand and P per chunk; `mma.sync` bf16 with raw bf16 q/k rows as the exact operand, fp32 operands split hi+lo; state transposed in registers), plus `gdn_simt_gates` (g, beta; q, k normalised in the scan). Tile stays the default until the end-to-end gate (§9.2) has run with SIMT. |
+| `gdn_chunk_scan` | Tile, or SIMT (`GdnOptions::backend`) | WY/UT form as in `torch_chunk_gated_delta_rule`: per 64-chunk, `A = (k_β kᵀ)⊙decay`, unit-lower-triangular solve, then the inter-chunk scan. Varlen over segments, initial state from the parent. Tile (P1): 3xTF32 matmuls, blocked chunk inverse, scan recomputing the WY operands (Tinv and P stored). SIMT (G1, cuda-oxide, `kernels-simt/`, docs/G1.md): `gdn_simt_tinv` (exact bf16 Gram + blocked 16×16 fp32 solve, only Tinv stored) and `gdn_simt_scan` (recomputes every WY operand and P per chunk; `mma.sync` bf16 with raw bf16 q/k rows as the exact operand, fp32 operands split three ways in the products that feed the state and two ways in the output-only ones; state transposed in registers), plus `gdn_simt_gates` (g, beta; q, k normalised in the scan). ~2.7× faster than P1's Tile mixer (0.80 / 3.05 / 11.5 ms against 2.36 / 8.28 / 32.3 ms per layer at 1k / 4k / 16k) and more precise on every prefix of the test batch; Tile stays the default until the end-to-end gate (§9.2) has run with SIMT. |
 | `gated_rmsnorm` | Tile | Per 128-head; plain `w`; silu(z). |
 | `gather_rows`, slot readout GEMM | Tile | Small. |
 
@@ -453,7 +453,8 @@ pub trait DecisionEngine: Send {
   - S1 **server fixes** from the W5 review.
   - *Update:* Phase 2a is done; see `docs/PHASE2A.md`.
   - G1 **GDN in cuda-oxide** (docs/G1.md, after Phase 2a): SIMT WY/solve and chunk scan, `GdnBackend::{Tile, Simt}`;
-    opt-in until the end-to-end gate (numbers after the merge with P1: docs/G1.md).
+    mixer 2.36 / 8.28 / 32.3 ms (P1 Tile) -> 0.80 / 3.05 / 11.5 ms per layer at 1k / 4k / 16k (~2.7×;
+    ~5× against Phase 1). Opt-in until the end-to-end gate; the 16k target (~10 ms) is not met yet.
 - Phase 2b: NVFP4 end to end; fuse the GDN conv into the SIMT kernels (G1's next step); precision choices from the end-to-end
   gate; GEMM autotune and fusions guided by I1's profile.
 - Prefix cache (§8).

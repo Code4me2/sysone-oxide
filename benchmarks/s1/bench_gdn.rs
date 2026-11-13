@@ -111,8 +111,8 @@ struct Args {
     #[arg(long, default_value_t = 10)]
     iters: usize,
     /// Delta-rule implementation: `tile` (cuTile) or `simt` (cuda-oxide, docs/G1.md). For `simt` the precision,
-    /// block and warp options, `--w3a` and `--f32-qk` do not apply, and the `wy` column is empty (the WY operands
-    /// are recomputed inside the scan).
+    /// block and warp options, `--w3a` and `--f32-qk` do not apply, and the `wy` column times the slot guard (the WY
+    /// operands are recomputed inside the scan).
     #[arg(long, default_value = "tile")]
     backend: GdnBackend,
     /// Scan precision: fp32 (3xTF32, default), tf32, bf16, mixed (3xTF32 state, TF32 output).
@@ -251,7 +251,7 @@ fn main() -> Result<()> {
             if w3a {
                 "W3a scan (tinv, wy, scan_p, scan_s)".to_string()
             } else if simt_backend {
-                "SIMT (cuda-oxide) scan: tinv, wy unused, scan_p, scan_s; prep = SIMT gates".to_string()
+                "SIMT (cuda-oxide) scan: tinv, wy = slot guard, scan_p, scan_s; prep = SIMT gates".to_string()
             } else {
                 format!("{opts:?} (tinv = Tinv + p, wy unused; q, k {})", if f32_qk { "stored f32" } else { "from the bf16 conv" })
             }

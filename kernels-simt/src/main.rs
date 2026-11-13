@@ -14,9 +14,11 @@
 //! - q and k are the conv output (bf16, exact) times a per-row scale (`rsqrt(sum x^2 + 1e-6)`, times 128^-0.5 for
 //!   q), so `k k^T`, `q k^T`, `k S` and `q S` take the raw bf16 rows as one exact operand and apply the scales in
 //!   fp32 afterwards;
-//! - fp32 operands (the state S, Tinv, P, the WY residuals) are split `x = hi + lo` into two bf16 numbers
-//!   (relative residual <= 2^-17); products with one exact operand use 2 MMAs (hi, lo), fp32 x fp32 products 3
-//!   (hi hi + hi lo + lo hi);
+//! - fp32 operands are split into bf16 parts. The products that feed the recurrent state (`k S`, `Tinv R` with
+//!   `R = beta (v - e^cum k S)`, and `k^T Z` of the state update) split them three ways, `x = hi + mid + lo`
+//!   (relative residual <= 2^-27, i.e. fp32 grade): 3 MMAs with one exact operand, 6 for fp32 x fp32 (every term
+//!   down to 2^-18 relative). The output-only products (`q S`, `P v_new`) split two ways, `x = hi + lo` (residual
+//!   <= 2^-18): 2 and 3 MMAs. Output errors do not compound across chunks; state errors do (docs/G1.md, accuracy);
 //! - the 64x64 unit-lower-triangular inverse is a blocked (16x16) forward substitution in fp32 SIMT.
 //!
 //! # Fragment layouts (PTX `mma.m16n8k16.row.col`, lane = 4 g + t)
@@ -45,6 +47,8 @@ const K_OFF: usize = 2048;
 const V_OFF: usize = 4096;
 const L2_EPS: f32 = 1e-6;
 const Q_SCALE: f32 = 0.088_388_35; // 128^-0.5
+/// Two bf16 NaNs, written over a segment's output when its state slot is out of range (see `gdn_simt_scan`).
+const NAN2: u32 = 0x7fc0_7fc0;
 
 /// Full unrolling with a constant index per copy (cuda-oxide's `opt -O2` does not unroll loops around the
 /// `mma.sync` inline asm, and a register array indexed by a loop variable is demoted to local memory).
@@ -67,6 +71,24 @@ fn split(x: f32) -> (u32, u32) {
     let h = bf16_rne(x);
     let l = bf16_rne(x - f32::from_bits(h << 16));
     (h, l)
+}
+
+/// `x = hi + mid + lo` with hi, mid, lo bf16 (relative residual <= 2^-27, below fp32's rounding).
+#[inline(always)]
+fn split3(x: f32) -> (u32, u32, u32) {
+    let h = bf16_rne(x);
+    let r = x - f32::from_bits(h << 16);
+    let m = bf16_rne(r);
+    let l = bf16_rne(r - f32::from_bits(m << 16));
+    (h, m, l)
+}
+
+/// Pack two f32 as bf16x2 split three ways: (hi pair, mid pair, lo pair).
+#[inline(always)]
+fn split3x2(x0: f32, x1: f32) -> (u32, u32, u32) {
+    let (h0, m0, l0) = split3(x0);
+    let (h1, m1, l1) = split3(x1);
+    (h0 | (h1 << 16), m0 | (m1 << 16), l0 | (l1 << 16))
 }
 
 /// Pack two f32 as bf16x2 (lo in bits 0..16) split into (hi pair, lo pair).
@@ -177,6 +199,32 @@ mod kernels {
             *g.add(e) = neg_a * sp;
             let sig = 1.0 / (1.0 + (-bv).exp());
             *beta.add(e) = f32::from_bits(bf16_rne(sig) << 16);
+        }
+    }
+
+    /// Writes NaN over the scan output (`[T, 4096]` bf16, row stride `out_stride`) of every segment whose state
+    /// slot is `>= num_slots`, which `gdn_simt_scan` skips. The host checks the slot count when it builds the
+    /// launches, but a CUDA graph replayed after `GdnPlan::update` does not repeat that check; this makes such a
+    /// replay fail loudly instead of leaving the previous output in place. Grid `(max_segs, 1, 1)`, block 256;
+    /// segs: `[max_segs, 4]` (start, len, phase, slot).
+    #[kernel]
+    pub unsafe fn gdn_simt_slot_guard(out: *mut u32, out_stride: i32, segs: *const i32, max_segs: i32, num_slots: i32) {
+        let sidx = thread::blockIdx_x() as usize;
+        if sidx >= max_segs as usize {
+            return;
+        }
+        let start = unsafe { *segs.add(sidx * 4) } as usize;
+        let len = unsafe { *segs.add(sidx * 4 + 1) } as usize;
+        let phase = unsafe { *segs.add(sidx * 4 + 2) };
+        let slot = unsafe { *segs.add(sidx * 4 + 3) };
+        if phase < 0 || len == 0 || slot < num_slots {
+            return;
+        }
+        let words = out_stride as usize / 2;
+        let mut e = thread::threadIdx_x() as usize;
+        while e < len * 2048 {
+            unsafe { *out.add((start + e / 2048) * words + (e & 2047)) = NAN2 };
+            e += 256;
         }
     }
 
@@ -408,6 +456,8 @@ mod kernels {
         let seg_len = unsafe { *segs.add(sidx * 4 + 1) } as usize;
         let seg_phase = unsafe { *segs.add(sidx * 4 + 2) };
         let slot = unsafe { *segs.add(sidx * 4 + 3) } as usize;
+        // A slot past the scratch's capacity is skipped here; `gdn_simt_slot_guard` (launched before the scans)
+        // has already written NaN over such a segment's output.
         if seg_phase != phase || seg_len == 0 || slot >= num_slots as usize {
             return;
         }
@@ -583,18 +633,20 @@ mod kernels {
             }
 
             // (D2) X^T = S^T k^T over the 64 rows (8 n-tiles of tokens).
+            // S split three ways (k is exact): this product feeds the recursion through v_new.
             let mut xa = [[0f32; 4]; 8];
             unroll!(ks in 0..8 {
-                let (h0, l0) = split2(sacc[2 * ks][0], sacc[2 * ks][1]);
-                let (h1, l1) = split2(sacc[2 * ks][2], sacc[2 * ks][3]);
-                let (h2, l2) = split2(sacc[2 * ks + 1][0], sacc[2 * ks + 1][1]);
-                let (h3, l3) = split2(sacc[2 * ks + 1][2], sacc[2 * ks + 1][3]);
+                let (h0, m0, l0) = split3x2(sacc[2 * ks][0], sacc[2 * ks][1]);
+                let (h1, m1, l1) = split3x2(sacc[2 * ks][2], sacc[2 * ks][3]);
+                let (h2, m2, l2) = split3x2(sacc[2 * ks + 1][0], sacc[2 * ks + 1][1]);
+                let (h3, m3, l3) = split3x2(sacc[2 * ks + 1][2], sacc[2 * ks + 1][3]);
                 let ah = [h0, h1, h2, h3];
+                let am = [m0, m1, m2, m3];
                 let al = [l0, l1, l2, l3];
                 unroll!(n in 0..8 {
                     let row = 8 * n + gq;
                     let bk = unsafe { [*kb.add(row * KW + ks * 8 + tq), *kb.add(row * KW + ks * 8 + 4 + tq)] };
-                    xa[n] = mma(mma(xa[n], ah, bk), al, bk);
+                    xa[n] = mma(mma(mma(xa[n], al, bk), am, bk), ah, bk);
                 });
             });
             thread::sync_threads();
@@ -614,11 +666,12 @@ mod kernels {
             let trow = unsafe { tinv.add(r0 * 2048 + h * 64) };
             let mut vn = [[0f32; 4]; 8];
             unroll!(ks in 0..4 {
-                let (h0, l0) = split2(xa[2 * ks][0], xa[2 * ks][1]);
-                let (h1, l1) = split2(xa[2 * ks][2], xa[2 * ks][3]);
-                let (h2, l2) = split2(xa[2 * ks + 1][0], xa[2 * ks + 1][1]);
-                let (h3, l3) = split2(xa[2 * ks + 1][2], xa[2 * ks + 1][3]);
+                let (h0, m0, l0) = split3x2(xa[2 * ks][0], xa[2 * ks][1]);
+                let (h1, m1, l1) = split3x2(xa[2 * ks][2], xa[2 * ks][3]);
+                let (h2, m2, l2) = split3x2(xa[2 * ks + 1][0], xa[2 * ks + 1][1]);
+                let (h3, m3, l3) = split3x2(xa[2 * ks + 1][2], xa[2 * ks + 1][3]);
                 let ah = [h0, h1, h2, h3];
+                let am = [m0, m1, m2, m3];
                 let al = [l0, l1, l2, l3];
                 unroll!(n in 0..8 {
                     if 16 * ks <= 8 * n + 7 {
@@ -631,11 +684,13 @@ mod kernels {
                         } else {
                             (0.0, 0.0, 0.0, 0.0)
                         };
-                        let (b0h, b0l) = split2(t0, t1);
-                        let (b1h, b1l) = split2(t8, t9);
+                        let (b0h, b0m, b0l) = split3x2(t0, t1);
+                        let (b1h, b1m, b1l) = split3x2(t8, t9);
                         let bh = [b0h, b1h];
+                        let bm = [b0m, b1m];
                         let bl = [b0l, b1l];
-                        vn[n] = mma(mma(mma(vn[n], ah, bh), ah, bl), al, bh);
+                        // Every term down to 2^-18 relative, smallest first (the dropped ones are <= 2^-26).
+                        vn[n] = mma(mma(mma(mma(mma(mma(vn[n], am, bm), al, bh), ah, bl), am, bh), ah, bm), ah, bh);
                     }
                 });
             });
@@ -703,11 +758,12 @@ mod kernels {
                     let i = 8 * n + 2 * tq + (r & 1);
                     vn[n][r] * unsafe { *sc.add(384 + i) }
                 };
-                let (h0, l0) = split2(z(2 * ks, 0), z(2 * ks, 1));
-                let (h1, l1) = split2(z(2 * ks, 2), z(2 * ks, 3));
-                let (h2, l2) = split2(z(2 * ks + 1, 0), z(2 * ks + 1, 1));
-                let (h3, l3) = split2(z(2 * ks + 1, 2), z(2 * ks + 1, 3));
+                let (h0, m0, l0) = split3x2(z(2 * ks, 0), z(2 * ks, 1));
+                let (h1, m1, l1) = split3x2(z(2 * ks, 2), z(2 * ks, 3));
+                let (h2, m2, l2) = split3x2(z(2 * ks + 1, 0), z(2 * ks + 1, 1));
+                let (h3, m3, l3) = split3x2(z(2 * ks + 1, 2), z(2 * ks + 1, 3));
                 let ah = [h0, h1, h2, h3];
+                let am = [m0, m1, m2, m3];
                 let al = [l0, l1, l2, l3];
                 let i0 = 16 * ks + 2 * tq;
                 unroll!(nf in 0..16 {
@@ -718,7 +774,7 @@ mod kernels {
                             (*kbh.add((i0 + 8) * 2 * KW + f) as u32) | ((*kbh.add((i0 + 9) * 2 * KW + f) as u32) << 16),
                         ]
                     };
-                    sacc[nf] = mma(mma(sacc[nf], ah, b), al, b);
+                    sacc[nf] = mma(mma(mma(sacc[nf], al, b), am, b), ah, b);
                 });
             });
             thread::sync_threads();
