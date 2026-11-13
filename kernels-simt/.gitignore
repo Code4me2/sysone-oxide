@@ -6,5 +6,6 @@ target/
 *.target
 *.options
 *.kernels
-# The probe's PTX is a build product; only the kernel crate's PTX (gdn_simt.ptx) is checked in.
-mma_check/*.ptx
+# Build products of `cargo oxide`; only the copies under artifacts/ (with their manifests) are checked in.
+*.ptx
+!artifacts/*.ptx

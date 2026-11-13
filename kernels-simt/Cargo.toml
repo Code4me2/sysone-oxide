@@ -1,0 +1,17 @@
+[package]
+name = "gdn_simt"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "cuda-oxide SIMT device kernels for sysone's GatedDeltaNet mixer (PTX loaded by sysone at run time)"
+
+# Standalone: built only with `cargo oxide` on the toolchain in rust-toolchain.toml (see build.sh), never by the
+# sysone host build. `mma_check/` is a separate standalone probe crate.
+[workspace]
+exclude = ["mma_check"]
+
+[dependencies]
+cuda-device = { path = "../../cuda-rust/cuda-oxide/crates/cuda-device" }
+cuda-host = { path = "../../cuda-rust/cuda-oxide/crates/cuda-host" }
+cuda-core = { path = "../../cuda-rust/cuda-core" }

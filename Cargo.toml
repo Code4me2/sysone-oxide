@@ -49,6 +49,10 @@ cudarc = { version = "0.19.2", default-features = false, features = ["std", "cub
 rayon = "1.12.0"
 memmap2 = "0.9.12"
 
+# build.rs embeds the checked-in cuda-oxide PTX of kernels-simt/ after checking its hashes (docs/G1.md).
+[build-dependencies]
+sha2 = "0.10"
+
 [[bin]]
 name = "sysone"
 path = "src/main.rs"
