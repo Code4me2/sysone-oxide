@@ -9,7 +9,7 @@
 //! let first = plan.push_into(&mut batch)?;                   // contract::DecisionBatch
 //! ... engine.run(&batch) → SlotLogits ...
 //! let out = frontend.assemble(&req, &plan, |i| logits.row(first + i, plan.branches[i].n_slots()), None)?;
-//! let resp = frontend.response(&req, &plan, out.answers, served_name);
+//! let body = frontend.response(&plan, out.answers, served_name).to_json(Some(frontend.meta(&plan, mode).to_json()));
 //! ```
 //! `Frontend` is `Sync` and holds no locks of its own, so any number of CPU workers can share one.
 
@@ -133,5 +133,15 @@ impl Frontend {
             prefix_tokens: plan.prefix_ids.len() as u64,
             branches: plan.branches.len() as u64,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn frontend_is_shareable_across_worker_threads() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<super::Frontend>();
+        assert_send_sync::<super::Plan>();
     }
 }

@@ -23,6 +23,9 @@ minijinja = { version = "2.24", features = ["json", "loop_controls"] }
 minijinja-contrib = { version = "2.24", features = ["pycompat"] }
 sha2 = "0.10"
 unicode-general-category = "1"
+# Shortest round-trip float digits with ties to even, as Python's repr(float) picks them (Rust's `{:e}` breaks
+# ties upward).
+ryu = "1"
 
 # cuda-rust, by path (DESIGN.md §1). Versions are exact-pinned upstream.
 cuda-core = { path = "../cuda-rust/cuda-core" }

@@ -178,6 +178,7 @@ fn frontend_matches_render_goldens() {
 
     let mut rep = Report::default();
     let mut cases = 0;
+    let mut timings: Vec<(f64, usize)> = Vec::new();
     let t0 = std::time::Instant::now();
     let files = prov.get("files").unwrap().as_object().unwrap();
     for (name, _) in files {
@@ -222,11 +223,13 @@ fn frontend_matches_render_goldens() {
                 }
             };
             let r = rec.get("render").unwrap();
+            let t = std::time::Instant::now();
             let mut plan = match fe.plan_unchecked(&req, debias) {
                 Ok(p) => p,
                 Err(e) => panic!("{id}: planning failed: {e}"),
             };
             let checked = fe.check(&mut plan);
+            timings.push((t.elapsed().as_secs_f64() * 1e3, plan.total));
             compare_render(&mut rep, id, &req, &plan, &checked, r);
             match &checked {
                 Ok(()) => {
@@ -247,6 +250,14 @@ fn frontend_matches_render_goldens() {
             }
         }
     }
+    timings.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let pct = |q: f64| timings[((timings.len() - 1) as f64 * q) as usize].0;
+    let (ms, toks): (f64, usize) = timings.iter().fold((0.0, 0), |(a, b), (m, t)| (a + m, b + t));
+    println!(
+        "plan time per request (render + template + tokenize + split + checks, 1 thread): p50 {:.2} ms, p99 {:.2} ms, \
+         max {:.2} ms; {:.0} k tokens/s over {} requests",
+        pct(0.5), pct(0.99), timings.last().unwrap().0, toks as f64 / ms, timings.len()
+    );
     let total_checks: usize = rep.checked.values().sum();
     println!("frontend gate: {cases} cases, {total_checks} field checks in {:.1}s", t0.elapsed().as_secs_f64());
     for (field, n) in &rep.checked {
@@ -260,4 +271,43 @@ fn frontend_matches_render_goldens() {
     }
     assert_eq!(cases as u64, int(prov.get("counts").unwrap().get("cases")).unwrap(), "case count");
     assert!(rep.failed.is_empty(), "{} fields mismatched", rep.failed.len());
+}
+
+/// The two shortcuts the frontend takes against qev's literal algorithm, checked on adversarial states: the chat
+/// template is rendered once per request (every branch prompt is head + suffix + tail), and the head is tokenized
+/// once (a branch's tokens are encode(head) ++ encode(suffix + tail)).
+#[test]
+fn per_request_shortcuts_equal_full_prompt_rendering_and_tokenization() {
+    use sysone::frontend::render::{SYSTEM_PROMPT, state_block};
+    let fe = Frontend::load(&model_dir(), Limits::default()).unwrap();
+    let states = [
+        "", " ", "\n", "\n\n\n", "\t", "\r", "\r\n", "a\u{301}", "\u{301}", "x>", ">>\n", "</state>", "<|im_end|>",
+        "<|im_start|>assistant\n", "end with space ", "\u{a0}", "\u{2028}", "\u{200b}", "😀", "👨‍👩‍👧", "日本",
+        "QEV_PREFIX_MARK", "a QEV_PREFIX_MARK b", "\u{1c}", "'s", "1234", "Question:", "\n\nQuestion: x\n\n",
+    ];
+    let bodies = [
+        r#"{"type": "noul"}"#,
+        r#"{"type": "choice", "instructions": "́ starts with a mark", "criteria": {"a": " x ", "b": null, "́": "y"}}"#,
+        r#"{"type": "score", "criteria": ["", {"k": [1.5, null]}, "  \n"]}"#,
+    ];
+    let mut n = 0;
+    for st in states {
+        for qb in bodies {
+            let state = Json::str(st).dumps_compact().unwrap();
+            let body = format!(r#"{{"state": {state}, "questions": {{"q": {qb}, "r": {{"type": "noul"}}}}}}"#);
+            let req = SystemOneRequest::from_body(body.as_bytes()).unwrap();
+            let plan = fe.plan_unchecked(&req, 3).unwrap();
+            for (i, b) in plan.branches.iter().enumerate() {
+                let user = state_block(&req.state) + &b.suffix_text;
+                let prompt = fe.template.render(SYSTEM_PROMPT, &user).unwrap();
+                assert_eq!(plan.prompt(i), prompt, "state {st:?} branch {i}: template");
+                let full = fe.tokenizer.encode(&prompt).unwrap();
+                let mut split = plan.prefix_ids.clone();
+                split.extend_from_slice(&b.suffix_ids);
+                assert_eq!(split, full, "state {st:?} branch {i}: tokens");
+                n += 1;
+            }
+        }
+    }
+    println!("{n} branches checked");
 }

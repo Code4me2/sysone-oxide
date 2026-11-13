@@ -212,13 +212,20 @@ pub fn py_float_repr(x: f64) -> String {
     if x == 0.0 {
         return if x.is_sign_negative() { "-0.0".into() } else { "0.0".into() };
     }
-    // Rust's `{:e}` prints the shortest round-trip digits as d[.ddd]e<exp>.
-    let e = format!("{:e}", x.abs());
-    let (mant, exp) = e.split_once('e').expect("{:e} has an exponent");
+    // Shortest round-trip digits, ties to even (Python's dtoa mode 0). Rust's own `{:e}` breaks ties upward
+    // (150.05911254882812|3), so ryu is used and its output re-read as digits and a decimal point position.
+    let mut buf = ryu::Buffer::new();
+    let s = buf.format_finite(x.abs());
+    let (mant, exp) = s.split_once(['e', 'E']).unwrap_or((s, "0"));
     let exp: i32 = exp.parse().expect("exponent");
-    let digits: String = mant.chars().filter(|c| *c != '.').collect();
+    let point = mant.find('.').unwrap_or(mant.len()) as i32;
+    let all: String = mant.chars().filter(|c| *c != '.').collect();
+    let lead = all.len() - all.trim_start_matches('0').len();
+    let digits = all.trim_start_matches('0').trim_end_matches('0');
     let n = digits.len() as i32;
-    let decpt = exp + 1;
+    // value = 0.<digits> * 10^decpt
+    let decpt = point + exp - lead as i32;
+    let exp = decpt - 1;
     let mut out = String::with_capacity(24);
     if x < 0.0 {
         out.push('-');
@@ -235,9 +242,9 @@ pub fn py_float_repr(x: f64) -> String {
         for _ in 0..-decpt {
             out.push('0');
         }
-        out.push_str(&digits);
+        out.push_str(digits);
     } else if decpt >= n {
-        out.push_str(&digits);
+        out.push_str(digits);
         for _ in 0..decpt - n {
             out.push('0');
         }

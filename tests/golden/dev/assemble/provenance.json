@@ -1,0 +1,29 @@
+{
+  "generator": "reference/assemble_golden.py",
+  "seed": 20261113,
+  "served_model_name": "elephant-1",
+  "script_sha256": "d78112ea8707024cffdf09c3a19eef1303778e4dfa04d9c3a5f3563034d65893",
+  "shim_sha256": "38c4cbee009a4d46038d124190bdc087d55b2fb364b96718ac78dd1addb7d4e4",
+  "corpus_sha256": "32dc95092ab1af4e9cd7373b872fa6cf8928a404d7fcaae8ef6a7d5fa5c5f6e8",
+  "checkpoint": {
+    "tokenizer.json": "a5cd9732badce41de57e6efce8302930ded1c1188c5f81feb2bd6c24c4a1941f",
+    "chat_template.jinja": "a4aee8afcf2e0711942cf848899be66016f8d14a889ff9ede07bca099c28f715",
+    "config.json": "f26324589d15932e2742dbb13dbc7c561865ce4f80990af3b7dff05efe4dadab",
+    "readout.json": "96ea8a5c6ecfc30c20cdd369762db5997c5f4fb9821ce0a0318941343eb5e8ba"
+  },
+  "versions": {
+    "python": "3.12.3",
+    "machine": "aarch64",
+    "pydantic": "2.14.1",
+    "pydantic_core": "2.50.1",
+    "fastapi": "0.162.5",
+    "starlette": "1.10.0",
+    "transformers": "5.19.0",
+    "tokenizers": "0.23.3"
+  },
+  "files": {
+    "answers.jsonl": "5b51ce22edb72bd4ac72431e86ce94bd847db2522a4a9c74519f1bb65165e866",
+    "schema.jsonl": "98b1235640368272a1e2c01444be45b77b9520d836c607bbebc49913b747733e",
+    "pyfloat.json": "318ac899c9e65f262ea694421cc59ed5e7b92f2738aa1515b17c714ed6e17914"
+  }
+}

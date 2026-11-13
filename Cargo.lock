@@ -1462,6 +1462,7 @@ dependencies = [
  "half",
  "minijinja",
  "minijinja-contrib",
+ "ryu",
  "serde",
  "serde_json",
  "sha2",
