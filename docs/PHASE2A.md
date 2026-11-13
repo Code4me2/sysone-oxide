@@ -60,6 +60,45 @@ reference realizations showed (max 4.1 and 3.2); it passes only because of the d
 (+2.0%) is at the edge of the nulls (<= 1.6% on the full row set, up to 2.1% leaving one request out). Small, but
 systematic: worth locating (which requests/rows) before the next precision change.
 
+## Follow-up: the deep-layer asymmetry (A3, ws/a3-deep-layer)
+
+**Finding: no numeric deviation from the reference. The layer31/norm asymmetry is one unlucky bf16 realization,
+concentrated in one request; it is not systematic.** Nothing in the forward was changed. Evidence:
+
+1. *Where.* The per-request breakdown (now printed by `hidden_states_vs_fp32_truth`) puts most of the excess in one
+   request: rows > 1.5x worse / better at layer31 m040 (4k) 166/19, m044 (16k) 67/43, m026 22/7, m019 16/5, all
+   others balanced or better (m037 25/36); at norm m040 132/5 of 222/75. Dumping every layer (`hidden_dump_all_layers`,
+   `reference/deep_layer.py dump`) shows layers 0-15 balanced (median ln ratio -0.004..+0.002), and in m040 the
+   excess sits in prefix positions 128-1024 (224 sampled rows), appearing at layer 18 (mean ln ratio +0.11) and
+   growing to +0.41 at layer 31; positions 0-128 and 1024-4141 reach only +0.12 and +0.05. The bf16 null realizations show the
+   same region as sensitive (perm1 vs served on m040: 117/43 at layer31): bf16_served happens to be a lucky
+   realization there.
+2. *Per layer, same input (teacher forcing).* The reference model run with its residual stream replaced at layer L
+   by sysone's own stream after layer L-1 (`deep_layer.py forced`, bf16 and fp32, every layer, all prefix rows of
+   m019 and m037, every second row of m040), compared op group by op group with sysone's layer L on the same input:
+   sysone/reference local error ratios are 0.986-1.005 for every layer, mixer, post-mixer residual, MLP and layer
+   output (mean ln ratio of the layer delta -0.0001 on GDN layers, -0.002..+0.0003 on attention layers; on m040's
+   rows 128-1024 alone +0.0005). The GDN mixer output is bit-identical to the reference's on 52-95% of elements and
+   sysone's is slightly closer to fp32 (ratio 0.986-1.000); the attention mixer is 0.995-0.998 (slightly closer).
+   No row-coherent bias between sysone and the reference (coherence of sysone - reference ~1 for attention; for the
+   GDN mixer 1-7, matched by the reference's own coherence vs fp32, as expected from the shared recurrent state).
+3. *Other sysone realizations.* Packing a request with others leaves its rows bit-identical (no new realization).
+   Running sysone in three permuted hidden bases (`EngineOptions::debug_permute_hidden`, the same construction as the
+   reference's bf16_perm runs) gives three independent sysone realizations; all are on the good side of the
+   reference: layer31 median ln ratio -0.013 / -0.014 / -0.010, rows worse/better 176/190, 173/206, 176/185; norm
+   -0.012 / -0.011 / -0.010, 90/97, 73/90, 75/81 (all six taps pass every criterion with large margins). Over all 20
+   sysone x bf16 realization pairs the layer31 median ln ratio averages -0.004 (range -0.025..+0.032); bf16 x bf16
+   pairs span +-0.016 and sysone x sysone pairs +-0.040, so the original run's +0.020 is inside sysone's own
+   realization spread. On m040 the permuted sysone runs have geo-mean errors 7.82 / 7.53 / 7.66e-3 vs the bf16
+   realizations' 7.63-8.23e-3 (the original basis: 8.72e-3).
+
+Consequence for later precision work (NVFP4, faster GDN): a single run's deep-layer paired statistics carry a
+realization component of about +-0.02-0.04 in median ln ratio and a few hundred rows in the sign counts, mostly from
+one or two long requests; a precision change should be judged on several realizations (hidden-basis permutations
+of the candidate are a cheap way to get them) or with the design effect, not on one run's counts. The per-layer
+teacher-forced comparison (`reference/deep_layer.py forced` + `reference/a3/forced_stats.py`) is the sharper tool
+for checking that a kernel change keeps the reference's numerics.
+
 ## Forward speed (bench_forward, merged main, GPU lock held)
 
 | bucket | replay ms | tok/s | GEMM | GDN | norm + pointwise | attention |
@@ -72,7 +111,7 @@ chunk_tinv 165). GEMMs run at 93-101 TFLOP/s. JIT warm-up is still ~24 s on firs
 
 ## Open items
 
-1. Gate (a): redefined and passing (above); locate sysone's deep-layer worse/better asymmetry.
+1. Gate (a): redefined and passing (above); the deep-layer worse/better asymmetry is a realization effect, not a deviation (A3).
 2. GDN: G1 (cuda-oxide SIMT, tensor-core tf32) in progress; target ~0.25 s at 16k.
 3. Fuse silu_mul and norms (0.34 s at 16k); pin cuBLASLt algorithms per bucket (would also settle the batch-invariance attribution).
 4. JIT disk cache (cuTile has one; enable it).

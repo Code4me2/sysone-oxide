@@ -375,4 +375,80 @@ impl ModelWeights {
         let report = LoadReport { stream: stats, device_bytes: w.bytes(), nvfp4_projections: nvfp4 };
         Ok((w, report))
     }
+
+    /// Debug (numerics diagnostics only): re-express the model in a permuted hidden basis, `new[.., j] =
+    /// old[.., perm[j]]` on the residual stream. The model computes the same function (RMSNorm is permutation
+    /// invariant; every projection reading or writing the residual stream is permuted to match), but every
+    /// reduction over the hidden dimension sums in another order: an independent bf16 realization of the same
+    /// numerics, as `reference/hidden_dense.py` builds for the reference. Hidden states then come out permuted.
+    pub fn permute_hidden(&self, stream: &Stream, perm: &[usize]) -> Result<()> {
+        let h = self.final_norm.numel();
+        ensure!(perm.len() == h, "permutation of {} for hidden {h}", perm.len());
+        let cols = |t: &DevTensor| -> Result<()> {
+            ensure!(t.shape.len() == 2 && t.shape[1] == h && t.is_contiguous(), "permute cols of {t:?}");
+            let b = t.to_host_bytes(stream)?;
+            let mut o = vec![0u8; b.len()];
+            for r in 0..t.shape[0] {
+                let (src, dst) = (&b[r * h * 2..(r + 1) * h * 2], &mut o[r * h * 2..(r + 1) * h * 2]);
+                for (j, &p) in perm.iter().enumerate() {
+                    dst[2 * j..2 * j + 2].copy_from_slice(&src[2 * p..2 * p + 2]);
+                }
+            }
+            t.copy_from_host(stream, &o)
+        };
+        let rows = |t: &DevTensor| -> Result<()> {
+            ensure!(t.shape[0] == h && t.is_contiguous(), "permute rows of {t:?}");
+            let b = t.to_host_bytes(stream)?;
+            let row = b.len() / h;
+            let mut o = vec![0u8; b.len()];
+            for (j, &p) in perm.iter().enumerate() {
+                o[j * row..(j + 1) * row].copy_from_slice(&b[p * row..(p + 1) * row]);
+            }
+            t.copy_from_host(stream, &o)
+        };
+        let bf = |l: &Linear| -> Result<DevTensor> {
+            match l {
+                Linear::Bf16 { w, .. } => Ok(w.clone()),
+                Linear::Nvfp4 { .. } => bail!("permute_hidden supports bf16 projections only"),
+            }
+        };
+        cols(&self.embed)?;
+        rows(&self.final_norm)?;
+        if let Some(s) = &self.slot_head {
+            cols(&s.w)?;
+        }
+        if let Some(w) = &self.lm_head {
+            cols(w)?;
+        }
+        for l in &self.layers {
+            rows(l.input_norm())?;
+            rows(l.post_norm())?;
+            cols(&bf(&l.mlp().gate_up)?)?;
+            rows(&bf(&l.mlp().down)?)?;
+            match l {
+                Layer::Gdn(g) => {
+                    cols(&bf(&g.in_proj)?)?;
+                    rows(&bf(&g.out_proj)?)?;
+                }
+                Layer::Attn(a) => {
+                    cols(&bf(&a.q_proj)?)?;
+                    cols(&bf(&a.kv_proj)?)?;
+                    rows(&bf(&a.o_proj)?)?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Debug: a seeded permutation of `0..n` (Fisher-Yates over a 64-bit LCG), for [`ModelWeights::permute_hidden`].
+pub fn debug_permutation(n: usize, seed: u64) -> Vec<usize> {
+    let mut p: Vec<usize> = (0..n).collect();
+    let mut s = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+    for i in (1..n).rev() {
+        s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        let j = ((s >> 33) as usize) % (i + 1);
+        p.swap(i, j);
+    }
+    p
 }

@@ -157,6 +157,12 @@ measured_brier_rise = 0.0015757684026510815  # bf16_batched~bf16_sequential
 # over every ordered pair of five bf16 realizations of the reference (served, per-question, three
 # hidden-basis permutations). Without it the plain row binomial fails equivalent bf16 realizations
 # (p down to 3.6e-4 at layer31/norm). The validation report lists the plain row p as sign_p_rows.
+# How the criteria combine: 6 taps x 3 criteria, each evaluated on its own (the sign test at sign_alpha per
+# tap); a candidate fails gate (a) if any criterion fails on any tap. No multiple-testing correction is made,
+# which is conservative (against the candidate): for an equivalent implementation the 6 sign tests alone
+# allow a family-wise false-fail rate of up to ~6%. The sign test is sensitive to the 1.5x margin on D:
+# sysone bf16 (Phase 2a A1) passes the norm tap at p = 0.038 with D = 18.42; with D = 1.0 x measured (12.28)
+# it would be p = 0.011, just above alpha (layer31: 0.067 -> 0.029). The norm verdict sits close to the margin.
 [model.hidden]
 rowset = "dense_v1"
 rows_min = 1000

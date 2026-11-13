@@ -23,7 +23,7 @@ use crate::engine::graph::{Bucket, BucketGraphs, BucketPlan, Executor, Profiler,
 use crate::engine::kernels::TileKernels;
 use crate::engine::loader::{Checkpoint, StreamOptions};
 use crate::engine::meta::{MetaShape, MetaUploader};
-use crate::engine::weights::{LoadOptions, LoadReport, ModelWeights};
+use crate::engine::weights::{LoadOptions, LoadReport, ModelWeights, debug_permutation};
 use anyhow::{Context as _, Result, bail, ensure};
 use cuda_core::{Context, PinnedHostBuffer, Stream};
 use std::path::Path;
@@ -47,6 +47,9 @@ pub struct EngineOptions {
     pub warmup: bool,
     /// Debug taps (per-layer hidden states).
     pub taps: Taps,
+    /// Debug (numerics diagnostics only): run the model in a hidden basis permuted with this seed
+    /// ([`ModelWeights::permute_hidden`]); [`GpuEngine::read_tap`] returns taps in the original basis.
+    pub debug_permute_hidden: Option<u64>,
 }
 
 impl Default for EngineOptions {
@@ -59,6 +62,7 @@ impl Default for EngineOptions {
             cuda_graphs: true,
             warmup: true,
             taps: Taps::default(),
+            debug_permute_hidden: None,
         }
     }
 }
@@ -99,6 +103,8 @@ pub struct GpuEngine {
     stream: Arc<Stream>,
     ctx: Arc<Context>,
     pub last: StepInfo,
+    /// The debug hidden-basis permutation, when [`EngineOptions::debug_permute_hidden`] is set.
+    hidden_perm: Option<Vec<usize>>,
 }
 
 // SAFETY: every member is either plain data or a device/pinned allocation owned by this engine; the scheduler
@@ -119,6 +125,10 @@ impl GpuEngine {
         let ckpt = Checkpoint::open(model_dir)?;
         let lopts = LoadOptions { slot_token_ids: Some(slot_ids.to_vec()), full_lm_head: false, stream: StreamOptions::default() };
         let (weights, load_report) = ModelWeights::load(&cfg, &ckpt, &stream, &lopts)?;
+        let hidden_perm = opts.debug_permute_hidden.map(|seed| debug_permutation(cfg.text_config.hidden_size, seed));
+        if let Some(p) = &hidden_perm {
+            weights.permute_hidden(&stream, p)?;
+        }
         let fwd = forward::build(&cfg, &weights, slot_ids.len(), &opts.taps)?;
         let plan = BucketPlan::new(&opts.buckets, opts.max_answers, opts.max_segments)?;
         let largest = plan.largest();
@@ -146,6 +156,7 @@ impl GpuEngine {
             stream,
             ctx,
             last: StepInfo::default(),
+            hidden_perm,
         };
         eprintln!(
             "sysone engine: loaded {:.1} GiB of weights in {:.1} s; arena {:.2} GiB (largest bucket {} tokens), GDN scratch \
@@ -269,7 +280,17 @@ impl GpuEngine {
         let v = self.fwd.taps.iter().find(|(n, _)| n == name).with_context(|| format!("no tap {name}"))?.1;
         let spec = self.fwd.graph.spec(v);
         ensure!(spec.dtype == GraphDType::BF16, "tap {name} is {:?}", spec.dtype);
-        Ok(crate::engine::graph::tensor::bf16_from_bytes(&self.read_value(v, rows)?))
+        let vals = crate::engine::graph::tensor::bf16_from_bytes(&self.read_value(v, rows)?);
+        let Some(perm) = &self.hidden_perm else { return Ok(vals) };
+        let h = perm.len();
+        ensure!(vals.len() % h == 0, "tap {name}: {} values for hidden {h}", vals.len());
+        let mut out = vec![0f32; vals.len()];
+        for (o, x) in out.chunks_exact_mut(h).zip(vals.chunks_exact(h)) {
+            for (j, &p) in perm.iter().enumerate() {
+                o[p] = x[j];
+            }
+        }
+        Ok(out)
     }
 
     /// Run `batch` eagerly in bucket `b` with a CUDA-event mark per op; returns `(label, ms, launches)` per op
