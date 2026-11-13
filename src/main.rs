@@ -18,7 +18,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use sysone::api::query::py_int;
 use sysone::api::server::{self, AppState, ServerInfo, ServerOptions};
 use sysone::contract::{DecisionBatch, DecisionEngine, MassReadout, MockEngine, SlotLogits};
 use sysone::engine::config::ModelConfig;
@@ -148,22 +147,18 @@ impl DecisionEngine for SimulatedEngine {
 }
 
 fn main() -> Result<()> {
+    // `sysone bulk ...`: the bulk tagging path (docs/BULK.md); everything else is the server.
+    let argv: Vec<String> = std::env::args().collect();
+    if argv.get(1).map(String::as_str) == Some("bulk") {
+        let code = sysone::bulk::cli::main(&argv[2..])?;
+        std::process::exit(code);
+    }
     let args = Args::parse();
     let cfg = ModelConfig::load(&args.model)?;
     let limits = Limits { max_branch_tokens: args.max_branch_tokens, max_request_tokens: args.max_request_tokens };
     let frontend = Arc::new(Frontend::load(&args.model, limits).context("loading the frontend")?);
-    let served = match &args.name {
-        Some(n) => n.clone(),
-        None => args.model.canonicalize()?.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
-    };
-    ensure!(!served.is_empty(), "cannot derive a model name from {}; pass --name", args.model.display());
-    let mut info = ServerInfo::new(&served, &cfg.model_type);
-    info.fork_mode = args.fork_mode.clone();
-    info.default_debias = match (args.debias, std::env::var("QEV_DEBIAS")) {
-        (Some(d), _) => d,
-        (None, Ok(v)) => py_int(&v).with_context(|| format!("QEV_DEBIAS={v:?} is not an integer"))?,
-        (None, Err(_)) => 1,
-    };
+    let info = ServerInfo::for_cli(&args.model, &cfg.model_type, args.name.as_deref(), &args.fork_mode, args.debias)?;
+    let served = info.served_name.clone();
 
     // The engine must take the largest request the limits admit in one step (requests are never split).
     let step = args.token_budget.max(args.max_request_tokens);

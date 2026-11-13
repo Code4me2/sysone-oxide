@@ -8,6 +8,7 @@
 //! | Module | Role |
 //! |---|---|
 //! | [`api`] | HTTP routes, request/response schema, qev-identical errors |
+//! | [`bulk`] | `sysone bulk`: JSONL in, JSONL out, packed for throughput over one engine per GPU |
 //! | [`frontend`] | Rendering, chat template, tokenization, prefix split, branch planning, answer assembly (CPU) |
 //! | [`sched`] | Admission queue, token-budget batcher, GPU worker thread, CPU pool, metrics |
 //! | [`contract`] | `DecisionBatch` / `Segment` / `SlotLogits` and the `DecisionEngine` trait between the others |
@@ -19,6 +20,7 @@
 //! rationale.
 
 pub mod api;
+pub mod bulk;
 pub mod contract;
 pub mod engine;
 pub mod frontend;

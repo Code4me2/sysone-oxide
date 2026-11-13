@@ -14,7 +14,7 @@
 //! split by request into several steps (results are reassembled in the batch's answer order); a single request
 //! that does not fit is an error.
 
-use crate::contract::{DecisionBatch, DecisionEngine, MAX_SLOTS, SlotLogits};
+use crate::contract::{DecisionBatch, DecisionEngine, MAX_SLOTS, SlotLogits, StepLimits};
 use crate::engine::config::ModelConfig;
 use crate::engine::forward::{self, Forward, Taps};
 use crate::engine::gemm::Blas;
@@ -55,6 +55,10 @@ pub struct EngineOptions {
     /// the choice and its reason are logged at load and reported by [`DecisionEngine::info`]; SIMT without a
     /// kernel artifact for the device's architecture fails the load.
     pub gdn_backend: Option<GdnBackend>,
+    /// Size the buckets to the device: keep only the buckets (of `buckets`) whose activation arena, GDN scratch
+    /// and readback fit in this fraction of the device memory free after the weights are loaded. None: use
+    /// `buckets` as given (an arena that does not fit fails the load).
+    pub memory_fraction: Option<f64>,
 }
 
 /// Environment variable the engine tests and benchmarks read the GDN backend from (`tile`, `simt` or `auto`).
@@ -89,6 +93,7 @@ impl Default for EngineOptions {
             taps: Taps::default(),
             debug_permute_hidden: None,
             gdn_backend: None,
+            memory_fraction: None,
         }
     }
 }
@@ -112,6 +117,8 @@ pub struct StepInfo {
     pub replayed: bool,
     /// Steps the batch was split into.
     pub steps: usize,
+    /// Bucket tokens summed over those steps (the padded size the forward computed).
+    pub total_bucket_tokens: usize,
 }
 
 pub struct GpuEngine {
@@ -158,9 +165,6 @@ impl GpuEngine {
             weights.permute_hidden(&stream, p)?;
         }
         let fwd = forward::build(&cfg, &weights, slot_ids.len(), &opts.taps)?;
-        let plan = BucketPlan::new(&opts.buckets, opts.max_answers, opts.max_segments)?;
-        let largest = plan.largest();
-        let graphs = BucketGraphs::new(&fwd.graph, plan, &stream)?;
         let (major, minor) = ctx.compute_capability()?;
         let arch = format!("sm_{major}{minor}");
         let (gdn_backend, why) = match opts.gdn_backend {
@@ -168,6 +172,14 @@ impl GpuEngine {
             None => (GdnBackend::default_for_arch(major, minor), "default for this architecture"),
         };
         eprintln!("sysone engine: GDN backend {} ({why}) on {arch}", gdn_backend.name());
+        let mut opts = opts;
+        if let Some(frac) = opts.memory_fraction {
+            ctx.bind_to_thread()?;
+            opts.buckets = fit_buckets(&fwd, &opts, gdn_backend, slot_ids.len(), frac)?;
+        }
+        let plan = BucketPlan::new(&opts.buckets, opts.max_answers, opts.max_segments)?;
+        let largest = plan.largest();
+        let graphs = BucketGraphs::new(&fwd.graph, plan, &stream)?;
         let kernels = TileKernels::new(&stream, cfg.text_config.rms_norm_eps as f32, largest.tokens, opts.max_prefixes,
                                        gdn_backend)
             .with_context(|| format!("GDN backend {} on {arch}", gdn_backend.name()))?;
@@ -215,6 +227,17 @@ impl GpuEngine {
             eprintln!("sysone engine: warm-up step (kernel JIT) {:.1} s", t.elapsed().as_secs_f64());
         }
         Ok(e)
+    }
+
+    /// The device's name (`NVIDIA GB10`).
+    pub fn device_name(&self) -> Result<String> {
+        Ok(self.ctx.device_name()?)
+    }
+
+    /// Free and total device memory (binds the engine's context to the calling thread).
+    pub fn memory(&self) -> Result<(usize, usize)> {
+        self.ctx.bind_to_thread()?;
+        device_memory()
     }
 
     /// The GDN delta-rule backend this engine runs.
@@ -287,7 +310,7 @@ impl GpuEngine {
             }
         }
         let logits = self.read_logits(b, q)?;
-        self.last = StepInfo { bucket_tokens: b.tokens, replayed: replay, steps: 1 };
+        self.last = StepInfo { bucket_tokens: b.tokens, replayed: replay, steps: 1, total_bucket_tokens: b.tokens };
         Ok(logits)
     }
 
@@ -358,6 +381,58 @@ impl GpuEngine {
     }
 }
 
+/// Free and total device memory of the current context.
+pub fn device_memory() -> Result<(usize, usize)> {
+    let (mut free, mut total) = (0usize, 0usize);
+    // SAFETY: plain out-parameters; the caller's context is current on this thread.
+    let r = unsafe { cuda_core::sys::cuMemGetInfo_v2(&mut free as *mut _, &mut total as *mut _) };
+    ensure!(r == cuda_core::sys::cudaError_enum_CUDA_SUCCESS, "cuMemGetInfo failed: {r:?}");
+    Ok((free, total))
+}
+
+/// Device bytes an engine with largest bucket `tokens` allocates beyond its weights: the activation arena, the GDN
+/// scratch, the metadata block and the logits readback (the pinned host buffer is not device memory but is
+/// counted too: on an integrated GPU it comes out of the same pool).
+pub fn step_bytes(fwd: &Forward, opts: &EngineOptions, backend: GdnBackend, n_slots: usize, tokens: usize) -> Result<usize> {
+    let plan = BucketPlan::new(&[tokens], opts.max_answers, opts.max_segments)?;
+    let b = plan.largest();
+    let arena = fwd.graph.plan(b)?.arena_bytes;
+    let scratch = crate::kernels::gdn::GdnScratch::engine_bytes(backend, tokens, opts.max_prefixes);
+    // Metadata: ids, positions, token_seg (3 x u32 per token), segments (16 B) and seg_state, answers (rows, slots).
+    let meta = 2 * (12 * b.tokens + 20 * b.segments + 6 * b.answers + 4096);
+    let logits = b.answers * n_slots * 4 * 2;
+    Ok(arena + scratch + meta + logits)
+}
+
+/// [`EngineOptions::memory_fraction`]: the configured buckets up to the largest whose [`step_bytes`] fit in `frac`
+/// of the device memory still free (weights are loaded at this point; GB10's unified pool counts host use too).
+fn fit_buckets(fwd: &Forward, opts: &EngineOptions, backend: GdnBackend, n_slots: usize, frac: f64) -> Result<Vec<usize>> {
+    ensure!(frac > 0.0 && frac <= 1.0, "memory fraction {frac} must be in (0, 1]");
+    let (free, total) = device_memory()?;
+    let budget = (free as f64 * frac) as usize;
+    let mut buckets = opts.buckets.clone();
+    buckets.sort_unstable();
+    buckets.dedup();
+    let mut keep = Vec::new();
+    for &t in &buckets {
+        let need = step_bytes(fwd, opts, backend, n_slots, t)?;
+        if need > budget {
+            eprintln!(
+                "sysone engine: bucket {t} needs {:.2} GiB, over {frac} of the {:.2} GiB free ({:.2} GiB total): \
+                 largest bucket is {:?}",
+                need as f64 / GIB, free as f64 / GIB, total as f64 / GIB, keep.last()
+            );
+            break;
+        }
+        keep.push(t);
+    }
+    ensure!(!keep.is_empty(), "not even the smallest bucket ({:?}) fits in {frac} of {:.2} GiB free device memory",
+            buckets.first(), free as f64 / GIB);
+    Ok(keep)
+}
+
+const GIB: f64 = (1u64 << 30) as f64;
+
 /// Split `batch` by request into batches that each satisfy `fits`, packing requests greedily in prefix order.
 /// Returns each sub-batch with the original answer index of each of its answer rows. A batch that fits is
 /// returned whole; a single request that does not fit is an error.
@@ -410,6 +485,21 @@ impl DecisionEngine for GpuEngine {
         vec![("engine", "bf16".into()), ("gdn_backend", self.gdn_backend().name().into()), ("arch", self.arch.clone())]
     }
 
+    fn step_limits(&self) -> StepLimits {
+        let largest = self.graphs.plan.largest();
+        StepLimits {
+            buckets: self.graphs.plan.buckets.iter().map(|b| b.tokens).collect(),
+            max_answers: largest.answers,
+            // One segment slot of the largest bucket is the padding segment (used whenever a batch is smaller).
+            max_segments: largest.segments - 1,
+            max_prefixes: self.kernels.max_prefixes(),
+        }
+    }
+
+    fn last_bucket_tokens(&self) -> Option<usize> {
+        Some(self.last.total_bucket_tokens)
+    }
+
     fn run(&mut self, batch: &DecisionBatch) -> Result<SlotLogits> {
         let max = self.max_tokens_per_step();
         ensure!(batch.num_tokens() <= max, "batch of {} tokens over the engine's {max} per step", batch.num_tokens());
@@ -423,14 +513,17 @@ impl DecisionEngine for GpuEngine {
             return self.step(batch, b, false);
         }
         let mut data = vec![0f32; batch.num_branches() * MAX_SLOTS];
+        let mut total_bucket_tokens = 0;
         for (sub, rows) in parts {
             let Some(b) = self.pick_bucket(&sub, 0) else { bail!("no bucket fits a split batch") };
             let l = self.step(&sub, b, false)?;
+            total_bucket_tokens += b.tokens;
             for (r, &a) in rows.iter().enumerate() {
                 data[a * MAX_SLOTS..(a + 1) * MAX_SLOTS].copy_from_slice(&l.data[r * MAX_SLOTS..(r + 1) * MAX_SLOTS]);
             }
         }
         self.last.steps = n;
+        self.last.total_bucket_tokens = total_bucket_tokens;
         Ok(SlotLogits { rows: batch.num_branches(), data })
     }
 }

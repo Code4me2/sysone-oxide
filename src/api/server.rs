@@ -79,6 +79,32 @@ impl ServerInfo {
             release_date: String::new(),
         }
     }
+
+    /// What the `sysone` CLI serves: the model name (`name`, else the resolved model directory's last component),
+    /// `fork_mode`, and the default `debias` (`debias`, else `$QEV_DEBIAS` as qev reads it, else 1). Shared by
+    /// the server and `sysone bulk`, so both answer the same body the same way.
+    pub fn for_cli(
+        model_dir: &std::path::Path,
+        model_type: &str,
+        name: Option<&str>,
+        fork_mode: &str,
+        debias: Option<i64>,
+    ) -> anyhow::Result<Self> {
+        use anyhow::Context as _;
+        let served = match name {
+            Some(n) => n.to_string(),
+            None => model_dir.canonicalize()?.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
+        };
+        anyhow::ensure!(!served.is_empty(), "cannot derive a model name from {}; pass --name", model_dir.display());
+        let mut info = ServerInfo::new(&served, model_type);
+        info.fork_mode = fork_mode.to_string();
+        info.default_debias = match (debias, std::env::var("QEV_DEBIAS")) {
+            (Some(d), _) => d,
+            (None, Ok(v)) => py_int(&v).with_context(|| format!("QEV_DEBIAS={v:?} is not an integer"))?,
+            (None, Err(_)) => 1,
+        };
+        Ok(info)
+    }
 }
 
 /// Server resources beyond the scheduler's (see [`AppState::start_with`]).
@@ -418,8 +444,8 @@ async fn index() -> Response {
 // ---------------------------------------------------------------------------------------------------------------
 // Decisions
 
-/// The outcome of a request that never reaches the engine, or of one that did.
-enum Outcome {
+/// The outcome of a request that never reaches the engine, or of one that did (shared with [`crate::bulk`]).
+pub(crate) enum Outcome {
     /// Status and JSON body.
     Json(StatusCode, Json),
     /// A 500 (Starlette's plain-text body).
@@ -429,7 +455,7 @@ enum Outcome {
 }
 
 impl Outcome {
-    fn status(&self) -> u16 {
+    pub(crate) fn status(&self) -> u16 {
         match self {
             Outcome::Json(s, _) => s.as_u16(),
             Outcome::Internal => 500,
@@ -445,8 +471,8 @@ impl Outcome {
         }
     }
 
-    /// One entry of a `:batch` response.
-    fn into_item(self) -> Json {
+    /// One entry of a `:batch` response (and of a bulk result line: `status` and `body`).
+    pub(crate) fn into_item(self) -> Json {
         let status = self.status();
         let body = match self {
             Outcome::Json(_, v) => v,
@@ -487,24 +513,24 @@ impl Packable for Work {
 }
 
 /// A planned request, ready for the engine.
-struct Ready {
-    req: SystemOneRequest,
-    plan: Arc<Plan>,
-    debug: bool,
-    started: Instant,
+pub(crate) struct Ready {
+    pub(crate) req: SystemOneRequest,
+    pub(crate) plan: Arc<Plan>,
+    pub(crate) debug: bool,
+    pub(crate) started: Instant,
     /// When planning ended (the start of `queue_s`).
-    planned: Instant,
+    pub(crate) planned: Instant,
 }
 
 /// The query parameters of a decision call, as qev reads them.
 #[derive(Clone, Debug)]
-struct Params {
+pub(crate) struct Params {
     debug: bool,
     /// None: present but not an integer (qev raises inside the handler: 500).
     debias: Option<i64>,
 }
 
-fn params(raw: Option<&str>, default_debias: i64) -> Params {
+pub(crate) fn params(raw: Option<&str>, default_debias: i64) -> Params {
     let qs = query::parse_qsl(raw.unwrap_or(""));
     // `bool(request.query_params.get("debug"))`: any non-empty value, even "0", turns it on.
     let debug = query::get(&qs, "debug").is_some_and(|v| !v.is_empty());
@@ -516,7 +542,7 @@ fn params(raw: Option<&str>, default_debias: i64) -> Params {
 }
 
 /// Everything before the engine, in qev's order: validate, route the model, read `debug`/`debias`, plan.
-fn prepare(frontend: &Frontend, info: &ServerInfo, body: Result<Json, ApiError>, p: &Params) -> Result<Ready, Outcome> {
+pub(crate) fn prepare(frontend: &Frontend, info: &ServerInfo, body: Result<Json, ApiError>, p: &Params) -> Result<Ready, Outcome> {
     let started = Instant::now();
     let req = body.and_then(|v| SystemOneRequest::validate(&v)).map_err(|e| Outcome::api(&e))?;
     check_model(&req.model, &info.served_name).map_err(|e| Outcome::api(&e))?;
@@ -533,7 +559,7 @@ fn prepare(frontend: &Frontend, info: &ServerInfo, body: Result<Json, ApiError>,
 }
 
 /// Answer assembly and the response body.
-fn finish(frontend: &Frontend, info: &ServerInfo, r: &Ready, scored: &Scored) -> Outcome {
+pub(crate) fn finish(frontend: &Frontend, info: &ServerInfo, r: &Ready, scored: &Scored) -> Outcome {
     let plan = &r.plan;
     let masses = if r.debug { scored.allowed_mass.as_deref() } else { None };
     let out = match frontend.assemble(&r.req, plan, |i| scored.row(i, plan.branches[i].n_slots()), masses) {
@@ -564,7 +590,7 @@ fn finish(frontend: &Frontend, info: &ServerInfo, r: &Ready, scored: &Scored) ->
     Outcome::Json(StatusCode::OK, resp.to_json(Some(meta)))
 }
 
-fn parse_body(body: &[u8]) -> Result<Json, ApiError> {
+pub(crate) fn parse_body(body: &[u8]) -> Result<Json, ApiError> {
     pyjson::parse(body).map_err(|_| ApiError::invalid_json())
 }
 

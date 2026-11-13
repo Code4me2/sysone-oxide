@@ -28,6 +28,11 @@ pub fn run(mut engine: Box<dyn DecisionEngine>, rx: Receiver<Packed>, metrics: A
         let step = start.elapsed();
         in_flight.fetch_sub(1, Ordering::AcqRel);
         metrics.record_batch(batch.num_tokens(), jobs.len(), batch.num_branches(), step);
+        if result.is_ok()
+            && let Some(bucket) = engine.last_bucket_tokens()
+        {
+            metrics.record_bucket(batch.num_tokens(), bucket);
+        }
         let result = result.and_then(|r| {
             let (l, want) = (&r.logits, batch.num_branches());
             anyhow::ensure!(

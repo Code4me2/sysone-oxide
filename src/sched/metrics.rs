@@ -61,6 +61,10 @@ struct Inner {
     branches_total: u64,
     batches_total: u64,
     batch_tokens_total: u64,
+    /// Bucket (padded) tokens of the steps whose engine reports them (`DecisionEngine::last_bucket_tokens`).
+    bucket_tokens_total: u64,
+    /// Packed tokens of those same steps, so padding = 1 - this / `bucket_tokens_total`.
+    bucket_batch_tokens_total: u64,
     engine_busy_seconds: f64,
     batch_tokens: Histogram,
     batch_requests: Histogram,
@@ -109,6 +113,8 @@ impl Metrics {
                 branches_total: 0,
                 batches_total: 0,
                 batch_tokens_total: 0,
+                bucket_tokens_total: 0,
+                bucket_batch_tokens_total: 0,
                 engine_busy_seconds: 0.0,
                 batch_tokens: Histogram::new(&TOKEN_BUCKETS),
                 batch_requests: Histogram::new(&COUNT_BUCKETS),
@@ -162,6 +168,14 @@ impl Metrics {
         m.batch_tokens.observe(tokens as f64);
         m.batch_requests.observe(requests as f64);
         m.step_seconds.observe(step.as_secs_f64());
+    }
+
+    /// The bucket capacity a step of `tokens` packed tokens ran in (the engine computed `bucket - tokens` rows of
+    /// padding).
+    pub fn record_bucket(&self, tokens: usize, bucket_tokens: usize) {
+        let mut m = self.inner.lock().unwrap();
+        m.bucket_tokens_total += bucket_tokens as u64;
+        m.bucket_batch_tokens_total += tokens as u64;
     }
 
     /// Time a request spent between admission and the start of its engine step.
@@ -234,6 +248,10 @@ impl Metrics {
         counter(&mut out, "sysone_branches_total", "Branches (answer rows) scored.", m.branches_total as f64);
         counter(&mut out, "sysone_batches_total", "Engine steps.", m.batches_total as f64);
         counter(&mut out, "sysone_batch_tokens_total", "Tokens packed into engine steps.", m.batch_tokens_total as f64);
+        counter(&mut out, "sysone_bucket_tokens_total", "Bucket (padded) tokens of engine steps that report them.",
+                m.bucket_tokens_total as f64);
+        counter(&mut out, "sysone_bucket_batch_tokens_total", "Packed tokens of the steps counted in sysone_bucket_tokens_total.",
+                m.bucket_batch_tokens_total as f64);
         counter(&mut out, "sysone_engine_busy_seconds_total", "Seconds the engine spent in steps.", m.engine_busy_seconds);
         counter(&mut out, "sysone_rejected_total", "Requests refused with 503 (overload).", m.rejected_full as f64);
         let _ = writeln!(out, "# HELP sysone_overload_total Requests refused with 503, by the resource that was full.");
