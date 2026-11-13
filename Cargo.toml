@@ -1,61 +1,36 @@
 [package]
-name = "grout"
+name = "sysone"
 version = "0.1.0"
 edition = "2024"
-default-run = "grout"
+license = "Apache-2.0"
+description = "Inference server for System One decision models (elephant-1) on cuda-rust"
 autobins = false
 
 [dependencies]
-libloading = "0.8"
-anyhow = "1.0.102"
-clap = { version = "4.5.60", features = ["derive"] }
-memmap2 = "0.9.10"
-rand = "0.8.5"
-rayon = "1.11.0"
-safetensors = "0.7.0"
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
-tokio = { version = "1.49.0", features = ["rt-multi-thread", "macros"] }
-tokenizers = "0.20.4"
+anyhow = "1"
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+half = "2"
 
-cudarc = { version = "0.19.2", default-features = false, features = ["std", "cublas", "dynamic-loading", "cuda-13010"] }
+# cuda-rust, by path (DESIGN.md §1). Versions are exact-pinned upstream.
+cuda-core = { path = "../cuda-rust/cuda-core" }
+cuda-async = { path = "../cuda-rust/cuda-async" }
+cutile = { path = "../cuda-rust/cutile-rs/cutile", features = ["experimental-tune"] }
+cutile-kernels = { path = "../cuda-rust/cutile-rs/cutile-kernels" }
 
-cutile = { version = "0.4.0", features = ["experimental-tune"] }
-
-[features]
-benchmarks = []
+# cuBLAS(Lt) bf16 GEMM baseline (DESIGN.md §6.4) and the hardware probe.
+# `cuda-13000` selects cudarc's driver-API symbol set, so it must match the *minimum supported driver*
+# (R580 = CUDA 13.0, docs/PLATFORM.md), not the toolkit: cudarc resolves every driver symbol at load and
+# panics on R580 with `cuda-13010`. The engine uses cuda-core for contexts and streams and cudarc only
+# for cuBLAS handles.
+cudarc = { version = "0.19.2", default-features = false, features = ["std", "cublas", "cublaslt", "f16", "dynamic-loading", "cuda-13000"] }
 
 [[bin]]
-name = "grout"
+name = "sysone"
 path = "src/main.rs"
 
 [[bin]]
-name = "grout_bench"
-path = "benchmarks/src/bin/grout_bench.rs"
-required-features = ["benchmarks"]
-
-[[bin]]
-name = "grout_autotune"
-path = "benchmarks/src/bin/grout_autotune.rs"
-required-features = ["benchmarks"]
-
-
-[[bin]]
-name = "attention_microbench"
-path = "benchmarks/src/bin/attention_microbench.rs"
-required-features = ["benchmarks"]
-
-[[bin]]
-name = "gemv_microbench"
-path = "benchmarks/src/bin/gemv_microbench.rs"
-required-features = ["benchmarks"]
-
-[[bin]]
-name = "group_gemm_microbench"
-path = "benchmarks/src/bin/group_gemm_microbench.rs"
-required-features = ["benchmarks"]
-
-[[bin]]
-name = "persistent_gemm_microbench"
-path = "benchmarks/src/bin/persistent_gemm_microbench.rs"
-required-features = ["benchmarks"]
+name = "hwprobe"
+path = "benchmarks/s1/hwprobe.rs"

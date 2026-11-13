@@ -1,0 +1,5 @@
+# Keep in lockstep with ../cuda-rust/rust-toolchain.toml (cuda-rust's host workspace pin).
+[toolchain]
+channel = "1.98.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

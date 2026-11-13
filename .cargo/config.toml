@@ -1,3 +1,5 @@
 [env]
+# /usr/local/cuda-13 tracks the newest installed 13.x toolkit (update-alternatives). Override with
+# CUDA_TOOLKIT_PATH in the environment. scripts/doctor.sh checks the prerequisites.
 CUDA_TOOLKIT_PATH = { value = "/usr/local/cuda-13", relative = false }
 RUSTFLAGS = { value = "-C target-cpu=native", relative = false }
