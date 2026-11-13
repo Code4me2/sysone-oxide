@@ -2,8 +2,12 @@
 //! graphs, readout. Owner: W4.
 
 pub mod config;
+pub mod forward;
 pub mod gemm;
+pub mod goldens;
+pub mod gpu;
 pub mod graph;
+pub mod kernels;
 pub mod loader;
 pub mod meta;
 pub mod platform;
