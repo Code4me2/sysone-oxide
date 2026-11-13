@@ -31,6 +31,10 @@ struct Args {
     /// D = 256 and D = 128, as a ceiling reference for this GPU and toolchain.
     #[arg(long)]
     baseline: bool,
+    /// Persist compiled cubins in this directory (for inspecting register and shared-memory use with
+    /// `cuobjdump -res-usage`).
+    #[arg(long)]
+    jit_cache: Option<String>,
 }
 
 /// cutile-kernels `fmha_prefill_gqa` on one non-causal sequence: `t` queries x 16 heads over `t` keys.
@@ -133,6 +137,10 @@ fn dev_err(e: anyhow::Error) -> cuda_async::error::DeviceError {
 
 fn main() -> Result<()> {
     let args = Args::parse();
+    if let Some(dir) = &args.jit_cache {
+        let store = cutile::jit_cache::FileSystemJitStore::builder(dir).capacity_bytes(256 << 20).open()?;
+        cutile::jit_cache::enable(Arc::new(store));
+    }
     let device = Context::new(0)?;
     let stream = device.new_stream()?;
     let mut rng = Rng(0x9e3779b97f4a7c15);
@@ -169,20 +177,28 @@ fn main() -> Result<()> {
         let mut configs = vec![AttnTiles::default()];
         let dt = AttnTiles::default();
         // Bf16 P (classic flash attention): faster, outside the reference's error envelope (see tests).
-        configs.push(AttnTiles { p_split: 1, ..dt });
+        configs.push(AttnTiles { bm: 8, p_split: 1, ..dt });
         if args.sweep {
-            for (bm, bn) in [(16, 32), (16, 64)] {
-                for p_split in [1, 3] {
-                    for (warps, occupancy) in [(0, 0), (4, 1), (8, 1), (4, 2)] {
-                        if (bn, p_split, warps) != (64, 3, 0) && (bn, p_split, warps) != (64, 1, 0) {
-                            configs.push(AttnTiles { bm, bn, p_split, warps, occupancy, ..dt });
-                        }
-                    }
-                }
+            // (bm, bn, p_split, warps, occupancy); warps/occupancy 0 = compiler default.
+            let sweep: &[(usize, usize, usize, usize, usize)] = &[
+                (8, 32, 3, 8, 0),
+                (16, 32, 3, 8, 0),
+                (16, 32, 3, 8, 1),
+                (8, 16, 3, 8, 0),
+                (16, 16, 3, 8, 0),
+                (8, 32, 3, 8, 1),
+                (8, 32, 3, 16, 0),
+                (16, 32, 3, 16, 0),
+                (8, 32, 1, 8, 0),
+                (16, 32, 1, 8, 0),
+                (8, 32, 3, 8, 0),
+                (16, 64, 3, 8, 0),
+                (16, 64, 3, 16, 0),
+                (32, 32, 3, 16, 0),
+            ];
+            for &(bm, bn, p_split, warps, occupancy) in sweep {
+                configs.push(AttnTiles { bm, bn, p_split, warps, occupancy, ..dt });
             }
-            configs.push(AttnTiles { bm: 32, bn: 32, warps: 8, ..dt });
-            configs.push(AttnTiles { bm: 8, bn: 64, ..dt });
-            configs.push(AttnTiles { latency: 4, ..dt });
         }
         for tiles in configs {
             let mut plan = AttnPlan::new(&b.segments, tiles.bm);

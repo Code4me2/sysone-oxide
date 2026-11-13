@@ -412,7 +412,8 @@ fn seg_attn_matches_reference() {
     let d = AttnTiles::default();
     for (tiles, gate) in [
         (d, true),
-        (AttnTiles { bm: 32, bn: 32, ..d }, true),
+        (AttnTiles { bm: 8, bn: 32, ..d }, true),
+        (AttnTiles { bm: 16, bn: 64, warps: 0, ..d }, true),
         (AttnTiles { p_split: 2, ..d }, false),
         (AttnTiles { p_split: 1, ..d }, false),
     ] {

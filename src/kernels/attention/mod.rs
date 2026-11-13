@@ -65,7 +65,9 @@ pub fn positions(segments: &[Segment]) -> Vec<i32> {
 }
 
 /// Tokens per tile block in [`qk_norm_rope`].
-pub const ROPE_TOKENS: usize = 4;
+pub const ROPE_TOKENS: usize = 2;
+/// Worker warps per tile block in [`qk_norm_rope`].
+pub const ROPE_WARPS: i32 = 8;
 
 #[cutile::module]
 pub mod qk_norm_rope_module {
@@ -287,6 +289,7 @@ pub fn qk_norm_rope<'a>(
         inv_freq,
         eps,
     )
+    .compile_options(cutile::tile_kernel::CompileOptions::default().num_worker_warps_per_cta(ROPE_WARPS))
     .generics(
         [tt, NUM_Q_HEADS, NUM_KV_HEADS, tt * NUM_Q_HEADS, tt * NUM_KV_HEADS, HEAD_DIM, r2, HEAD_DIM / r2]
             .iter()
@@ -563,9 +566,12 @@ impl AttnTiles {
     }
 }
 
+/// Default: the fastest spill-free shape measured on GB10 (bench_attn, T = 4096): 168 registers per thread,
+/// 8 bytes of stack, 80 KB shared memory, 8 warps, 1 tile block per SM. The compiler's default (4 warps)
+/// at bm 16 / bn 64 needs 255 registers and spills 248 bytes per thread, and runs ~1.5x slower.
 impl Default for AttnTiles {
     fn default() -> Self {
-        AttnTiles { bm: 16, bn: 64, latency: 2, p_split: 3, warps: 0, occupancy: 0 }
+        AttnTiles { bm: 16, bn: 32, latency: 2, p_split: 3, warps: 8, occupancy: 0 }
     }
 }
 
