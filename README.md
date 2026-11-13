@@ -39,9 +39,13 @@ cargo build --release --all-targets
 cargo test --release --lib
 
 # Everything else. Any command that uses the GPU runs under the shared GPU lock.
+# Not all green today: engine_layers needs the hidden-state dumps under ../sysone-ref and its gate (a) is being
+# redefined (docs/PHASE2A.md); kernels_nvfp4's layer-0 test fails unless reference/nvfp4/data was generated.
+# See docs/ARCHITECTURE.md §6.3 for each test's data prerequisites.
 scripts/gpu.sh cargo test --release --all-targets
 
 # Serve elephant-1 on the GPU (default listen address 0.0.0.0:8000).
+# --engine defaults to mock: without --engine bf16 the server looks healthy but returns fake logits.
 ./target/release/sysone --model /path/to/elephant-1 --engine bf16
 
 # Serve with the deterministic mock engine (real frontend and scheduler, fake logits; no GPU needed).

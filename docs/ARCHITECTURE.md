@@ -120,7 +120,9 @@ Step by step, with the code that runs:
 7. **Engine step** (`src/engine/gpu.rs`, `GpuEngine::run`):
    - `split` / `split_batch`: if the batch exceeds the largest bucket's answer or segment capacity, or holds more
      prefixes than the GDN state slots (`--max-prefixes`), it is split by request into several steps.
-   - `pick_bucket`: the smallest `Bucket` that fits tokens, answers and segments (plus one pad segment).
+   - `pick_bucket`: the smallest `Bucket` that fits tokens, answers and segments (plus one pad segment). If none fits,
+     the batch is split; in practice the scheduler prevents a token overflow, because its token budget is clamped to
+     `GpuEngine::max_tokens_per_step` (the largest bucket).
    - `stage`: `TileKernels::prepare` (allocate the bucket's GDN plan and attention work list once),
      `MetaUploader::pack` + `upload` (batch metadata into a pinned host slot, then async H2D), and
      `TileKernels::update` (rewrite the GDN segment/chunk tables and the attention work list for this batch).
@@ -356,8 +358,8 @@ Gotchas:
   scratch implicitly.
 
 Gotchas (from code comments and the Phase 2a review):
-- **`GdnPlan` carries mutable per-batch data** (`qk_inv`, besides its tables), and `TileKernels::update` rewrites the
-  plan and the attention work list in place before each step. One engine therefore runs one step at a time on one
+- **`GdnPlan` and the attention work list are rewritten in place** by `TileKernels::update` before each step (the
+  fused path's `qk_inv` is per-batch data too, though the engine does not use that path yet). One engine therefore runs one step at a time on one
   stream; the plans cannot be shared across concurrent streams.
 - **Stale pad rows:** the arena is shared across buckets and not cleared, so rows past the batch's tokens hold
   leftovers from earlier steps. Nothing reads them into real rows (segment-aware kernels skip the pad segment,
@@ -506,7 +508,7 @@ cargo test --release --test cpu_ref -- --ignored --nocapture # minutes of CPU, r
 
 ## 7. Benchmarks and scripts
 
-All benchmark binaries call `engine::platform::require_idle_gpu`: they refuse to start while another process holds
+All GPU benchmark and probe binaries (not `loadgen` or `cpu_ref_check`) call `engine::platform::require_idle_gpu`: they refuse to start while another process holds
 a CUDA context, unless `--allow-shared-gpu` is passed (the output is then marked not authoritative). Run them through
 `scripts/gpu.sh` so they also hold the lock. Build first with `cargo build --release --bins`.
 
