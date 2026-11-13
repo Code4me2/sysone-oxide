@@ -22,8 +22,10 @@
 //! - `q_norm`/`k_norm`: fp32 statistics, `* (1 + w)`, rounded to bf16.
 //! - RoPE: `cos`/`sin` are computed in fp32 from `pos * inv_freq` (fp32 product) and cast to bf16. Then
 //!   `(x * cos) + (rotate_half(x) * sin)` is evaluated on bf16 tensors: each product and the sum are rounded.
-//! - Attention: fp32 scores and softmax; the probabilities are rounded to bf16 for the `P @ V` product
-//!   (as the sdpa/eager kernels do); output rounded to bf16.
+//! - Attention: qev runs `sdpa`, which for head_dim 256 with a mask dispatches to the MATH backend on
+//!   GB10 (flash and mem-efficient refuse it), i.e. fp32 attention with only the output rounded to bf16. The
+//!   kernel keeps scores, softmax and P in fp32 (P enters the bf16 MMA as a hi + lo pair) and rounds the
+//!   output to bf16.
 //! - Gate: `attn_output * torch.sigmoid(gate)` on bf16 tensors: `sigmoid(gate)` is rounded to bf16, then the
 //!   product is rounded.
 
@@ -272,23 +274,22 @@ pub const WORK_FIELDS: usize = 8;
 
 /// The attention schedule for one packed batch, derived from its segment table.
 ///
-/// One work item covers up to `bm` consecutive query rows and one kv head (the grid's y axis):
-/// - a **prefix tile** covers rows of one prefix segment and attends to that whole prefix (range A);
-/// - a **suffix tile** covers rows of a run of consecutive suffix segments that share a parent. All its rows
-///   attend to the whole parent prefix (range A, the same keys for every row, so it is streamed once for
-///   up to `bm` rows from several branches), then to range B: the union of the touched suffix segments,
-///   where each row only sees keys of its own segment (`row_lo[t] <= key < row_hi[t]`).
+/// One work item covers up to `bm` consecutive query rows **of one segment** and one kv head (the grid's
+/// y axis). It attends to two non-causal key ranges:
+/// - range A: the prefix: the segment itself for a prefix tile, the parent prefix for a suffix tile;
+/// - range B: the suffix segment itself (empty for a prefix tile).
 ///
-/// Both ranges are combined with the online-softmax (log-sum-exp) merge. Items are ordered by decreasing
-/// key count (longest first) so the long prefix tiles start first.
+/// The two ranges are combined by the online-softmax (log-sum-exp) merge. Tiles start at the segment's
+/// first row and key blocks start at each range's first key, so a row's arithmetic does not depend on the
+/// rest of the batch: a branch gives bit-identical outputs alone or packed with others.
+///
+/// All suffix tiles of a request read the same prefix keys. Items are ordered by decreasing key count, which
+/// keeps one request's suffix tiles adjacent in launch order, so the prefix keys they share are streamed
+/// from L2 rather than DRAM.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AttnPlan {
     /// `[n, WORK_FIELDS]`: `q0, q_len, a0, a_len, b0, b_len, 0, 0`. `q_len == 0` marks an empty item.
     pub work: Vec<i32>,
-    /// `[T]`: start of each token's own segment.
-    pub row_lo: Vec<i32>,
-    /// `[T]`: end of each token's own segment.
-    pub row_hi: Vec<i32>,
 }
 
 impl AttnPlan {
@@ -297,7 +298,7 @@ impl AttnPlan {
     }
 
     /// Upper bound on [`num_items`](Self::num_items) for any batch of `t` tokens and `segments` segments,
-    /// for sizing a captured graph's grid: every segment run adds at most one partial tile.
+    /// for sizing a captured graph's grid: every segment adds at most one partial tile.
     pub fn max_items(t: usize, segments: usize, bm: usize) -> usize {
         t.div_ceil(bm) + segments
     }
@@ -309,46 +310,24 @@ impl AttnPlan {
     }
 
     pub fn new(segments: &[Segment], bm: usize) -> Self {
-        let t = segments.last().map_or(0, |s| s.end() as usize);
-        let mut row_lo = vec![0i32; t];
-        let mut row_hi = vec![0i32; t];
-        for s in segments {
-            row_lo[s.start as usize..s.end() as usize].fill(s.start as i32);
-            row_hi[s.start as usize..s.end() as usize].fill(s.end() as i32);
-        }
         let mut items: Vec<[i32; WORK_FIELDS]> = Vec::new();
-        let mut i = 0;
-        while i < segments.len() {
-            let s = segments[i];
-            if s.is_prefix() {
-                let mut q = s.start;
-                while q < s.end() {
-                    let n = (s.end() - q).min(bm as u32);
-                    items.push([q as i32, n as i32, s.start as i32, s.len as i32, 0, 0, 0, 0]);
-                    q += n;
-                }
-                i += 1;
-                continue;
-            }
-            // A run of consecutive suffixes with the same parent.
-            let mut j = i;
-            while j + 1 < segments.len() && segments[j + 1].parent == s.parent {
-                j += 1;
-            }
-            let parent = segments[s.parent as usize];
-            let (run_start, run_end) = (s.start, segments[j].end());
-            let mut q = run_start;
-            while q < run_end {
-                let n = (run_end - q).min(bm as u32);
-                let b0 = row_lo[q as usize];
-                let b1 = row_hi[(q + n - 1) as usize];
-                items.push([q as i32, n as i32, parent.start as i32, parent.len as i32, b0, b1 - b0, 0, 0]);
+        for s in segments {
+            let (a0, a_len, b0, b_len) = if s.is_prefix() {
+                (s.start, s.len, 0, 0)
+            } else {
+                let p = segments[s.parent as usize];
+                (p.start, p.len, s.start, s.len)
+            };
+            let mut q = s.start;
+            while q < s.end() {
+                let n = (s.end() - q).min(bm as u32);
+                items.push([q, n, a0, a_len, b0, b_len, 0, 0].map(|v| v as i32));
                 q += n;
             }
-            i = j + 1;
         }
+        // Stable: equal-cost items keep stream order.
         items.sort_by_key(|w| std::cmp::Reverse(w[3] + w[5]));
-        AttnPlan { work: items.into_iter().flatten().collect(), row_lo, row_hi }
+        AttnPlan { work: items.into_iter().flatten().collect() }
     }
 }
 
@@ -372,6 +351,7 @@ pub mod seg_attn_module {
         const HQ: i32,
         const HK: i32,
         const LAT: i32,
+        const PS: i32, // bf16 parts of P in the P @ V product: 1, 2 or 3
     >(
         out_ptr: *mut bf16,
         q_ptr: *mut bf16,
@@ -379,8 +359,6 @@ pub mod seg_attn_module {
         kv_ptr: *mut bf16,
         qg_ptr: *mut bf16,
         work_ptr: *mut i32,
-        row_lo_ptr: *mut i32,
-        row_hi_ptr: *mut i32,
         num_items: i32,
         qk_scale: f32,
     ) {
@@ -402,15 +380,18 @@ pub mod seg_attn_module {
         let b_len: i32 = scalar_at(&work_part, item * 8i32 + 5i32);
 
         if q_len > 0i32 {
-            let ln2: Tile<f32, { [] }> = log(constant(2.0f32, const_shape![]));
-            let ln2: f32 = tile_to_scalar(ln2);
-            let scale_log2: f32 = qk_scale / ln2;
+            // exp(x * scale) = exp2(x * scale * log2(e)).
+            let scale_log2: f32 = qk_scale * 1.4426950408889634f32;
             let scale_t: Tile<f32, { [ME, BN] }> = scale_log2.broadcast(const_shape![ME, BN]);
             let scale_c: Tile<f32, { [ME, 1] }> = scale_log2.broadcast(const_shape![ME, 1]);
             let neg_big: Tile<f32, { [ME, BN] }> = constant(-1.0e30f32, const_shape![ME, BN]);
             let zero_mn: Tile<f32, { [ME, BN] }> = constant(0.0f32, const_shape![ME, BN]);
+            let zero_md: Tile<f32, { [ME, D] }> = constant(0.0f32, const_shape![ME, D]);
+            let offs_n: Tile<i32, { [BN] }> = iota(const_shape![BN]);
+            let offs_n: Tile<i32, { [ME, BN] }> = offs_n.reshape(const_shape![1, BN]).broadcast(const_shape![ME, BN]);
 
             // Q rows [q0, q0 + q_len), the G heads of kv head `kvh`: [BM, G, D] -> [ME, D] (row = tok*G + g).
+            // Rows past q_len are zero-padded on load and dropped on store.
             let q_shape: Shape<{ [-1, HQ, D] }> = Shape::<{ [-1, HQ, D] }> { dims: &[q_len] };
             let q_strides: Array<{ [-1, -1, 1] }> = Array::<{ [-1, -1, 1] }> { dims: &[HQ * D, D] };
             let q_base: PointerTile<*mut bf16, { [] }> = pointer_to_tile(q_ptr).offset(q0 * HQ * D);
@@ -420,87 +401,67 @@ pub mod seg_attn_module {
                 load_view_tko(&q_part, [0i32, kvh, 0i32], ordering::Weak, scope::TileBlock, Some(LAT), tma::Enabled);
             let tq: Tile<bf16, { [ME, D] }> = tq.reshape(const_shape![ME, D]);
 
-            // Per-row own-segment bounds [lo, hi) for range B, row r = tok * G + g.
-            let rb_shape: Shape<{ [-1] }> = Shape::<{ [-1] }> { dims: &[q_len] };
-            let rb_strides: Array<{ [1] }> = Array::<{ [1] }> { dims: &[] };
-            let lo_tv: Tensor<i32, { [-1] }> = unsafe {
-                make_tensor_view(pointer_to_tile(row_lo_ptr).offset(q0), rb_shape, rb_strides, tok)
-            };
-            let hi_tv: Tensor<i32, { [-1] }> = unsafe {
-                make_tensor_view(pointer_to_tile(row_hi_ptr).offset(q0), rb_shape, rb_strides, tok)
-            };
-            let lo_part: Partition<i32, { [BM] }> = lo_tv.partition(const_shape![BM]);
-            let hi_part: Partition<i32, { [BM] }> = hi_tv.partition(const_shape![BM]);
-            let lo_bm: Tile<i32, { [BM] }> =
-                load_view_tko(&lo_part, [0i32], ordering::Weak, scope::TileBlock, None, tma::Disabled);
-            let hi_bm: Tile<i32, { [BM] }> =
-                load_view_tko(&hi_part, [0i32], ordering::Weak, scope::TileBlock, None, tma::Disabled);
-            let lo_b: Tile<i32, { [ME, BN] }> = lo_bm
-                .reshape(const_shape![BM, 1])
-                .broadcast(const_shape![BM, G])
-                .reshape(const_shape![ME, 1])
-                .broadcast(const_shape![ME, BN]);
-            let hi_b: Tile<i32, { [ME, BN] }> = hi_bm
-                .reshape(const_shape![BM, 1])
-                .broadcast(const_shape![BM, G])
-                .reshape(const_shape![ME, 1])
-                .broadcast(const_shape![ME, BN]);
-            let offs_n: Tile<i32, { [BN] }> = iota(const_shape![BN]);
-            let offs_n: Tile<i32, { [ME, BN] }> = offs_n.reshape(const_shape![1, BN]).broadcast(const_shape![ME, BN]);
-
             let mut m_i: Tile<f32, { [ME, 1] }> = constant(-1.0e30f32, const_shape![ME, 1]);
             let mut l_i: Tile<f32, { [ME, 1] }> = constant(0.0f32, const_shape![ME, 1]);
             let mut acc: Tile<f32, { [ME, D] }> = constant(0.0f32, const_shape![ME, D]);
             let transpose: Array<{ [1, 0] }> = Array::<{ [1, 0] }> { dims: &[1i32, 0i32] };
-            let kv_strides_k: Array<{ [-1, 1] }> = Array::<{ [-1, 1] }> { dims: &[HK * D] };
-            let kv_strides_v: Array<{ [-1, 1] }> = Array::<{ [-1, 1] }> { dims: &[2i32 * HK * D] };
+            let k_strides: Array<{ [-1, 1] }> = Array::<{ [-1, 1] }> { dims: &[HK * D] };
+            let v_strides: Array<{ [-1, 1] }> = Array::<{ [-1, 1] }> { dims: &[2i32 * HK * D] };
 
+            // Range A then range B; the online softmax carries (m, l, acc) across both (the LSE merge).
             for r in 0i32..2i32 {
                 let r0: i32 = if r == 0i32 { a0 } else { b0 };
                 let r_len: i32 = if r == 0i32 { a_len } else { b_len };
-                if r_len > 0i32 {
-                    // Range A: every row sees [a0, a0 + a_len). Range B: each row sees its own segment.
-                    let lo_t: Tile<i32, { [ME, BN] }> =
-                        if r == 0i32 { a0.broadcast(const_shape![ME, BN]) } else { lo_b };
-                    let hi_t: Tile<i32, { [ME, BN] }> =
-                        if r == 0i32 { (a0 + a_len).broadcast(const_shape![ME, BN]) } else { hi_b };
-                    let kv_shape: Shape<{ [-1, D] }> = Shape::<{ [-1, D] }> { dims: &[r_len] };
-                    let k_base: PointerTile<*mut bf16, { [] }> =
-                        pointer_to_tile(k_ptr).offset((r0 * HK + kvh) * D);
-                    let v_base: PointerTile<*mut bf16, { [] }> =
-                        pointer_to_tile(kv_ptr).offset((r0 * 2i32 * HK + HK + kvh) * D);
-                    let k_tv: Tensor<bf16, { [-1, D] }> =
-                        unsafe { make_tensor_view(k_base, kv_shape, kv_strides_k, tok) };
-                    let v_tv: Tensor<bf16, { [-1, D] }> =
-                        unsafe { make_tensor_view(v_base, kv_shape, kv_strides_v, tok) };
-                    let k_part: Partition<bf16, { [BN, D] }> = k_tv.partition(const_shape![BN, D]);
-                    let v_part: Partition<bf16, { [BN, D] }> = v_tv.partition(const_shape![BN, D]);
-                    let n_blocks: i32 = ceil_div(r_len, BN);
-                    for j in 0i32..n_blocks {
-                        let tk: Tile<bf16, { [BN, D] }> = load_view_tko(
-                            &k_part, [j, 0i32], ordering::Weak, scope::TileBlock, Some(LAT), tma::Enabled,
-                        );
-                        let tkt: Tile<bf16, { [D, BN] }> = permute(tk, transpose);
-                        let qk: Tile<f32, { [ME, BN] }> = mma(tq, tkt, zero_mn);
-                        let key: Tile<i32, { [ME, BN] }> = (r0 + j * BN).broadcast(const_shape![ME, BN]) + offs_n;
-                        let valid: Tile<bool, { [ME, BN] }> = ge_tile(key, lo_t) & lt_tile(key, hi_t);
-                        let qk: Tile<f32, { [ME, BN] }> = select(valid, qk, neg_big);
-
-                        let qk_max: Tile<f32, { [ME] }> = reduce_max(qk, 1i32);
-                        let m_ij: Tile<f32, { [ME, 1] }> = max_tile(m_i, qk_max.reshape(const_shape![ME, 1]) * scale_c);
-                        let p: Tile<f32, { [ME, BN] }> =
-                            exp2(qk * scale_t - m_ij.broadcast(const_shape![ME, BN]), ftz::Disabled);
-                        let l_ij: Tile<f32, { [ME] }> = reduce_sum(p, 1i32);
-                        let alpha: Tile<f32, { [ME, 1] }> = exp2(m_i - m_ij, ftz::Disabled);
-                        l_i = l_i * alpha + l_ij.reshape(const_shape![ME, 1]);
-                        acc = acc * alpha.broadcast(const_shape![ME, D]);
-                        let tv: Tile<bf16, { [BN, D] }> = load_view_tko(
-                            &v_part, [j, 0i32], ordering::Weak, scope::TileBlock, Some(LAT), tma::Enabled,
-                        );
-                        let pb: Tile<bf16, { [ME, BN] }> = convert_tile(p);
-                        acc = mma(pb, tv, acc);
-                        m_i = m_ij;
+                let kv_shape: Shape<{ [-1, D] }> = Shape::<{ [-1, D] }> { dims: &[max(r_len, 1i32)] };
+                let k_base: PointerTile<*mut bf16, { [] }> = pointer_to_tile(k_ptr).offset((r0 * HK + kvh) * D);
+                let v_base: PointerTile<*mut bf16, { [] }> =
+                    pointer_to_tile(kv_ptr).offset((r0 * 2i32 * HK + HK + kvh) * D);
+                let k_tv: Tensor<bf16, { [-1, D] }> = unsafe { make_tensor_view(k_base, kv_shape, k_strides, tok) };
+                let v_tv: Tensor<bf16, { [-1, D] }> = unsafe { make_tensor_view(v_base, kv_shape, v_strides, tok) };
+                let k_part: Partition<bf16, { [BN, D] }> = k_tv.partition(const_shape![BN, D]);
+                let v_part: Partition<bf16, { [BN, D] }> = v_tv.partition(const_shape![BN, D]);
+                let n_full: i32 = r_len / BN;
+                let n_blocks: i32 = ceil_div(r_len, BN);
+                for j in 0i32..n_blocks {
+                    let tk: Tile<bf16, { [BN, D] }> =
+                        load_view_tko(&k_part, [j, 0i32], ordering::Weak, scope::TileBlock, Some(LAT), tma::Enabled);
+                    let tkt: Tile<bf16, { [D, BN] }> = permute(tk, transpose);
+                    let mut qk: Tile<f32, { [ME, BN] }> = mma(tq, tkt, zero_mn);
+                    if j >= n_full {
+                        // Partial last block: keys past the range are masked out.
+                        let key: Tile<i32, { [ME, BN] }> = (j * BN).broadcast(const_shape![ME, BN]) + offs_n;
+                        let valid: Tile<bool, { [ME, BN] }> = lt_tile(key, r_len.broadcast(const_shape![ME, BN]));
+                        qk = select(valid, qk, neg_big);
                     }
+                    let qk_max: Tile<f32, { [ME] }> = reduce_max(qk, 1i32);
+                    let m_ij: Tile<f32, { [ME, 1] }> = max_tile(m_i, qk_max.reshape(const_shape![ME, 1]) * scale_c);
+                    let p: Tile<f32, { [ME, BN] }> =
+                        exp2(qk * scale_t - m_ij.broadcast(const_shape![ME, BN]), ftz::Disabled);
+                    let l_ij: Tile<f32, { [ME] }> = reduce_sum(p, 1i32);
+                    let alpha: Tile<f32, { [ME, 1] }> = exp2(m_i - m_ij, ftz::Disabled);
+                    l_i = l_i * alpha + l_ij.reshape(const_shape![ME, 1]);
+                    let tv: Tile<bf16, { [BN, D] }> =
+                        load_view_tko(&v_part, [j, 0i32], ordering::Weak, scope::TileBlock, Some(LAT), tma::Enabled);
+                    // P @ V with P split into PS bf16 parts (hi, mid, lo: ~24 mantissa bits at PS = 3). The
+                    // reference's sdpa (MATH backend for head_dim 256 with a mask) keeps P in fp32; a single bf16
+                    // P is 4x off its error envelope (see tests/kernels_attn.rs). The block product starts from
+                    // zero and is added to the running sum in fp32 rather than accumulated inside the MMA.
+                    let p_hi: Tile<bf16, { [ME, BN] }> = convert_tile(p);
+                    let mut pv: Tile<f32, { [ME, D] }> = zero_md;
+                    if PS > 1i32 {
+                        let p_hi_f: Tile<f32, { [ME, BN] }> = convert_tile(p_hi);
+                        let p_r1: Tile<f32, { [ME, BN] }> = p - p_hi_f;
+                        let p_mid: Tile<bf16, { [ME, BN] }> = convert_tile(p_r1);
+                        if PS > 2i32 {
+                            let p_mid_f: Tile<f32, { [ME, BN] }> = convert_tile(p_mid);
+                            let p_lo: Tile<bf16, { [ME, BN] }> = convert_tile(p_r1 - p_mid_f);
+                            pv = mma(p_lo, tv, pv);
+                        }
+                        pv = mma(p_mid, tv, pv);
+                    }
+                    pv = mma(p_hi, tv, pv);
+                    acc = acc * alpha.broadcast(const_shape![ME, D]) + pv;
+                    m_i = m_ij;
                 }
             }
 
@@ -508,10 +469,9 @@ pub mod seg_attn_module {
             let o: Tile<f32, { [ME, D] }> = true_div(acc, l_i.broadcast(const_shape![ME, D]));
             let o: Tile<bf16, { [ME, D] }> = convert_tile(o);
             let o: Tile<f32, { [ME, D] }> = convert_tile(o);
-            let g_shape: Shape<{ [-1, HQ, D] }> = Shape::<{ [-1, HQ, D] }> { dims: &[q_len] };
             let g_strides: Array<{ [-1, -1, 1] }> = Array::<{ [-1, -1, 1] }> { dims: &[HQ * 2i32 * D, 2i32 * D] };
             let g_base: PointerTile<*mut bf16, { [] }> = pointer_to_tile(qg_ptr).offset(q0 * HQ * 2i32 * D + D);
-            let g_tv: Tensor<bf16, { [-1, HQ, D] }> = unsafe { make_tensor_view(g_base, g_shape, g_strides, tok) };
+            let g_tv: Tensor<bf16, { [-1, HQ, D] }> = unsafe { make_tensor_view(g_base, q_shape, g_strides, tok) };
             let g_part: Partition<bf16, { [BM, G, D] }> = g_tv.partition(const_shape![BM, G, D]);
             let tg: Tile<bf16, { [BM, G, D] }> =
                 load_view_tko(&g_part, [0i32, kvh, 0i32], ordering::Weak, scope::TileBlock, None, tma::Enabled);
@@ -524,11 +484,13 @@ pub mod seg_attn_module {
 
             let o_base: PointerTile<*mut bf16, { [] }> = pointer_to_tile(out_ptr).offset(q0 * HQ * D);
             let o_tv: Tensor<bf16, { [-1, HQ, D] }> = unsafe { make_tensor_view(o_base, q_shape, q_strides, tok) };
-            let mut o_part: PartitionMut<bf16, { [BM, G, D] }> = unsafe { o_tv.partition_full_mut(const_shape![BM, G, D]) };
+            let mut o_part: PartitionMut<bf16, { [BM, G, D] }> =
+                unsafe { o_tv.partition_full_mut(const_shape![BM, G, D]) };
+            let y: Tile<bf16, { [BM, G, D] }> = y.reshape(const_shape![BM, G, D]);
             unsafe {
                 store_view_tko_mut(
                     &mut o_part,
-                    y.reshape(const_shape![BM, G, D]),
+                    y,
                     [0i32, kvh, 0i32],
                     ordering::Weak,
                     scope::TileBlock,
@@ -549,11 +511,14 @@ pub struct AttnTiles {
     pub bn: usize,
     /// Load pipelining hint.
     pub latency: usize,
+    /// bf16 parts P is split into for `P @ V` (1, 2 or 3). 3 matches the fp32 reference (default); 1 is the
+    /// classic flash-attention bf16 P, ~4x outside the reference's error envelope.
+    pub p_split: usize,
 }
 
 impl Default for AttnTiles {
     fn default() -> Self {
-        AttnTiles { bm: 16, bn: 64, latency: 2 }
+        AttnTiles { bm: 16, bn: 64, latency: 2, p_split: 3 }
     }
 }
 
@@ -572,9 +537,6 @@ pub struct SegAttnArgs {
     pub qg: DevicePointer<bf16>,
     /// [`AttnPlan::work`] on the device.
     pub work: DevicePointer<i32>,
-    /// [`AttnPlan::row_lo`] / [`AttnPlan::row_hi`] on the device.
-    pub row_lo: DevicePointer<i32>,
-    pub row_hi: DevicePointer<i32>,
     /// Items in `work` (the grid's x extent), including padding items.
     pub num_items: usize,
 }
@@ -583,8 +545,7 @@ pub struct SegAttnArgs {
 ///
 /// # Safety
 /// Every pointer must reference a live device buffer of the documented shape for the batch the plan was
-/// built from (`T` = the plan's token count), and `out` must not alias any input. The plan must have been
-/// built with `tiles.bm`.
+/// built from, and `out` must not alias any input. The plan must have been built with `tiles.bm`.
 pub unsafe fn seg_attn(args: SegAttnArgs, tiles: AttnTiles) -> impl DeviceOp + GraphNode {
     let generics = vec![
         tiles.bm.to_string(),
@@ -595,6 +556,7 @@ pub unsafe fn seg_attn(args: SegAttnArgs, tiles: AttnTiles) -> impl DeviceOp + G
         NUM_Q_HEADS.to_string(),
         NUM_KV_HEADS.to_string(),
         tiles.latency.to_string(),
+        tiles.p_split.to_string(),
     ];
     unsafe {
         seg_attn_module::seg_attn(
@@ -604,8 +566,6 @@ pub unsafe fn seg_attn(args: SegAttnArgs, tiles: AttnTiles) -> impl DeviceOp + G
             args.kv,
             args.qg,
             args.work,
-            args.row_lo,
-            args.row_hi,
             args.num_items as i32,
             ATTN_SCALE,
         )
@@ -628,18 +588,19 @@ mod tests {
         let mut seen = vec![0; b.num_tokens()];
         for w in plan.work.chunks(WORK_FIELDS) {
             let [q0, n, a0, alen, b0, blen, ..] = *w else { unreachable!() };
-            assert!(n >= 1 && n <= 16);
+            assert!((1..=16).contains(&n));
+            let seg = b.segments.iter().find(|s| s.start as i32 <= q0 && q0 < s.end() as i32).unwrap();
+            assert!(q0 + n <= seg.end() as i32, "a tile never crosses a segment end");
+            assert_eq!((q0 - seg.start as i32) % 16, 0, "tiles start at the segment start");
+            let pre = if seg.is_prefix() { seg } else { &b.segments[seg.parent as usize] };
+            assert_eq!((a0, alen), (pre.start as i32, pre.len as i32));
+            if seg.is_prefix() {
+                assert_eq!(blen, 0);
+            } else {
+                assert_eq!((b0, blen), (seg.start as i32, seg.len as i32));
+            }
             for t in q0..q0 + n {
                 seen[t as usize] += 1;
-                let seg = b.segments.iter().find(|s| s.start as i32 <= t && t < s.end() as i32).unwrap();
-                let pre = if seg.is_prefix() { seg } else { &b.segments[seg.parent as usize] };
-                assert_eq!((a0, alen), (pre.start as i32, pre.len as i32));
-                if seg.is_prefix() {
-                    assert_eq!(blen, 0);
-                } else {
-                    assert!(b0 <= seg.start as i32 && seg.end() as i32 <= b0 + blen);
-                    assert_eq!((plan.row_lo[t as usize], plan.row_hi[t as usize]), (seg.start as i32, seg.end() as i32));
-                }
             }
         }
         assert!(seen.iter().all(|&c| c == 1));

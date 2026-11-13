@@ -77,9 +77,10 @@ fn upload<T: DType>(v: Vec<T>, shape: &[usize], stream: &Arc<cuda_core::Stream>)
     api::copy_host_vec_to_device(&Arc::new(v)).reshape(shape).sync_on(stream).unwrap()
 }
 
+/// One CUDA context and stream shared by every test in this binary.
 fn setup() -> Arc<cuda_core::Stream> {
-    let ctx = Context::new(0).unwrap();
-    ctx.new_stream().unwrap()
+    static STREAM: std::sync::OnceLock<Arc<cuda_core::Stream>> = std::sync::OnceLock::new();
+    STREAM.get_or_init(|| Context::new(0).unwrap().new_stream().unwrap()).clone()
 }
 
 /// `Qwen3_5RMSNorm.forward` before the final `.type_as(x)`.
