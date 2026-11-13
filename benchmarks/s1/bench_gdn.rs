@@ -124,6 +124,9 @@ struct Args {
     tp_warps: Vec<i32>,
     #[arg(long, value_delimiter = ',')]
     tp_fsb: Vec<i32>,
+    /// Scan variants with the stacked x/o product: comma-separated 0/1.
+    #[arg(long, value_delimiter = ',')]
+    merge_xo: Vec<i32>,
     /// Time the Phase 1 (W3a) four-launch scan instead (inverse, WY, prefix scan, suffix scan).
     #[arg(long)]
     w3a: bool,
@@ -216,7 +219,10 @@ fn main() -> Result<()> {
             for scan_warps in ori(&args.scan_warps, base.scan_warps) {
                 for tp_warps in ori(&args.tp_warps, base.tp_warps) {
                     for tp_fsb in ori(&args.tp_fsb, base.tp_fsb) {
-                        configs.push(GdnOptions { prefix_bv, suffix_bv, scan_warps, tp_warps, tp_fsb, ..base });
+                        for xo in ori(&args.merge_xo, base.scan_merge_xo as i32) {
+                            let scan_merge_xo = xo != 0;
+                            configs.push(GdnOptions { prefix_bv, suffix_bv, scan_warps, tp_warps, tp_fsb, scan_merge_xo, ..base });
+                        }
                     }
                 }
             }

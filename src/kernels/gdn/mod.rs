@@ -6,17 +6,20 @@
 //! ```text
 //! conv   = tree_conv1d_silu(qkv, conv_w)                  bf16 [T, 8192]
 //! q,k,g,beta = gdn_prep(conv, a, b, A_log, dt_bias)       f32 [T,16,128] x2, f32 [T,32] x2
-//! tinv   = gdn_chunk_tinv(k, g, beta)                     f32 [T,32,64]        (parallel over chunks)
-//! w,u,qd,kd,p = gdn_chunk_wy(q, k, v=conv[:, 4096:], ..)  f32 [T,32,128] x4, [T,32,64]   (parallel)
-//! o      = gdn_chunk_state(w, u, qd, kd, p, g)            bf16 [T, 4096]       (prefixes, then suffixes)
+//! tinv,p = gdn_chunk_tp(q, k, g, beta)                   f32 [T,32,64] x2     (parallel over chunks)
+//! o      = gdn_chunk_scan_fused(q, k, v, g, beta, tinv, p) bf16 [T, 4096]      (prefixes, then suffixes)
 //! y      = gated_rmsnorm(o, z, norm_w)                    bf16 [T, 4096]
 //! ```
 //!
-//! Numerics follow `torch_chunk_gated_delta_rule` (chunk 64, UT/WY form, fp32), with two deliberate,
-//! mathematically identical changes: fp32 matmuls run as split-TF32 ("3xTF32", ~2^-21 per product) because cuTile's
-//! plain f32 `mma` is emulated and spills; and the decay to the chunk end uses a reverse scan instead of
-//! `cum_last - cum` (which cancels catastrophically for strongly decaying heads). Measured against an f64 oracle,
-//! both stay inside the error envelope of transformers' own f32 implementation (tests/kernels_gdn.rs).
+//! Numerics follow `torch_chunk_gated_delta_rule` (chunk 64, UT/WY form, fp32), with deliberate, mathematically
+//! identical changes: fp32 matmuls run as split-TF32 ("3xTF32", ~2^-21 per product) because cuTile's plain f32
+//! `mma` is emulated and spills; the decay to the chunk end uses a reverse scan instead of `cum_last - cum` (which
+//! cancels catastrophically for strongly decaying heads); the unit lower-triangular inverse is computed blockwise
+//! (forward substitution inside 16-row blocks, then block doubling, as fla's `solve_tril`); and the scan uses
+//! `v_new = Tinv (v*beta - (k*beta*exp(cum)) S)` instead of the reference's `u - w S` with stored `u = Tinv v*beta`,
+//! `w = Tinv k*beta*exp(cum)`, so no `[T, 4096]` f32 intermediate is written (P1). Measured against an f64 oracle,
+//! these stay inside the error envelope of transformers' own f32 implementation (tests/kernels_gdn.rs).
+//! [`GdnPrecision`] selects faster, less precise products (DESIGN §1 "Precision knobs").
 //!
 //! Segment structure comes from a [`GdnPlan`] (device tables built from the batch's [`Segment`]s). Grids depend
 //! only on the plan's capacities, so a launch sequence can be captured once per T bucket and replayed after
@@ -294,9 +297,44 @@ pub unsafe fn tree_conv1d_silu(
     conv_w: &Tensor<bf16>,
     out: DView<bf16>,
 ) -> Result<BoxedDeviceOp<()>> {
+    unsafe { conv_impl(plan, x, conv_w, out, None) }
+}
+
+/// [`tree_conv1d_silu`] that also writes the L2-normalised (q also scaled) f32 q and k into `scratch.{q,k}`,
+/// exactly as [`gdn_prep`] computes them from the conv output; pair it with [`gdn_gates`]. Saves reading the
+/// q and k columns back.
+///
+/// # Safety
+/// As for [`tree_conv1d_silu`].
+pub unsafe fn tree_conv1d_silu_qk(
+    plan: &GdnPlan,
+    x: DView<bf16>,
+    conv_w: &Tensor<bf16>,
+    out: DView<bf16>,
+    scratch: &GdnScratch,
+) -> Result<BoxedDeviceOp<()>> {
+    ensure!(plan.tokens <= scratch.tokens, "plan has {} tokens, scratch {}", plan.tokens, scratch.tokens);
+    unsafe { conv_impl(plan, x, conv_w, out, Some(scratch)) }
+}
+
+unsafe fn conv_impl(
+    plan: &GdnPlan,
+    x: DView<bf16>,
+    conv_w: &Tensor<bf16>,
+    out: DView<bf16>,
+    qk: Option<&GdnScratch>,
+) -> Result<BoxedDeviceOp<()>> {
     x.check("conv input", plan.tokens, CONV_DIM)?;
     out.check("conv output", plan.tokens, CONV_DIM)?;
     let w = check_tensor("conv_w", conv_w, &[CONV_DIM, CONV_KERNEL])?;
+    let (q, k) = match qk {
+        Some(s) => (s.q.device_pointer(), s.k.device_pointer()),
+        // SAFETY: never dereferenced by the kernel without QK.
+        None => unsafe {
+            let p = DevicePointer::<f32>::from_cu_deviceptr(out.ptr.cu_deviceptr());
+            (p, p)
+        },
+    };
     let op = unsafe {
         gdn_tile::tree_conv1d_silu(
             x.ptr,
@@ -304,12 +342,14 @@ pub unsafe fn tree_conv1d_silu(
             w,
             out.ptr,
             value(out.row_stride as i32),
+            q,
+            k,
             plan.chunks.device_pointer(),
             value(plan.max_chunks as i32),
             value(plan.tokens as i32),
         )
     }
-    .generics(vec![CONV_DIM.to_string(), CONV_BC.to_string()])
+    .generics(vec![CONV_DIM.to_string(), CONV_BC.to_string(), (CONV_BC / HEAD_DIM).to_string(), (qk.is_some() as i32).to_string()])
     .grid(grid(plan.max_chunks, CONV_DIM / CONV_BC, 1));
     Ok(op.map(|_| ()).boxed())
 }
@@ -326,6 +366,33 @@ pub unsafe fn gdn_prep(
     b: DView<bf16>,
     w: &GdnWeights<'_>,
     scratch: &GdnScratch,
+) -> Result<BoxedDeviceOp<()>> {
+    unsafe { prep_impl(plan, conv, a, b, w, scratch, true) }
+}
+
+/// The gate half of [`gdn_prep`] (g, beta only), for use after [`tree_conv1d_silu_qk`].
+///
+/// # Safety
+/// As for [`tree_conv1d_silu`].
+pub unsafe fn gdn_gates(
+    plan: &GdnPlan,
+    conv: DView<bf16>,
+    a: DView<bf16>,
+    b: DView<bf16>,
+    w: &GdnWeights<'_>,
+    scratch: &GdnScratch,
+) -> Result<BoxedDeviceOp<()>> {
+    unsafe { prep_impl(plan, conv, a, b, w, scratch, false) }
+}
+
+unsafe fn prep_impl(
+    plan: &GdnPlan,
+    conv: DView<bf16>,
+    a: DView<bf16>,
+    b: DView<bf16>,
+    w: &GdnWeights<'_>,
+    scratch: &GdnScratch,
+    qk: bool,
 ) -> Result<BoxedDeviceOp<()>> {
     let t = plan.tokens;
     ensure!(t <= scratch.tokens, "plan has {t} tokens, scratch {}", scratch.tokens);
@@ -351,8 +418,8 @@ pub unsafe fn gdn_prep(
             value(t as i32),
         )
     }
-    .generics(vec![ROW_BLOCK.to_string()])
-    .grid(grid(t.div_ceil(ROW_BLOCK), NUM_K_HEADS, 1));
+    .generics(vec![ROW_BLOCK.to_string(), (qk as i32).to_string()])
+    .grid(grid(t.div_ceil(ROW_BLOCK), if qk { NUM_K_HEADS } else { 1 }, 1));
     Ok(op.map(|_| ()).boxed())
 }
 
@@ -399,11 +466,13 @@ pub struct GdnOptions {
     /// Block size of the chunk inverse solved by forward substitution before block doubling takes over (a
     /// power of two, 2..=64; 2 = doubling only, 64 = forward substitution only).
     pub tp_fsb: i32,
+    /// Compute `(k*beta*exp(cum)) S` and `(q*exp(cum)) S` as one stacked `[128, 32]` product per state block.
+    pub scan_merge_xo: bool,
 }
 
 impl Default for GdnOptions {
     fn default() -> Self {
-        Self { precision: GdnPrecision::default(), prefix_bv: 32, suffix_bv: 64, scan_warps: 4, tp_warps: 4, tp_fsb: 16 }
+        Self { precision: GdnPrecision::default(), prefix_bv: 32, suffix_bv: 64, scan_warps: 4, tp_warps: 4, tp_fsb: 16, scan_merge_xo: false }
     }
 }
 
@@ -484,7 +553,7 @@ pub unsafe fn gdn_chunk_scan_with(
                 value(phase),
             )
         }
-        .generics(vec![scan_ty.to_string(), scan_split.to_string(), bv.to_string()])
+        .generics(vec![scan_ty.to_string(), scan_split.to_string(), bv.to_string(), (opts.scan_merge_xo as i32).to_string()])
         .compile_options(CompileOptions::default().num_worker_warps_per_cta(opts.scan_warps))
         .grid(grid(plan.max_segs, NUM_V_HEADS, HEAD_DIM / bv));
         ops.push(scan.map(|_| ()));
@@ -645,8 +714,8 @@ pub unsafe fn gdn_mixer_with(
     let core = DView::of(&scratch.core)?;
     let mut ops = DeviceOpVec::with_capacity(6);
     unsafe {
-        ops.push(tree_conv1d_silu(plan, qkv, w.conv_w, conv)?);
-        ops.push(gdn_prep(plan, conv, a, b, w, scratch)?);
+        ops.push(tree_conv1d_silu_qk(plan, qkv, w.conv_w, conv, scratch)?);
+        ops.push(gdn_gates(plan, conv, a, b, w, scratch)?);
         ops.push(gdn_chunk_scan_with(plan, conv.columns(2 * KEY_DIM, VALUE_DIM)?, scratch, core, opts)?.map(|_| ()));
         ops.push(gated_rmsnorm(plan, core, z, w.norm_w, eps, out)?);
     }
