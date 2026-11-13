@@ -5,6 +5,7 @@
 # CHUNK_SECONDS with run_sysone.py, stop the server, release the lock. Loops until every record is in a part.
 #   bash reference/eval/run_sysone.sh                 # name sysone_bf16
 #   NAME=sysone_bf16_x CHUNK_SECONDS=300 bash reference/eval/run_sysone.sh
+#   NAME=sysone_smoke RUN_ARGS='--limit 3' bash reference/eval/run_sysone.sh   # harness smoke (subset)
 # Then: python3 -I reference/eval/score.py --run-file tests/golden/dev/eval/candidates/sysone_bf16.json --tier bf16
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd -P)
@@ -40,7 +41,7 @@ p = sys.argv[1]; b = json.load(open(p)); b["provenance"]["load_seconds"] = float
 json.dump(b, open(p + ".chunk", "w"))
 EOF
   python3 -I "$HERE/run_sysone.py" --name "$NAME" --server "http://127.0.0.1:$PORT" \
-    --build "$PARTS/build.json.chunk" --max-seconds "$CHUNK_SECONDS"
+    --build "$PARTS/build.json.chunk" --max-seconds "$CHUNK_SECONDS" ${RUN_ARGS:-}
   exit 0
 fi
 
