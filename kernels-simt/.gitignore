@@ -1,0 +1,10 @@
+target/
+*.ll
+*.opt.ll
+*.bc
+*.cubin
+*.target
+*.options
+*.kernels
+# The probe's PTX is a build product; only the kernel crate's PTX (gdn_simt.ptx) is checked in.
+mma_check/*.ptx
