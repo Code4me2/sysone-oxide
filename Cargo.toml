@@ -11,7 +11,7 @@ anyhow = "1"
 clap = { version = "4.5", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal"] }
 half = "2"
 
 # Frontend (DESIGN.md §7, W2): tokenizer.json via HF tokenizers (the 0.23 line, like the reference's Python
@@ -26,6 +26,13 @@ unicode-general-category = "1"
 # Shortest round-trip float digits with ties to even, as Python's repr(float) picks them (Rust's `{:e}` breaks
 # ties upward).
 ryu = "1"
+
+# Server (DESIGN.md §7, W5): axum 0.8 (its router treats `:` as a literal, so `/v1/systemone:batch` routes), and
+# hyper's HTTP/1 client for the end-to-end tests and the load generator.
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "query"] }
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
 
 # cuda-rust, by path (DESIGN.md §1). Versions are exact-pinned upstream.
 cuda-core = { path = "../cuda-rust/cuda-core" }
@@ -43,6 +50,10 @@ cudarc = { version = "0.19.2", default-features = false, features = ["std", "cub
 [[bin]]
 name = "sysone"
 path = "src/main.rs"
+
+[[bin]]
+name = "loadgen"
+path = "benchmarks/s1/loadgen.rs"
 
 [[bin]]
 name = "hwprobe"
