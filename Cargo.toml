@@ -38,3 +38,7 @@ path = "benchmarks/s1/hwprobe.rs"
 [[bin]]
 name = "tile_gemm_probe"
 path = "benchmarks/s1/tile_gemm_probe.rs"
+
+[[bin]]
+name = "bench_gdn"
+path = "benchmarks/s1/bench_gdn.rs"

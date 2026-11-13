@@ -4,12 +4,19 @@
 //! a 32 | b 32`) and before `out_proj`:
 //!
 //! ```text
-//! conv   = tree_conv1d_silu(qkv, conv_w)                 bf16 [T, 8192]
-//! q,k,g,beta = gdn_prep(conv, a, b, A_log, dt_bias)      f32 [T,16,128] x2, f32 [T,32] x2
-//! w,u    = gdn_chunk_wy(k, v=conv[:, 4096:], g, beta)    f32 [T,32,128] x2      (parallel over chunks)
-//! o      = gdn_chunk_state(q, k, g, w, u)                bf16 [T, 4096]         (prefixes, then suffixes)
-//! y      = gated_rmsnorm(o, z, norm_w)                   bf16 [T, 4096]
+//! conv   = tree_conv1d_silu(qkv, conv_w)                  bf16 [T, 8192]
+//! q,k,g,beta = gdn_prep(conv, a, b, A_log, dt_bias)       f32 [T,16,128] x2, f32 [T,32] x2
+//! tinv   = gdn_chunk_tinv(k, g, beta)                     f32 [T,32,64]        (parallel over chunks)
+//! w,u,qd,kd,p = gdn_chunk_wy(q, k, v=conv[:, 4096:], ..)  f32 [T,32,128] x4, [T,32,64]   (parallel)
+//! o      = gdn_chunk_state(w, u, qd, kd, p, g)            bf16 [T, 4096]       (prefixes, then suffixes)
+//! y      = gated_rmsnorm(o, z, norm_w)                    bf16 [T, 4096]
 //! ```
+//!
+//! Numerics follow `torch_chunk_gated_delta_rule` (chunk 64, UT/WY form, fp32), with two deliberate,
+//! mathematically identical changes: fp32 matmuls run as split-TF32 ("3xTF32", ~2^-21 per product) because cuTile's
+//! plain f32 `mma` is emulated and spills; and the decay to the chunk end uses a reverse scan instead of
+//! `cum_last - cum` (which cancels catastrophically for strongly decaying heads). Measured against an f64 oracle,
+//! both stay inside the error envelope of transformers' own f32 implementation (tests/kernels_gdn.rs).
 //!
 //! Segment structure comes from a [`GdnPlan`] (device tables built from the batch's [`Segment`]s). Grids depend
 //! only on the plan's capacities, so a launch sequence can be captured once per T bucket and replayed after
@@ -26,6 +33,7 @@ use cutile::cuda_core::Stream;
 use cutile::half::bf16;
 use cutile::prelude::*;
 use cuda_async::device_buffer::DevicePointer;
+use cutile::tile_kernel::CompileOptions;
 use tile::gdn_tile;
 
 /// Chunk length of the chunked delta rule (`torch_chunk_gated_delta_rule`'s default, used by the reference).
@@ -47,6 +55,10 @@ const CONV_BC: usize = 512;
 const ROW_BLOCK: usize = 16;
 /// Value-column block of the state scan; 128 / STATE_BV programs per (segment, head).
 const STATE_BV: usize = 64;
+/// Warps per CTA of the scan kernels (swept on GB10: 8 warps and BV 16/32/128 were no faster).
+const WY_WARPS: i32 = 4;
+const TINV_WARPS: i32 = 4;
+const STATE_WARPS: i32 = 4;
 
 /// A row-major 2-D device view: `rows × cols` elements, row `r` starting `r * row_stride` elements after `ptr`.
 /// Used for the strided column slices of the fused projection output.
@@ -213,9 +225,16 @@ pub struct GdnScratch {
     /// f32 `[T, 32]`.
     pub g: Tensor<f32>,
     pub beta: Tensor<f32>,
-    /// WY-transformed keys and values, f32 `[T, 32 * 128]`.
+    /// Phase A of the scan, per v-head: WY-transformed keys and values, decayed queries and keys,
+    /// f32 `[T, 32 * 128]` each.
     pub w: Tensor<f32>,
     pub u: Tensor<f32>,
+    pub qd: Tensor<f32>,
+    pub kd: Tensor<f32>,
+    /// Masked, decayed intra-chunk attention, f32 `[T, 32 * 64]` (row = query, columns = the chunk's keys).
+    pub p: Tensor<f32>,
+    /// Inverse of each chunk's UT system, f32 `[T, 32 * 64]` (same layout as `p`).
+    pub tinv: Tensor<f32>,
     /// Delta-rule output, bf16 `[T, 32 * 128]`.
     pub core: Tensor<bf16>,
     /// Prefix final states, f32 `[slots, 32, 128, 128]`.
@@ -235,6 +254,10 @@ impl GdnScratch {
             beta: api::zeros::<f32>(&[tokens, NUM_V_HEADS]).sync_on(stream)?,
             w: api::zeros::<f32>(&[tokens, VALUE_DIM]).sync_on(stream)?,
             u: api::zeros::<f32>(&[tokens, VALUE_DIM]).sync_on(stream)?,
+            qd: api::zeros::<f32>(&[tokens, VALUE_DIM]).sync_on(stream)?,
+            kd: api::zeros::<f32>(&[tokens, VALUE_DIM]).sync_on(stream)?,
+            p: api::zeros::<f32>(&[tokens, NUM_V_HEADS * CHUNK]).sync_on(stream)?,
+            tinv: api::zeros::<f32>(&[tokens, NUM_V_HEADS * CHUNK]).sync_on(stream)?,
             core: api::zeros::<bf16>(&[tokens, VALUE_DIM]).sync_on(stream)?,
             state: api::zeros::<f32>(&[slots, NUM_V_HEADS, HEAD_DIM, HEAD_DIM]).sync_on(stream)?,
         })
@@ -351,31 +374,52 @@ pub unsafe fn gdn_chunk_scan(
     ensure!(plan.num_prefixes <= scratch.slots, "{} prefixes, scratch has {} state slots", plan.num_prefixes, scratch.slots);
     v.check("v", t, VALUE_DIM)?;
     out.check("scan output", t, VALUE_DIM)?;
-    let mut ops = DeviceOpVec::with_capacity(3);
-    let wy = unsafe {
-        gdn_tile::gdn_chunk_wy(
-            scratch.k.device_pointer(),
-            v.ptr,
-            value(v.row_stride as i32),
-            scratch.g.device_pointer(),
-            scratch.beta.device_pointer(),
-            scratch.w.device_pointer(),
-            scratch.u.device_pointer(),
+    let mut ops = DeviceOpVec::with_capacity(4);
+    let sp = |t: &Tensor<f32>| t.device_pointer();
+    let tinv = unsafe {
+        gdn_tile::gdn_chunk_tinv(
+            sp(&scratch.k),
+            sp(&scratch.g),
+            sp(&scratch.beta),
+            sp(&scratch.tinv),
             plan.chunks.device_pointer(),
             value(plan.max_chunks as i32),
         )
     }
+    .compile_options(CompileOptions::default().num_worker_warps_per_cta(TINV_WARPS))
+    .grid(grid(plan.max_chunks, NUM_V_HEADS, 1));
+    ops.push(tinv.map(|_| ()));
+    let wy = unsafe {
+        gdn_tile::gdn_chunk_wy(
+            sp(&scratch.q),
+            sp(&scratch.k),
+            v.ptr,
+            value(v.row_stride as i32),
+            sp(&scratch.g),
+            sp(&scratch.beta),
+            sp(&scratch.tinv),
+            sp(&scratch.w),
+            sp(&scratch.u),
+            sp(&scratch.qd),
+            sp(&scratch.kd),
+            sp(&scratch.p),
+            plan.chunks.device_pointer(),
+            value(plan.max_chunks as i32),
+        )
+    }
+    .compile_options(CompileOptions::default().num_worker_warps_per_cta(WY_WARPS))
     .grid(grid(plan.max_chunks, NUM_V_HEADS, 1));
     ops.push(wy.map(|_| ()));
     for phase in [0i32, 1] {
         let scan = unsafe {
             gdn_tile::gdn_chunk_state(
-                scratch.q.device_pointer(),
-                scratch.k.device_pointer(),
-                scratch.g.device_pointer(),
-                scratch.w.device_pointer(),
-                scratch.u.device_pointer(),
-                scratch.state.device_pointer(),
+                sp(&scratch.w),
+                sp(&scratch.u),
+                sp(&scratch.qd),
+                sp(&scratch.kd),
+                sp(&scratch.p),
+                sp(&scratch.g),
+                sp(&scratch.state),
                 out.ptr,
                 value(out.row_stride as i32),
                 plan.segs.device_pointer(),
@@ -385,6 +429,7 @@ pub unsafe fn gdn_chunk_scan(
             )
         }
         .generics(vec![STATE_BV.to_string()])
+        .compile_options(CompileOptions::default().num_worker_warps_per_cta(STATE_WARPS))
         .grid(grid(plan.max_segs, NUM_V_HEADS, HEAD_DIM / STATE_BV));
         ops.push(scan.map(|_| ()));
     }
@@ -491,3 +536,4 @@ mod tests {
         assert!(GdnTables::num_chunks(&b.segments) <= GdnTables::chunk_capacity(b.num_tokens(), b.segments.len()));
     }
 }
+
