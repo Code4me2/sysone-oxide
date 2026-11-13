@@ -228,3 +228,25 @@ LongBench-v2; `smoke/qev_nvfp4_batched_http_28.json`) against a qev NVFP4 server
 
 A first version computed disagreement as `1 − agree/n`, which made a candidate exactly at the 2-question floor
 fail by one ulp; it is now `count/n`.
+
+## sysone bf16 on the gate (A2)
+
+`run_sysone.sh` drives the real sysone server (`target/release/sysone --engine bf16`, the default production
+configuration: T buckets 256…65,536 with CUDA graphs, token budget 16,384, max wait 2 ms) over HTTP. Each chunk
+is one `scripts/gpu.sh` job: start the server, wait for `/health` (it listens only after the engine has loaded and
+warmed up), POST records with `run_sysone.py` for up to `CHUNK_SECONDS` (420), stop the server. Every record is
+sent with its unchanged request body as `/v1/systemone?debug=1&debias=1` (the reference runs' query), one request
+at a time. A non-200 answer is kept as an error record, never dropped (`score.py` then exits 2). The merge checks
+that every part has the same engine build (git sha, binary sha256, model sha256) and that each answer vector
+equals the softmax of the debug slot logits (< 2e-6), and writes `tests/golden/dev/eval/candidates/<name>.json`
+in the reference runs' format (outside `runs/`, which `stats.py` reads as reference paths); the part files (full
+responses) stay in `sysone-ref/golden/dev/eval/candidates/<name>/`, sha256 in `candidates/manifest.json`.
+
+```sh
+cargo build --release --bin sysone
+bash reference/eval/run_sysone.sh                     # NAME=sysone_bf16
+python3 -I reference/eval/score.py --run-file tests/golden/dev/eval/candidates/sysone_bf16.json --tier bf16
+```
+
+Protocol, fixed before the run: the full 278-record set, the committed `[eval.bf16]` limits unchanged, against all
+four bf16-tier paths (`bf16_batched`, `bf16_sequential`, `bf16_perq`, `fp32_batched`).
