@@ -254,7 +254,7 @@ fn main() -> Result<()> {
             let t = batch.num_tokens();
             let plan = GdnPlan::new(&batch.segments, t, &s)?;
             let proj = upload((0..t * PROJ_COLS).map(|_| bf16::from_f32(rng.next() * 2.0)).collect(), &[t, PROJ_COLS], &s)?;
-            let scratch = GdnScratch::new(t, plan.num_prefixes, &s)?;
+            let scratch = if w3a { GdnScratch::with_w3a_buffers(t, plan.num_prefixes, &s)? } else { GdnScratch::new(t, plan.num_prefixes, &s)? };
             let out = api::zeros::<bf16>(&[t, VALUE_DIM]).sync_on(&s)?;
             let pv = DView::of(&proj)?;
             let conv = scratch.conv_view()?;

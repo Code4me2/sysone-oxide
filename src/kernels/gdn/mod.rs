@@ -228,8 +228,10 @@ pub struct GdnScratch {
     /// f32 `[T, 32]`.
     pub g: Tensor<f32>,
     pub beta: Tensor<f32>,
-    /// Phase A of the scan, per v-head: WY-transformed keys and values, decayed queries and keys,
-    /// f32 `[T, 32 * 128]` each.
+    /// Stored WY operands of the Phase 1 scan ([`gdn_chunk_scan_w3a`] only): WY-transformed keys and values,
+    /// decayed queries and keys, f32 `[T, 32 * 128]` each when allocated by
+    /// [`with_w3a_buffers`](Self::with_w3a_buffers). [`new`](Self::new) allocates them as `[1, 32 * 128]`
+    /// placeholders: the default scan recomputes them per chunk (64 KB per token saved).
     pub w: Tensor<f32>,
     pub u: Tensor<f32>,
     pub qd: Tensor<f32>,
@@ -246,6 +248,15 @@ pub struct GdnScratch {
 
 impl GdnScratch {
     pub fn new(tokens: usize, slots: usize, stream: &Arc<Stream>) -> Result<Self> {
+        Self::alloc(tokens, slots, 1, stream)
+    }
+
+    /// Like [`new`](Self::new), with full-size `w, u, qd, kd` for [`gdn_chunk_scan_w3a`].
+    pub fn with_w3a_buffers(tokens: usize, slots: usize, stream: &Arc<Stream>) -> Result<Self> {
+        Self::alloc(tokens, slots, tokens, stream)
+    }
+
+    fn alloc(tokens: usize, slots: usize, wy_rows: usize, stream: &Arc<Stream>) -> Result<Self> {
         let slots = slots.max(1);
         Ok(Self {
             tokens,
@@ -255,10 +266,10 @@ impl GdnScratch {
             k: api::zeros::<f32>(&[tokens, KEY_DIM]).sync_on(stream)?,
             g: api::zeros::<f32>(&[tokens, NUM_V_HEADS]).sync_on(stream)?,
             beta: api::zeros::<f32>(&[tokens, NUM_V_HEADS]).sync_on(stream)?,
-            w: api::zeros::<f32>(&[tokens, VALUE_DIM]).sync_on(stream)?,
-            u: api::zeros::<f32>(&[tokens, VALUE_DIM]).sync_on(stream)?,
-            qd: api::zeros::<f32>(&[tokens, VALUE_DIM]).sync_on(stream)?,
-            kd: api::zeros::<f32>(&[tokens, VALUE_DIM]).sync_on(stream)?,
+            w: api::zeros::<f32>(&[wy_rows, VALUE_DIM]).sync_on(stream)?,
+            u: api::zeros::<f32>(&[wy_rows, VALUE_DIM]).sync_on(stream)?,
+            qd: api::zeros::<f32>(&[wy_rows, VALUE_DIM]).sync_on(stream)?,
+            kd: api::zeros::<f32>(&[wy_rows, VALUE_DIM]).sync_on(stream)?,
             p: api::zeros::<f32>(&[tokens, NUM_V_HEADS * CHUNK]).sync_on(stream)?,
             tinv: api::zeros::<f32>(&[tokens, NUM_V_HEADS * CHUNK]).sync_on(stream)?,
             core: api::zeros::<bf16>(&[tokens, VALUE_DIM]).sync_on(stream)?,
@@ -570,7 +581,8 @@ pub unsafe fn gdn_chunk_scan_with(
 }
 
 /// The Phase 1 (W3a) four-launch scan: inverse by forward substitution, stored WY intermediates
-/// (`scratch.{w,u,qd,kd,p}`), then the state scan. Kept for comparison in `bench_gdn`.
+/// (`scratch.{w,u,qd,kd,p}`, which need [`GdnScratch::with_w3a_buffers`]), then the state scan. Kept for
+/// comparison in `bench_gdn`.
 ///
 /// # Safety
 /// As for [`tree_conv1d_silu`].
@@ -585,6 +597,7 @@ pub unsafe fn gdn_chunk_scan_w3a(
     ensure!(plan.num_prefixes <= scratch.slots, "{} prefixes, scratch has {} state slots", plan.num_prefixes, scratch.slots);
     v.check("v", t, VALUE_DIM)?;
     out.check("scan output", t, VALUE_DIM)?;
+    ensure!(scratch.w.shape()[0] as usize >= t, "gdn_chunk_scan_w3a needs GdnScratch::with_w3a_buffers");
     let mut ops = DeviceOpVec::with_capacity(4);
     let sp = |t: &Tensor<f32>| t.device_pointer();
     let tinv = unsafe {

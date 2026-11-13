@@ -691,3 +691,47 @@ fn scan_options_and_precision_variants_vs_f64() {
         assert!(fails.is_empty(), "failures: {fails:#?}");
     });
 }
+
+/// The mixer's fused conv (`tree_conv1d_silu_qk`, which also writes normalised q and k) plus `gdn_gates` must
+/// produce bit-identical conv, q, k, g and beta to the standalone `tree_conv1d_silu` + `gdn_prep`.
+#[test]
+fn fused_conv_qk_matches_standalone_conv_and_prep() {
+    on_test_thread(|| {
+        let ctx = Context::new(0).unwrap();
+        let s = ctx.new_stream().unwrap();
+        let mut rng = Rng(0x0123456789abcdef);
+        let batch = tree_batch();
+        let segs = &batch.segments;
+        let t = batch.num_tokens();
+        let w = weights(&mut rng);
+        let gw = GpuWeights::new(&w, &s);
+        let proj = projection(t, &mut rng);
+        let fused = run_gpu(&proj, segs, &gw, None, &s);
+        let plan = GdnPlan::new(segs, t, &s).unwrap();
+        let proj_t = upload(to_bf16(&proj), &[t, PROJ_COLS], &s);
+        let pv = DView::of(&proj_t).unwrap();
+        let scratch = GdnScratch::new(t, plan.num_prefixes, &s).unwrap();
+        let conv = scratch.conv_view().unwrap();
+        let a = pv.columns(CONV_DIM + VALUE_DIM, NUM_V_HEADS).unwrap();
+        let b = pv.columns(CONV_DIM + VALUE_DIM + NUM_V_HEADS, NUM_V_HEADS).unwrap();
+        let wv = gw.view();
+        let mut ops = DeviceOpVec::with_capacity(2);
+        unsafe {
+            ops.push(tree_conv1d_silu(&plan, pv.columns(0, CONV_DIM).unwrap(), &gw.conv_w, conv).unwrap());
+            ops.push(gdn_prep(&plan, conv, a, b, &wv, &scratch).unwrap());
+        }
+        ops.sync_on(&s).unwrap();
+        let pairs: [(&str, &[f64], Vec<f64>); 5] = [
+            ("conv", &fused.conv, bf16_to_f64(&download(&scratch.conv, &s))),
+            ("q", &fused.q, to_f64(&download(&scratch.q, &s))),
+            ("k", &fused.k, to_f64(&download(&scratch.k, &s))),
+            ("g", &fused.g, to_f64(&download(&scratch.g, &s))),
+            ("beta", &fused.beta, to_f64(&download(&scratch.beta, &s))),
+        ];
+        for (name, got, want) in pairs {
+            let diff = got.iter().zip(&want).filter(|(a, b)| a != b).count();
+            println!("fused vs standalone {name}: {diff} of {} elements differ", want.len());
+            assert_eq!(diff, 0, "{name}: fused conv/prep differs from the standalone kernels");
+        }
+    });
+}
