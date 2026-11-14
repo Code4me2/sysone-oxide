@@ -86,6 +86,10 @@ name = "bench_nvfp4_mlp"
 path = "benchmarks/s1/bench_nvfp4_mlp.rs"
 
 [[bin]]
+name = "bench_s2"
+path = "benchmarks/s1/bench_s2.rs"
+
+[[bin]]
 name = "cpu_ref_check"
 path = "src/engine/cpu_ref/check_main.rs"
 

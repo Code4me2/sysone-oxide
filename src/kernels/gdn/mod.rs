@@ -864,6 +864,23 @@ pub unsafe fn gdn_chunk_scan_w3a(
     Ok(ops)
 }
 
+/// Launch shape of [`gated_rmsnorm`]: `rows` tokens x `heads` adjacent 128-wide heads per tile block (`heads` = 1:
+/// the pre-S2 kernel; more: `gated_rmsnorm_hb`), an optional cuTile `occupancy` hint (tile blocks per SM) and warps
+/// per CTA. Every choice is byte-identical (each token's head is reduced and scaled by the same operations;
+/// tests/kernels_s2.rs); they change speed only (S2, docs/S2.md).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GatedNormTiles {
+    pub rows: usize,
+    pub heads: usize,
+    pub occupancy: Option<i32>,
+    pub warps: Option<i32>,
+}
+
+impl GatedNormTiles {
+    /// The launch as it was before S2 (16 rows of one head per tile block, compiler defaults).
+    pub const F1: GatedNormTiles = GatedNormTiles { rows: ROW_BLOCK, heads: 1, occupancy: None, warps: None };
+}
+
 /// `out = gated_rmsnorm(x, z) * norm_w` per 128-wide head. x, z, out: `[T, 4096]` bf16 views.
 ///
 /// # Safety
@@ -876,27 +893,56 @@ pub unsafe fn gated_rmsnorm(
     eps: f32,
     out: DView<bf16>,
 ) -> Result<BoxedDeviceOp<()>> {
+    unsafe { gated_rmsnorm_with(plan, x, z, norm_w, eps, out, GatedNormTiles::F1) }
+}
+
+/// [`gated_rmsnorm`] with an explicit launch shape ([`GatedNormTiles`]).
+///
+/// # Safety
+/// As for [`tree_conv1d_silu`].
+pub unsafe fn gated_rmsnorm_with(
+    plan: &GdnPlan,
+    x: DView<bf16>,
+    z: DView<bf16>,
+    norm_w: &Tensor<bf16>,
+    eps: f32,
+    out: DView<bf16>,
+    tiles: GatedNormTiles,
+) -> Result<BoxedDeviceOp<()>> {
     let t = plan.tokens;
+    let (br, hb) = (tiles.rows, tiles.heads);
+    ensure!(br.is_power_of_two() && br <= 256 && hb.is_power_of_two() && hb <= NUM_V_HEADS && br * hb <= 512,
+            "gated_rmsnorm: {br} rows x {hb} heads per tile block");
     x.check("norm input", t, VALUE_DIM)?;
     z.check("z", t, VALUE_DIM)?;
     out.check("norm output", t, VALUE_DIM)?;
     let w = check_tensor("norm_w", norm_w, &[HEAD_DIM])?;
-    let op = unsafe {
-        gdn_tile::gated_rmsnorm(
-            x.ptr,
-            value(x.row_stride as i32),
-            z.ptr,
-            value(z.row_stride as i32),
-            w,
-            out.ptr,
-            value(out.row_stride as i32),
-            value(t as i32),
-            value(eps),
-        )
+    let (xs, zs, os) = (value(x.row_stride as i32), value(z.row_stride as i32), value(out.row_stride as i32));
+    // Without hints the launch is exactly the pre-S2 one (no compile options set).
+    let hints = (tiles.occupancy.is_some() || tiles.warps.is_some()).then_some(CompileOptions {
+        occupancy: tiles.occupancy,
+        num_worker_warps_per_cta: tiles.warps,
+        ..Default::default()
+    });
+    if hb == 1 {
+        let op = unsafe { gdn_tile::gated_rmsnorm(x.ptr, xs, z.ptr, zs, w, out.ptr, os, value(t as i32), value(eps)) }
+            .generics(vec![br.to_string()])
+            .grid(grid(t.div_ceil(br), NUM_V_HEADS, 1));
+        let op = match hints {
+            Some(h) => op.compile_options(h),
+            None => op,
+        };
+        Ok(op.map(|_| ()).boxed())
+    } else {
+        let op = unsafe { gdn_tile::gated_rmsnorm_hb(x.ptr, xs, z.ptr, zs, w, out.ptr, os, value(t as i32), value(eps)) }
+            .generics(vec![br.to_string(), hb.to_string(), (hb * HEAD_DIM).to_string(), (br * hb).to_string()])
+            .grid(grid(t.div_ceil(br), NUM_V_HEADS / hb, 1));
+        let op = match hints {
+            Some(h) => op.compile_options(h),
+            None => op,
+        };
+        Ok(op.map(|_| ()).boxed())
     }
-    .generics(vec![ROW_BLOCK.to_string()])
-    .grid(grid(t.div_ceil(ROW_BLOCK), NUM_V_HEADS, 1));
-    Ok(op.map(|_| ()).boxed())
 }
 
 /// The whole GDN mixer between the fused input projection and `out_proj`: `proj` is the `[T, 12352]` bf16 GEMM

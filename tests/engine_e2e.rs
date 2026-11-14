@@ -14,6 +14,8 @@
 //!   the eager forward's logits.
 //! - `f1_launches_equal_n1_launches` (both engines): F1's fused SiLU·mul GEMM and occupancy hints vs N1's launches,
 //!   bit for bit.
+//! - `s2_launches_equal_f1_launches` (both engines): S2's residual add in the down GEMM and its `gated_rmsnorm` /
+//!   `zc_rmsnorm` launches vs F1's launches, bit for bit (logits and every debug tap kind).
 //! - `nvfp4_fused_equals_unfused` (nvfp4 only): the engine with the activation quantization fused into the norm /
 //!   SiLU·mul epilogues gives bit for bit the logits of the engine with standalone quantize launches.
 //! - `trimmed_last_layer_equals_untrimmed` (L1): the last layer trimmed to the answer rows gives bit for bit the
@@ -531,4 +533,79 @@ fn f1_launches_equal_n1_launches() {
     println!("{} engine, F1 launches vs N1 launches: {same}/{total} steps bit-identical ({} batches, eager and replay)",
              format().name(), batches.len());
     assert_eq!(same, total, "F1's launches changed the logits");
+}
+
+/// S2 (docs/S2.md): the engine as it now runs (nvfp4: the residual add after the MLP down projection in the down
+/// GEMM's epilogue, `zc_rmsnorm_res` as the next norm; both engines: `gated_rmsnorm` one token's 32 heads per tile
+/// block, layer 0's `zc_rmsnorm` with an occupancy hint) against the same build with F1's launches
+/// (`nvfp4_residual: false`, `KernelTuning::F1`), bit for bit: logits on every corpus request up to 4k tokens alone
+/// and on one packed batch (eager and replayed), then every debug tap (per-layer residuals of fused layers, the
+/// sublayer taps of an unfused tapped layer, the trimmed layer's answer-row taps) on a few requests.
+#[test]
+fn s2_launches_equal_f1_launches() {
+    use sysone::engine::forward::Taps;
+    use sysone::engine::kernels::KernelTuning;
+    let mut guard = env().lock().unwrap_or_else(|e| e.into_inner());
+    let env = &mut *guard;
+    let fe = Frontend::load(&model_dir(), Limits::default()).unwrap();
+    let small: Vec<&Planned> = env.plans.iter().filter(|p| p.plan.total <= 4096).collect();
+    let mut batches: Vec<DecisionBatch> = small.iter().map(|p| goldens::batch_of(&[&p.plan]).unwrap().0).collect();
+    let mut packed = Vec::new();
+    let mut tokens = 0;
+    for p in &small {
+        if tokens + p.plan.total > 4096 {
+            break;
+        }
+        tokens += p.plan.total;
+        packed.push(&p.plan);
+    }
+    batches.push(goldens::batch_of(&packed).unwrap().0);
+    let f1_engine = |opts: EngineOptions| {
+        let mut e = GpuEngine::load(&model_dir(), &fe.slot_ids, EngineOptions { nvfp4_residual: false, ..opts }).unwrap();
+        e.set_kernel_tuning(KernelTuning::F1);
+        e
+    };
+    {
+        let mut f1 = f1_engine(engine_opts(4096, true));
+        let (mut same, mut total) = (0usize, 0usize);
+        for b in &batches {
+            for _ in 0..2 {
+                let (x, y) = (env.engine.run(b).unwrap(), f1.run(b).unwrap());
+                total += 1;
+                same += (x.data == y.data) as usize;
+            }
+        }
+        println!("{} engine, S2 launches vs F1 launches: {same}/{total} steps bit-identical ({} batches, eager and replay)",
+                 format().name(), batches.len());
+        assert_eq!(same, total, "S2's launches changed the logits");
+    }
+    // Debug taps: (a) residual stream after layers whose residual add is fused (S2 taps it before the plain norm);
+    // (b) the sublayer taps of tapped layers (no fusion there) and the trimmed last layer's answer-row taps.
+    let tap_sets = [Taps { layers: vec![0, 2, 7, 29], ..Default::default() },
+                    Taps { layers: vec![3, 30], sublayers: true, answer_rows: true, ..Default::default() }];
+    let mut bad = Vec::new();
+    for taps in tap_sets {
+        let opts = || EngineOptions { taps: taps.clone(), cuda_graphs: false, ..engine_opts(4096, true) };
+        let mut s2 = GpuEngine::load(&model_dir(), &fe.slot_ids, opts()).unwrap();
+        let mut f1 = f1_engine(opts());
+        assert!(s2.fwd.trimmed && f1.fwd.trimmed);
+        let names: Vec<String> = s2.fwd.taps.iter().map(|(n, _)| n.clone()).collect();
+        assert_eq!(names, f1.fwd.taps.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>());
+        for b in batches.iter().step_by(10) {
+            let (x, y) = (s2.run(b).unwrap(), f1.run(b).unwrap());
+            if x.data != y.data {
+                bad.push(format!("logits with taps {:?}", taps.layers));
+            }
+            for n in &names {
+                let rows = if n.ends_with("_a") { b.num_branches() } else { b.num_tokens() };
+                let (u, v) = (s2.read_tap(n, rows).unwrap(), f1.read_tap(n, rows).unwrap());
+                let diff = u.iter().zip(&v).filter(|(p, q)| p.to_bits() != q.to_bits()).count();
+                if diff > 0 {
+                    bad.push(format!("tap {n}: {diff} values differ"));
+                }
+            }
+        }
+        println!("{} engine, S2 vs F1 taps {names:?}: {} batches compared", format().name(), batches.iter().step_by(10).count());
+    }
+    assert!(bad.is_empty(), "S2 changed debug taps: {bad:?}");
 }

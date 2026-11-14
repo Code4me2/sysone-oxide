@@ -65,6 +65,10 @@ pub struct EngineOptions {
     /// instead of a separate `silu_mul_nvfp4` launch over a bf16 `[T, 2I]` gate/up output. Byte-identical; the
     /// gate/up weight rows are interleaved for it at load (`ModelWeights::interleave_gate_up_nvfp4`).
     pub nvfp4_swiglu: bool,
+    /// NVFP4 checkpoints: add the MLP down projection's output to the residual stream in the down GEMM's epilogue
+    /// (S2, default; `ForwardOptions::nvfp4_residual`) instead of in the next layer's input norm. Byte-identical;
+    /// saves writing and reading the bf16 MLP output.
+    pub nvfp4_residual: bool,
     /// Size the buckets to the device: keep only the buckets (of `buckets`) whose activation arena, GDN scratch
     /// and readback fit in this fraction of the device memory free after the weights are loaded. None: use
     /// `buckets` as given (an arena that does not fit fails the load).
@@ -143,6 +147,7 @@ impl Default for EngineOptions {
             weights: None,
             nvfp4_fused: true,
             nvfp4_swiglu: true,
+            nvfp4_residual: true,
             memory_fraction: None,
             gemm: GemmMode::Pinned,
             trim_last_layer: true,
@@ -242,7 +247,8 @@ impl GpuEngine {
             // Row blocks of half the GEMM's BN: one weight tile = the gate and up rows of BN/2 product columns.
             weights.interleave_gate_up_nvfp4(&stream, crate::kernels::nvfp4::GemmTiles::DEFAULT.bn / 2)?;
         }
-        let fopts = ForwardOptions { nvfp4_fused: opts.nvfp4_fused, nvfp4_swiglu: swiglu, trim_last_layer: opts.trim_last_layer };
+        let fopts = ForwardOptions { nvfp4_fused: opts.nvfp4_fused, nvfp4_swiglu: swiglu, trim_last_layer: opts.trim_last_layer,
+                                     nvfp4_residual: opts.nvfp4_residual };
         let fwd = forward::build_opts(&cfg, &weights, slot_ids.len(), &opts.taps, fopts)?;
         if opts.trim_last_layer && !fwd.trimmed {
             eprintln!("sysone engine: last layer not trimmed (a debug tap needs its rows, or it is not full attention)");
@@ -299,6 +305,8 @@ impl GpuEngine {
             if format == WeightFormat::Nvfp4 {
                 if !e.opts.nvfp4_fused {
                     ", standalone quantize"
+                } else if e.opts.nvfp4_swiglu && e.opts.nvfp4_residual {
+                    ", quantize fused, SiLU·mul in the gate/up GEMM, residual add in the down GEMM"
                 } else if e.opts.nvfp4_swiglu {
                     ", quantize fused, SiLU·mul in the gate/up GEMM"
                 } else {
