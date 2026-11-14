@@ -16,6 +16,7 @@
 use cutile::cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use cutile::half::bf16;
 use cutile::prelude::*;
+use cutile::tile_kernel::CompileOptions;
 use sysone::kernels::norm;
 use sysone::kernels::nvfp4::{
     self, CheckpointProj, GemmKernel, GemmTiles, Nvfp4Act, Nvfp4Linear, QuantTiles, RawAlpha, SiluTiles,
@@ -150,27 +151,29 @@ fn gemm_swiglu_is_bit_identical_to_gemm_then_silu_mul_nvfp4() {
     let (w, packed, scales) = gate_up(&mut rng, &s);
     let alpha = RawAlpha { lo: w.alpha_lo, hi: w.alpha_hi, split_n: w.split_n };
     assert_eq!(w.split_n, I);
-    // The engine's tiles (128x128, block 64) first, then other shapes the kernel accepts.
-    let cfgs = [GemmTiles::DEFAULT, tiles(64, 128, 8), tiles(128, 64, 8), tiles(128, 128, 1)];
-    let weights: Vec<_> = cfgs.iter().map(|c| interleaved(&packed, &scales, c.bn / 2, &s)).collect();
+    // The engine's tiles (128x128, block 64) without and with its occupancy hint, then other shapes.
+    let cfgs = [(GemmTiles::DEFAULT, None), (GemmTiles::DEFAULT, Some(2)), (tiles(64, 128, 8), None),
+                (tiles(128, 64, 8), None), (tiles(128, 128, 1), None)];
+    let weights: Vec<_> = cfgs.iter().map(|(c, _)| interleaved(&packed, &scales, c.bn / 2, &s)).collect();
     let mut bad = Vec::new();
     for t in [300usize, 1024] {
         let (x, xs) = activations(&mut rng, t, &s);
         for igs in IGS {
             let (rp, rs, _) = reference(&x, &xs, &w, igs, t, &s);
-            for (cfg, (wp, ws)) in cfgs.iter().zip(&weights) {
+            for ((cfg, occ), (wp, ws)) in cfgs.iter().zip(&weights) {
                 let a = Nvfp4Act::zeros(t, I, &s).unwrap();
-                let (q, sc) = nvfp4::gemm_swiglu_il_op(&x, &xs, wp, ws, alpha, igs, Arc::new(a.packed),
-                                                       Arc::new(a.scales), *cfg, sms())
+                let opts = CompileOptions { occupancy: *occ, ..Default::default() };
+                let (q, sc) = nvfp4::gemm_swiglu_il_op_with(&x, &xs, wp, ws, alpha, igs, Arc::new(a.packed),
+                                                            Arc::new(a.scales), *cfg, sms(), opts)
                     .unwrap()
                     .sync_on(&s)
                     .unwrap();
                 let (gp, gs) = act_bytes(&q, &sc, &s);
                 let (mp, ms) = (mismatches(&gp, &rp), mismatches(&gs, &rs));
-                println!("gemm_swiglu T={t} igs={igs} tiles {}x{} g{} (block {}): packed mismatches {mp}/{}, scales {ms}/{}",
-                         cfg.bm, cfg.bn, cfg.group_m, cfg.bn / 2, gp.len(), gs.len());
+                println!("gemm_swiglu T={t} igs={igs} tiles {}x{} g{} (block {}) occupancy {occ:?}: packed mismatches \
+                          {mp}/{}, scales {ms}/{}", cfg.bm, cfg.bn, cfg.group_m, cfg.bn / 2, gp.len(), gs.len());
                 if mp + ms > 0 {
-                    bad.push((t, igs, cfg.bm, cfg.bn, cfg.group_m));
+                    bad.push((t, igs, cfg.bm, cfg.bn, cfg.group_m, *occ));
                 }
             }
         }

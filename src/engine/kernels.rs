@@ -71,17 +71,21 @@ pub struct KernelTuning {
     pub norm_occupancy: Option<i32>,
     /// Tile shape / occupancy of `silu_mul_nvfp4`.
     pub silu: nvfp4::SiluTiles,
+    /// cuTile `occupancy` hint of the fused gate/up + SiLU·mul GEMM (`GemmNvfp4SwiGlu`).
+    pub swiglu_occupancy: Option<i32>,
 }
 
 impl KernelTuning {
     /// GB10-measured (bench_nvfp4_mlp): two norm rows per SM (+9% / +26% bandwidth), SiLU·mul + quantize at three
-    /// tile blocks per SM (+55%).
+    /// tile blocks per SM (+55%), two fused gate/up GEMM tiles per SM (its epilogue then overlaps the other tile's
+    /// main loop: 16.3 -> 13.2 ms at 16k, the cost of the plain gate/up GEMM alone).
     pub const DEFAULT: KernelTuning = KernelTuning {
         norm_occupancy: Some(2),
         silu: nvfp4::SiluTiles { rows: 1, cols: nvfp4::SILU_Q_BLOCK, occupancy: Some(3) },
+        swiglu_occupancy: Some(2),
     };
     /// The launches as N1 had them (compiler defaults).
-    pub const N1: KernelTuning = KernelTuning { norm_occupancy: None, silu: nvfp4::SiluTiles::N1 };
+    pub const N1: KernelTuning = KernelTuning { norm_occupancy: None, silu: nvfp4::SiluTiles::N1, swiglu_occupancy: None };
 }
 
 // SAFETY: the cutile tensors and plans hold device allocations only; the engine's single worker thread drives
@@ -321,7 +325,8 @@ impl Kernels for TileKernels {
             let (x, xs) = (Arc::new(q.tile::<f4e2m1fnx2>()?), Arc::new(s.tile::<f8e4m3fn>()?));
             let (wp, ws) = (Arc::new(packed.tile::<f4e2m1fnx2>()?), Arc::new(scales.tile::<f8e4m3fn>()?));
             let (qo, so) = (Arc::new(q_out.tile::<f4e2m1fnx2>()?), Arc::new(s_out.tile::<f8e4m3fn>()?));
-            nvfp4::gemm_swiglu_il_op(&x, &xs, &wp, &ws, alpha, a_gs_down, qo, so, tiles, self.sms)?
+            let opts = cutile::tile_kernel::CompileOptions { occupancy: self.tuning.swiglu_occupancy, ..Default::default() };
+            nvfp4::gemm_swiglu_il_op_with(&x, &xs, &wp, &ws, alpha, a_gs_down, qo, so, tiles, self.sms, opts)?
                 .execute(cx.exec)
                 .map(|_| ())
                 .map_err(launch_err("gemm_nvfp4_swiglu"))

@@ -31,7 +31,8 @@ struct Args {
     iters: usize,
     #[arg(long, default_value_t = 3)]
     reps: usize,
-    /// Fused gate/up + SiLU·mul GEMM tiles to time, `BMxBNg<G>` (BN = gate + up rows per weight tile).
+    /// Fused gate/up + SiLU·mul GEMM tiles to time, `BMxBNg<G>[/<opts>]` (BN = gate + up rows per weight tile;
+    /// opts as `--gemm-opts`).
     #[arg(long, value_delimiter = ',', default_value = "128x128g8,64x128g8,128x64g8")]
     swiglu: Vec<String>,
     /// SiLU·mul tile shapes, `RxB` or `RxBoO` (occupancy hint O).
@@ -200,10 +201,14 @@ fn main() -> Result<()> {
         println!("  N1 gate/up + silu_mul_nvfp4: {:.3} ms", g + n1_silu);
         for spec in &args.swiglu {
             // Timing only: the weights are random, so their row order (interleaved or not) does not matter here.
-            let tl = parse_swiglu(spec);
+            // An optional `/<opts>` suffix: compile hints as in --gemm-opts (e.g. `128x128g8/w8`).
+            let (tspec, ospec) = spec.split_once('/').unwrap_or((spec, ""));
+            let tl = parse_swiglu(tspec);
+            let o = parse_opts(ospec);
             let r = time_batch(&stream, args.iters, args.reps, |ctx| {
                 unsafe {
-                    nvfp4::gemm_swiglu_il_op(&xp, &xs, &w.packed, &w.scales, alpha, igs, qa.clone(), sa.clone(), tl, sms)?
+                    nvfp4::gemm_swiglu_il_op_with(&xp, &xs, &w.packed, &w.scales, alpha, igs, qa.clone(), sa.clone(), tl,
+                                                  sms, o.clone())?
                         .execute(ctx)?
                 };
                 Ok(())

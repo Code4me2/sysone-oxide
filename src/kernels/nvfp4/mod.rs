@@ -848,6 +848,24 @@ pub fn gemm_swiglu_il_op(
     tiles: GemmTiles,
     sms: usize,
 ) -> Result<impl DeviceOp<Output = PackedAct>> {
+    gemm_swiglu_il_op_with(x, x_scales, w_packed_il, w_scales_il, alpha, igs, q, s, tiles, sms, CompileOptions::default())
+}
+
+/// [`gemm_swiglu_il_op`] with explicit cuTile compile options (F1 experiments).
+#[allow(clippy::too_many_arguments)]
+pub fn gemm_swiglu_il_op_with(
+    x: &Arc<Tensor<f4e2m1fnx2>>,
+    x_scales: &Arc<Tensor<f8e4m3fn>>,
+    w_packed_il: &Arc<Tensor<f4e2m1fnx2>>,
+    w_scales_il: &Arc<Tensor<f8e4m3fn>>,
+    alpha: RawAlpha,
+    igs: f32,
+    q: Arc<Tensor<f4e2m1fnx2>>,
+    s: Arc<Tensor<f8e4m3fn>>,
+    tiles: GemmTiles,
+    sms: usize,
+    opts: CompileOptions,
+) -> Result<impl DeviceOp<Output = PackedAct>> {
     ensure!(tiles.kernel == GemmKernel::Raw, "the fused gate/up GEMM uses the raw schedule");
     ensure!(w_packed_il.shape().len() == 2 && x.shape().len() == 2, "gemm: rank-2 operands expected");
     let (n2, k) = (w_packed_il.shape()[0] as usize, 2 * w_packed_il.shape()[1] as usize);
@@ -877,7 +895,7 @@ pub fn gemm_swiglu_il_op(
             nm as i32, nn as i32, ntb as i32,
         )
     };
-    Ok(op.generics(g).grid((ntb, 1, 1)).map(|out| (out.0, out.1)))
+    Ok(op.generics(g).grid((ntb, 1, 1)).compile_options(opts).map(|out| (out.0, out.1)))
 }
 
 /// Host-side row interleave of a concatenated gate/up projection (`rows = 2I`, `row_bytes` bytes per row, gate
