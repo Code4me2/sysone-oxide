@@ -15,7 +15,18 @@
 //! hn = add_zc_rmsnorm(x += m, final_norm)            over all T rows
 //! logits [Q, n_slots] f32 = gather(hn, answer_rows) · W_slotᵀ
 //! ```
-//! The NVFP4 MLP path (`Linear::Nvfp4`, §6.6) is not built yet: [`build`] refuses NVFP4 projections.
+//!
+//! NVFP4 MLP projections (`Linear::Nvfp4`, DESIGN §3.1, §6.6; N1) replace the MLP part per projection. Fused
+//! (the default, [`build`]), the activation quantization runs in the epilogue of the op before each GEMM:
+//! ```text
+//!   q1, s1 = add_zc_rmsnorm_nvfp4(x += o, ln2)      residual add + norm + quantize (gate/up's input_global_scale)
+//!   gu     = gemm_nvfp4(q1, s1, [Wgate; Wup])        block-scaled FP4 GEMM, per-half epilogue 1/(a_gs·w_gs)
+//!   q2, s2 = silu_mul_nvfp4(gu)                      SiLU·mul + quantize (down's input_global_scale)
+//!   m      = gemm_nvfp4(q2, s2, Wdown)
+//! ```
+//! Unfused ([`build_with`] with `nvfp4_fused = false`) the bf16 norm and SiLU·mul outputs are materialised and a
+//! standalone `quantize_nvfp4` runs before each GEMM; both forms are bit-identical (tests/kernels_nvfp4_fused.rs).
+//! Every other projection stays bf16 (cuBLAS); an NVFP4 projection outside the MLP is refused.
 
 use crate::engine::config::{LayerType, ModelConfig};
 use crate::engine::graph::tensor::GraphDType;
@@ -69,8 +80,15 @@ pub fn check_dims(cfg: &ModelConfig) -> Result<()> {
 }
 
 /// Build the forward for `cfg` over `weights` (which decides bf16 vs NVFP4 per projection) with `n_slots`
-/// readout rows.
+/// readout rows; NVFP4 quantization fused into the preceding norm / SiLU·mul.
 pub fn build(cfg: &ModelConfig, weights: &dyn WeightStore, n_slots: usize, taps: &Taps) -> Result<Forward> {
+    build_with(cfg, weights, n_slots, taps, true)
+}
+
+/// [`build`], choosing whether NVFP4 activation quantization is fused into the preceding op (`nvfp4_fused`) or
+/// runs as a standalone `quantize_nvfp4` on the materialised bf16 activation.
+pub fn build_with(cfg: &ModelConfig, weights: &dyn WeightStore, n_slots: usize, taps: &Taps, nvfp4_fused: bool)
+    -> Result<Forward> {
     check_dims(cfg)?;
     let t = &cfg.text_config;
     let h = t.hidden_size;
@@ -80,13 +98,23 @@ pub fn build(cfg: &ModelConfig, weights: &dyn WeightStore, n_slots: usize, taps:
     let vh = t.linear_num_value_heads;
     let q_dim = t.num_attention_heads * t.head_dim;
     let kv_dim = t.num_key_value_heads * t.head_dim;
-    for i in 0..t.num_hidden_layers {
-        for s in [LayerWeight::MlpGateUp, LayerWeight::MlpDown] {
+    for (i, ty) in t.layer_types.iter().enumerate() {
+        let mixer: &[LayerWeight] = match ty {
+            LayerType::LinearAttention => &[LayerWeight::GdnInProj, LayerWeight::GdnOutProj],
+            LayerType::FullAttention => &[LayerWeight::AttnQ, LayerWeight::AttnKv, LayerWeight::AttnO],
+        };
+        for &s in mixer {
             if weights.linear(WeightRef::Layer(i, s))?.is_nvfp4() {
-                bail!("layer {i} {s:?} is NVFP4: the NVFP4 forward is not implemented yet (Phase 2b)");
+                bail!("layer {i} {s:?} is NVFP4: only the MLP projections can run on NVFP4");
             }
         }
     }
+    let u8t = GraphDType::U8;
+    let f8 = GraphDType::F8E4M3;
+    // NVFP4 activation of a [T, k] bf16 input: packed e2m1 pairs and e4m3 group scales.
+    let act = |g: &mut StepGraph, k: usize| {
+        (g.value(u8t, vec![Dim::Tokens, Dim::Fixed(k / 2)]), g.value(f8, vec![Dim::Tokens, Dim::Fixed(k / 16)]))
+    };
 
     let mut g = StepGraph::new();
     let bf = GraphDType::BF16;
@@ -150,27 +178,56 @@ pub fn build(cfg: &ModelConfig, weights: &dyn WeightStore, n_slots: usize, taps:
                 g.push(GraphOp::Gemm { x: ao.into(), w: lw(LayerWeight::AttnO), out: mixer });
             }
         }
-        let h2 = tok(&mut g, h);
+        let (wgu, wdn) = (lw(LayerWeight::MlpGateUp), lw(LayerWeight::MlpDown));
+        let (gu_q, dn_q) = (weights.linear(wgu)?.is_nvfp4(), weights.linear(wdn)?.is_nvfp4());
         let x2 = tok(&mut g, h);
-        g.push(GraphOp::AddZcRmsNorm {
-            residual: x,
-            x: mixer.into(),
-            w: lw(LayerWeight::PostNorm),
-            out: h2,
-            residual_out: x2,
-        });
+        let gu = tok(&mut g, 2 * inter);
+        if gu_q && nvfp4_fused {
+            let (q, s) = act(&mut g, h);
+            g.push(GraphOp::AddZcRmsNormNvfp4 {
+                residual: x,
+                x: mixer.into(),
+                norm: lw(LayerWeight::PostNorm),
+                w: wgu,
+                q,
+                s,
+                residual_out: x2,
+            });
+            g.push(GraphOp::GemmNvfp4 { q: q.into(), s: s.into(), w: wgu, out: gu });
+        } else {
+            let h2 = tok(&mut g, h);
+            g.push(GraphOp::AddZcRmsNorm { residual: x, x: mixer.into(), w: lw(LayerWeight::PostNorm), out: h2,
+                                           residual_out: x2 });
+            if gu_q {
+                let (q, s) = act(&mut g, h);
+                g.push(GraphOp::QuantizeNvfp4 { x: h2.into(), w: wgu, q, s });
+                g.push(GraphOp::GemmNvfp4 { q: q.into(), s: s.into(), w: wgu, out: gu });
+            } else {
+                g.push(GraphOp::Gemm { x: h2.into(), w: wgu, out: gu });
+            }
+        }
         x = x2;
         let sub = taps.sublayers && taps.layers.contains(&i);
         if sub {
             tap(&mut g, format!("mix{i}"), mixer);
             tap(&mut g, format!("mid{i}"), x);
         }
-        let gu = tok(&mut g, 2 * inter);
-        g.push(GraphOp::Gemm { x: h2.into(), w: lw(LayerWeight::MlpGateUp), out: gu });
-        let m = tok(&mut g, inter);
-        g.push(GraphOp::SiluMul { gu: gu.into(), out: m });
         let mo = tok(&mut g, h);
-        g.push(GraphOp::Gemm { x: m.into(), w: lw(LayerWeight::MlpDown), out: mo });
+        if dn_q && nvfp4_fused {
+            let (q, s) = act(&mut g, inter);
+            g.push(GraphOp::SiluMulNvfp4 { gu: gu.into(), w: wdn, q, s });
+            g.push(GraphOp::GemmNvfp4 { q: q.into(), s: s.into(), w: wdn, out: mo });
+        } else {
+            let m = tok(&mut g, inter);
+            g.push(GraphOp::SiluMul { gu: gu.into(), out: m });
+            if dn_q {
+                let (q, s) = act(&mut g, inter);
+                g.push(GraphOp::QuantizeNvfp4 { x: m.into(), w: wdn, q, s });
+                g.push(GraphOp::GemmNvfp4 { q: q.into(), s: s.into(), w: wdn, out: mo });
+            } else {
+                g.push(GraphOp::Gemm { x: m.into(), w: wdn, out: mo });
+            }
+        }
         if sub {
             tap(&mut g, format!("mlp{i}"), mo);
         }

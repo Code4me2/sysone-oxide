@@ -1,0 +1,37 @@
+
+== sysone_nvfp4: 278/278 records, 0 errors
+run                               overall          banking77             ledgar       longbench_v2   brier    ece
+sysone_nvfp4               230/278  82.7%     116/128  90.6%     105/128  82.0%        9/22  40.9%  0.2509 0.0511
+                       overall 95% CI [78.4, 87.1]%
+bf16_batched               227/278  81.7%     116/128  90.6%     102/128  79.7%        9/22  40.9%  0.2481 0.0616
+bf16_sequential            227/278  81.7%     116/128  90.6%     102/128  79.7%        9/22  40.9%  0.2475 0.0627
+bf16_perq                  227/278  81.7%     116/128  90.6%     102/128  79.7%        9/22  40.9%  0.2475 0.0617
+fp32_batched               227/278  81.7%     116/128  90.6%     102/128  79.7%        9/22  40.9%  0.2477 0.0614
+
+-- gate [bf16] vs ['bf16_batched', 'bf16_sequential', 'bf16_perq', 'fp32_batched'] (limits from tests/tolerances.toml [eval.bf16]): FAIL
+   bf16_batched       disagree    +0.01918 <= +0.002398  FAIL
+   bf16_batched       dp_mean     +0.002127 <= +0.0002203  FAIL
+   bf16_batched       dp_p99      +0.05785 <= +0.00582  FAIL
+   bf16_batched       acc_ci_lo   -0.01079 >= -0.01079  ok
+   bf16_batched       brier_ci_hi +0.01663 <= +0.002364  FAIL
+   bf16_batched       info: labeled agreement 95.68%, top-1 changes 22 (any margin), max|dp| 0.504, dAcc +1.08pp [-1.08,+3.24], gains 6 losses 3
+   bf16_sequential    disagree    +0.01918 <= +0.002398  FAIL
+   bf16_sequential    dp_mean     +0.002127 <= +0.0002203  FAIL
+   bf16_sequential    dp_p99      +0.05762 <= +0.00582  FAIL
+   bf16_sequential    acc_ci_lo   -0.01079 >= -0.01079  ok
+   bf16_sequential    brier_ci_hi +0.0178 <= +0.002364  FAIL
+   bf16_sequential    info: labeled agreement 95.68%, top-1 changes 22 (any margin), max|dp| 0.509, dAcc +1.08pp [-1.08,+3.24], gains 6 losses 3
+   bf16_perq          disagree    +0.02038 <= +0.002398  FAIL
+   bf16_perq          dp_mean     +0.002118 <= +0.0002203  FAIL
+   bf16_perq          dp_p99      +0.05626 <= +0.00582  FAIL
+   bf16_perq          acc_ci_lo   -0.01079 >= -0.01079  ok
+   bf16_perq          brier_ci_hi +0.01731 <= +0.002364  FAIL
+   bf16_perq          info: labeled agreement 95.68%, top-1 changes 22 (any margin), max|dp| 0.528, dAcc +1.08pp [-1.08,+3.24], gains 6 losses 3
+   fp32_batched       disagree    +0.01799 <= +0.002398  FAIL
+   fp32_batched       dp_mean     +0.002117 <= +0.0002203  FAIL
+   fp32_batched       dp_p99      +0.05635 <= +0.00582  FAIL
+   fp32_batched       acc_ci_lo   -0.01079 >= -0.01079  ok
+   fp32_batched       brier_ci_hi +0.01755 <= +0.002364  FAIL
+   fp32_batched       info: labeled agreement 95.68%, top-1 changes 23 (any margin), max|dp| 0.511, dAcc +1.08pp [-1.08,+3.24], gains 6 losses 3
+
+GATE FAIL

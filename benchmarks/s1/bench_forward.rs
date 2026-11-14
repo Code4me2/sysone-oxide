@@ -1,4 +1,5 @@
-//! Whole-forward benchmark of the bf16 GPU engine (Phase 2a, I1): packed steps of realistic request trees at
+//! Whole-forward benchmark of the GPU engine (Phase 2a, I1; NVFP4 checkpoints since N1 — the engine follows the
+//! checkpoint's profile, `--model .../elephant-1-nvfp4-mlp` runs the nvfp4 engine): packed steps of realistic request trees at
 //! T = 1k, 4k, 16k (each request: a ~`state-tokens` JSON state and 3 questions — noul, a 5-option choice, a
 //! 4-level score — planned by the real frontend), timed as CUDA-graph replays and as eager runs, plus a per-op
 //! profile (CUDA events around every op in an eager run: GEMMs by projection, GDN stages, attention, norms,
@@ -21,7 +22,7 @@ use sysone::engine::platform::require_idle_gpu;
 use sysone::frontend::{Frontend, Limits};
 
 #[derive(Parser, Debug)]
-#[command(about = "bf16 engine forward benchmark and per-op profile")]
+#[command(about = "GPU engine forward benchmark and per-op profile (bf16 or NVFP4 checkpoint)")]
 struct Args {
     #[arg(long, default_value = "/home/velvet/Desktop/hf_models/elephant-1")]
     model: PathBuf,
@@ -46,6 +47,9 @@ struct Args {
     /// GDN delta-rule backend: tile, simt or auto (default: $SYSONE_GDN_BACKEND, else auto).
     #[arg(long)]
     gdn_backend: Option<String>,
+    /// NVFP4 checkpoints: standalone quantize launches instead of the fused norm / SiLU·mul epilogues.
+    #[arg(long)]
+    nvfp4_unfused: bool,
 }
 
 const VOCAB: [&str; 16] = [
@@ -105,9 +109,15 @@ fn main() -> Result<()> {
         Some(s) => sysone::engine::gpu::parse_gdn_backend(s)?,
         None => gdn_backend_from_env()?,
     };
-    let opts = EngineOptions { buckets: a.tokens.clone(), warmup: false, gdn_backend, ..Default::default() };
+    let opts = EngineOptions { buckets: a.tokens.clone(), warmup: false, gdn_backend, nvfp4_fused: !a.nvfp4_unfused,
+                               ..Default::default() };
     let mut e = GpuEngine::load(&a.model, &fe.slot_ids, opts)?;
-    println!("# GDN backend: {} on {}", e.gdn_backend().name(), e.arch);
+    let quant = match e.format {
+        sysone::engine::config::WeightFormat::Nvfp4 if a.nvfp4_unfused => " (standalone quantize)",
+        sysone::engine::config::WeightFormat::Nvfp4 => " (quantize fused)",
+        _ => "",
+    };
+    println!("# engine: {}{quant}; GDN backend: {} on {}", e.format.name(), e.gdn_backend().name(), e.arch);
     let cfg = e.cfg.text_config.clone();
     println!("# arena {:.2} GiB for buckets {:?} (largest {max})", e.arena_bytes() as f64 / (1u64 << 30) as f64, a.tokens);
     for &target in &a.tokens {
@@ -146,6 +156,7 @@ fn main() -> Result<()> {
             (n_req * 3) as f64 / rm * 1e3,
         );
         let mut rec = serde_json::json!({
+            "engine": e.format.name(), "nvfp4_fused": !a.nvfp4_unfused,
             "gdn_backend": e.gdn_backend().name(), "tokens": t, "bucket": bucket.tokens, "requests": n_req, "branches": b.num_branches(),
             "replay_ms_median": rm, "eager_ms_median": em, "replay_ms": replay, "eager_ms": eager,
         });
@@ -155,7 +166,8 @@ fn main() -> Result<()> {
             // GEMM FLOPs per projection label (2·T·N·K per launch).
             let h = cfg.hidden_size as f64;
             let n_of = |label: &str| -> Option<(f64, f64)> {
-                Some(match label.strip_prefix("gemm.")? {
+                let proj = label.strip_prefix("gemm.").or_else(|| label.strip_prefix("gemm_nvfp4."))?;
+                Some(match proj {
                     "GdnInProj" => (12352.0, h),
                     "GdnOutProj" => (h, 4096.0),
                     "AttnQ" => (8192.0, h),

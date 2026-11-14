@@ -24,7 +24,10 @@ use crate::engine::graph::{Bucket, Kernels, LayerWeight, Launch, WeightRef};
 use crate::kernels::attention::{self as attn, AttnPlan, AttnTiles, SegAttnArgs, WORK_FIELDS};
 use crate::engine::graph::GraphOp;
 use crate::kernels::gdn::{self, DView, GdnBackend, GdnPlan, GdnScratch, GdnTables, GdnWeights};
+use crate::engine::weights::Linear;
+use crate::kernels::nvfp4::{self, GemmTiles, QuantTiles, RawAlpha};
 use crate::kernels::{norm, pointwise};
+use cutile::cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use anyhow::{Context as _, Result, anyhow, ensure};
 use cuda_async::device_buffer::DevicePointer;
 use cuda_async::device_operation::DeviceOp;
@@ -51,6 +54,11 @@ pub struct TileKernels {
     scratch: GdnScratch,
     gdn_backend: GdnBackend,
     buckets: HashMap<Bucket, BucketState>,
+    /// Multiprocessors of the device (persistent NVFP4 GEMM schedules).
+    sms: usize,
+    /// Tiles of the NVFP4 GEMM ([`GemmTiles::DEFAULT`]: fixed at every T, so a row's result never depends on the
+    /// batch it is in).
+    pub nvfp4_tiles: GemmTiles,
 }
 
 // SAFETY: the cutile tensors and plans hold device allocations only; the engine's single worker thread drives
@@ -91,7 +99,17 @@ impl TileKernels {
         let inv_freq = DevTensor::alloc(stream.context(), GraphDType::F32, &[attn::ROTARY_DIM / 2])?;
         inv_freq.copy_from_host(stream, &inv)?;
         let scratch = GdnScratch::for_engine(gdn_backend, max_tokens, max_prefixes, stream)?;
-        Ok(Self { eps, attn_tiles: AttnTiles::default(), inv_freq, scratch, gdn_backend, buckets: HashMap::new() })
+        let sms = stream.context().multiprocessor_count()? as usize;
+        Ok(Self {
+            eps,
+            attn_tiles: AttnTiles::default(),
+            inv_freq,
+            scratch,
+            gdn_backend,
+            buckets: HashMap::new(),
+            sms,
+            nvfp4_tiles: GemmTiles::DEFAULT,
+        })
     }
 
     /// The delta-rule backend.
@@ -179,6 +197,73 @@ impl Kernels for TileKernels {
         unsafe {
             let (gu, mut o) = (gu.tile::<bf16>()?, out.tile::<bf16>()?);
             pointwise::silu_mul(&mut o, &gu)?.execute(cx.exec).map(|_| ()).map_err(launch_err("silu_mul"))
+        }
+    }
+
+    fn quantize_nvfp4(&self, cx: &Launch, x: &DevTensor, a_gs: f32, q: &DevTensor, s: &DevTensor) -> Result<()> {
+        ensure!(x.is_contiguous(), "quantize_nvfp4 of a strided view {x:?}");
+        let (t, k) = (x.rows(), x.cols());
+        unsafe {
+            let x = Arc::new(x.tile::<bf16>()?);
+            let out = nvfp4::Nvfp4Act { t, k, packed: q.tile::<f4e2m1fnx2>()?, scales: s.tile::<f8e4m3fn>()? };
+            nvfp4::quantize_op(&x, a_gs, out, QuantTiles::DEFAULT)?
+                .execute(cx.exec)
+                .map(|_| ())
+                .map_err(launch_err("quantize_nvfp4"))
+        }
+    }
+
+    fn zc_rmsnorm_nvfp4(&self, cx: &Launch, x: &DevTensor, norm: &DevTensor, a_gs: f32, q: &DevTensor, s: &DevTensor)
+        -> Result<()> {
+        unsafe {
+            let (x, w) = (x.tile::<bf16>()?, norm.tile::<bf16>()?);
+            let (mut q, mut s) = (q.tile::<f4e2m1fnx2>()?, s.tile::<f8e4m3fn>()?);
+            nvfp4::zc_rmsnorm_nvfp4(&mut q, &mut s, &x, &w, self.eps, a_gs)?
+                .execute(cx.exec)
+                .map(|_| ())
+                .map_err(launch_err("zc_rmsnorm_nvfp4"))
+        }
+    }
+
+    fn add_zc_rmsnorm_nvfp4(&self, cx: &Launch, residual: &DevTensor, x: &DevTensor, norm: &DevTensor, a_gs: f32,
+                            q: &DevTensor, s: &DevTensor) -> Result<()> {
+        unsafe {
+            let (x, w, mut r) = (x.tile::<bf16>()?, norm.tile::<bf16>()?, residual.tile::<bf16>()?);
+            let (mut q, mut s) = (q.tile::<f4e2m1fnx2>()?, s.tile::<f8e4m3fn>()?);
+            nvfp4::add_zc_rmsnorm_nvfp4(&mut r, &mut q, &mut s, &x, &w, self.eps, a_gs)?
+                .execute(cx.exec)
+                .map(|_| ())
+                .map_err(launch_err("add_zc_rmsnorm_nvfp4"))
+        }
+    }
+
+    fn silu_mul_nvfp4(&self, cx: &Launch, gu: &DevTensor, a_gs: f32, q: &DevTensor, s: &DevTensor) -> Result<()> {
+        unsafe {
+            let gu = gu.tile::<bf16>()?;
+            let (mut q, mut s) = (q.tile::<f4e2m1fnx2>()?, s.tile::<f8e4m3fn>()?);
+            nvfp4::silu_mul_nvfp4(&mut q, &mut s, &gu, a_gs)?
+                .execute(cx.exec)
+                .map(|_| ())
+                .map_err(launch_err("silu_mul_nvfp4"))
+        }
+    }
+
+    fn gemm_nvfp4(&self, cx: &Launch, q: &DevTensor, s: &DevTensor, w: &Linear, out: &DevTensor) -> Result<()> {
+        let Linear::Nvfp4 { packed, scales, parts, a_gs, .. } = w else {
+            anyhow::bail!("gemm_nvfp4 on a bf16 projection");
+        };
+        ensure!(q.is_contiguous() && s.is_contiguous() && out.is_contiguous(), "gemm_nvfp4 needs contiguous operands");
+        let parts: Vec<(usize, f32)> =
+            parts.iter().map(|p| Ok((p.rows, p.w_gs.context("NVFP4 part without weight_global_scale")?))).collect::<Result<_>>()?;
+        let alpha = RawAlpha::for_parts(*a_gs, &parts)?;
+        unsafe {
+            let (x, xs) = (Arc::new(q.tile::<f4e2m1fnx2>()?), Arc::new(s.tile::<f8e4m3fn>()?));
+            let (wp, ws) = (Arc::new(packed.tile::<f4e2m1fnx2>()?), Arc::new(scales.tile::<f8e4m3fn>()?));
+            let z = Arc::new(out.tile::<bf16>()?);
+            nvfp4::gemm_raw_op(&x, &xs, &wp, &ws, alpha, z, self.nvfp4_tiles, self.sms)?
+                .execute(cx.exec)
+                .map(|_| ())
+                .map_err(launch_err("gemm_nvfp4"))
         }
     }
 

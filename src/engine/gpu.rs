@@ -15,7 +15,7 @@
 //! that does not fit is an error.
 
 use crate::contract::{DecisionBatch, DecisionEngine, MAX_SLOTS, SlotLogits};
-use crate::engine::config::ModelConfig;
+use crate::engine::config::{ModelConfig, WeightFormat};
 use crate::engine::forward::{self, Forward, Taps};
 use crate::engine::gemm::Blas;
 use crate::engine::graph::tensor::GraphDType;
@@ -55,6 +55,35 @@ pub struct EngineOptions {
     /// the choice and its reason are logged at load and reported by [`DecisionEngine::info`]; SIMT without a
     /// kernel artifact for the device's architecture fails the load.
     pub gdn_backend: Option<GdnBackend>,
+    /// The weight format the caller expects (`--engine bf16 | nvfp4`). `None`: whatever the checkpoint's profile
+    /// says ([`ModelConfig::profile`]). A mismatch fails the load before any weight is read.
+    pub weights: Option<WeightFormat>,
+    /// NVFP4 checkpoints: quantize activations in the epilogue of the preceding norm / SiLU·mul (default) instead of
+    /// a standalone `quantize_nvfp4` launch. Both are bit-identical; the fused form saves a bf16 round trip.
+    pub nvfp4_fused: bool,
+}
+
+/// Environment variable the engine tests and benchmarks read the expected weight format from (`bf16`, `nvfp4`;
+/// unset: the checkpoint's own).
+pub const ENGINE_ENV: &str = "SYSONE_ENGINE";
+
+/// Parse a weight-format / engine name: `bf16` or `nvfp4`.
+pub fn parse_weight_format(s: &str) -> Result<WeightFormat> {
+    match s {
+        "bf16" => Ok(WeightFormat::Bf16),
+        "nvfp4" => Ok(WeightFormat::Nvfp4),
+        other => bail!("unknown engine {other:?} (bf16 or nvfp4)"),
+    }
+}
+
+/// The weight format in `$SYSONE_ENGINE` (unset or `auto`: `None`, the checkpoint decides).
+pub fn weight_format_from_env() -> Result<Option<WeightFormat>> {
+    match std::env::var(ENGINE_ENV) {
+        Ok(v) if v == "auto" => Ok(None),
+        Ok(v) => parse_weight_format(&v).map(Some).with_context(|| format!("{ENGINE_ENV}={v:?}")),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(e) => Err(e).context(ENGINE_ENV),
+    }
 }
 
 /// Environment variable the engine tests and benchmarks read the GDN backend from (`tile`, `simt` or `auto`).
@@ -89,6 +118,8 @@ impl Default for EngineOptions {
             taps: Taps::default(),
             debug_permute_hidden: None,
             gdn_backend: None,
+            weights: None,
+            nvfp4_fused: true,
         }
     }
 }
@@ -133,6 +164,8 @@ pub struct GpuEngine {
     hidden_perm: Option<Vec<usize>>,
     /// Device architecture (`sm_121`).
     pub arch: String,
+    /// The checkpoint's weight format (the engine's name in `/metrics`).
+    pub format: WeightFormat,
 }
 
 // SAFETY: every member is either plain data or a device/pinned allocation owned by this engine; the scheduler
@@ -140,12 +173,24 @@ pub struct GpuEngine {
 unsafe impl Send for GpuEngine {}
 
 impl GpuEngine {
-    /// Load `model_dir` (bf16 checkpoint) onto device 0 and build the forward. `slot_ids` are the slot label
-    /// token ids from the frontend (the readout rows).
+    /// Load `model_dir` (a bf16 or NVFP4-MLP checkpoint, [`ModelConfig::profile`]) onto device 0 and build the
+    /// forward. `slot_ids` are the slot label token ids from the frontend (the readout rows).
     pub fn load(model_dir: &Path, slot_ids: &[u32], opts: EngineOptions) -> Result<Self> {
         let t0 = Instant::now();
         let cfg = ModelConfig::load(model_dir)?;
         forward::check_dims(&cfg)?;
+        let format = cfg.profile()?.weights;
+        if let Some(want) = opts.weights {
+            ensure!(
+                want == format,
+                "the {} engine needs a {} checkpoint, but {} is {} (config.json quantization_config: {:?})",
+                want.name(),
+                want.name(),
+                model_dir.display(),
+                format.name(),
+                cfg.quantization_config.as_ref().map(|q| q.format.as_str())
+            );
+        }
         ensure!(!slot_ids.is_empty() && slot_ids.len() <= MAX_SLOTS, "{} slot ids", slot_ids.len());
         ensure!(!opts.buckets.is_empty(), "no buckets");
         let ctx = Context::new(0)?;
@@ -157,7 +202,8 @@ impl GpuEngine {
         if let Some(p) = &hidden_perm {
             weights.permute_hidden(&stream, p)?;
         }
-        let fwd = forward::build(&cfg, &weights, slot_ids.len(), &opts.taps)?;
+        check_weight_format(&weights, format)?;
+        let fwd = forward::build_with(&cfg, &weights, slot_ids.len(), &opts.taps, opts.nvfp4_fused)?;
         let plan = BucketPlan::new(&opts.buckets, opts.max_answers, opts.max_segments)?;
         let largest = plan.largest();
         let graphs = BucketGraphs::new(&fwd.graph, plan, &stream)?;
@@ -195,10 +241,18 @@ impl GpuEngine {
             last: StepInfo::default(),
             hidden_perm,
             arch,
+            format,
         };
         eprintln!(
-            "sysone engine: loaded {:.1} GiB of weights in {:.1} s; arena {:.2} GiB (largest bucket {} tokens), GDN scratch \
+            "sysone engine: {} weights ({} NVFP4 projections{}): loaded {:.1} GiB in {:.1} s; arena {:.2} GiB (largest bucket {} tokens), GDN scratch \
              {:.2} GiB ({} prefix states)",
+            format.name(),
+            e.load_report.nvfp4_projections,
+            if format == WeightFormat::Nvfp4 {
+                if e.opts.nvfp4_fused { ", quantize fused" } else { ", standalone quantize" }
+            } else {
+                ""
+            },
             e.load_report.device_bytes as f64 / (1u64 << 30) as f64,
             t0.elapsed().as_secs_f64(),
             e.graphs.arena.bytes() as f64 / (1u64 << 30) as f64,
@@ -358,6 +412,20 @@ impl GpuEngine {
     }
 }
 
+/// The loaded weights must be what `format` promises: no NVFP4 projection for bf16; for NVFP4 every MLP projection
+/// (and nothing else, which `forward::build` also refuses).
+fn check_weight_format(w: &ModelWeights, format: WeightFormat) -> Result<()> {
+    for (i, l) in w.layers.iter().enumerate() {
+        let mlp = l.mlp();
+        for (name, lin) in [("gate/up", &mlp.gate_up), ("down", &mlp.down)] {
+            ensure!(lin.is_nvfp4() == (format == WeightFormat::Nvfp4),
+                    "layer {i} MLP {name} is {} in a checkpoint whose profile is {}",
+                    if lin.is_nvfp4() { "NVFP4" } else { "bf16" }, format.name());
+        }
+    }
+    Ok(())
+}
+
 /// Split `batch` by request into batches that each satisfy `fits`, packing requests greedily in prefix order.
 /// Returns each sub-batch with the original answer index of each of its answer rows. A batch that fits is
 /// returned whole; a single request that does not fit is an error.
@@ -407,7 +475,7 @@ impl DecisionEngine for GpuEngine {
     }
 
     fn info(&self) -> Vec<(&'static str, String)> {
-        vec![("engine", "bf16".into()), ("gdn_backend", self.gdn_backend().name().into()), ("arch", self.arch.clone())]
+        vec![("engine", self.format.name().into()), ("gdn_backend", self.gdn_backend().name().into()), ("arch", self.arch.clone())]
     }
 
     fn run(&mut self, batch: &DecisionBatch) -> Result<SlotLogits> {

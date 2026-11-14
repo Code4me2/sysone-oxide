@@ -1,5 +1,5 @@
 //! `sysone`: the server binary. Parses the CLI, loads the model config and the [frontend], builds the engine
-//! factory (`--engine mock` or `--engine bf16`), starts the scheduler and CPU pool (`AppState::start_with`) and
+//! factory (`--engine mock`, `bf16` or `nvfp4`), starts the scheduler and CPU pool (`AppState::start_with`) and
 //! serves HTTP until Ctrl-C.
 //!
 //! The engine is built inside the scheduler's GPU worker thread (the factory closure runs there), because a CUDA
@@ -21,7 +21,7 @@ use std::time::Duration;
 use sysone::api::query::py_int;
 use sysone::api::server::{self, AppState, ServerInfo, ServerOptions};
 use sysone::contract::{DecisionBatch, DecisionEngine, MassReadout, MockEngine, SlotLogits};
-use sysone::engine::config::ModelConfig;
+use sysone::engine::config::{ModelConfig, WeightFormat};
 use sysone::engine::gpu::{EngineOptions, GpuEngine, parse_gdn_backend};
 use sysone::frontend::{Frontend, Limits};
 use sysone::sched::{EngineFactory, SchedConfig};
@@ -30,8 +30,11 @@ use sysone::sched::{EngineFactory, SchedConfig};
 enum EngineKind {
     /// The deterministic stand-in (`contract::MockEngine`): real frontend and scheduler, fake logits.
     Mock,
-    /// The bf16 GPU engine (`engine::gpu::GpuEngine`) on device 0.
+    /// The bf16 GPU engine (`engine::gpu::GpuEngine`) on device 0; needs a bf16 checkpoint.
     Bf16,
+    /// The GPU engine with the MLP projections on NVFP4 kernels (W4A4); needs an NVFP4-MLP checkpoint
+    /// (`quantization_config.format = nvfp4-pack-quantized`, e.g. elephant-1-NVFP4-MLP).
+    Nvfp4,
 }
 
 #[derive(Parser, Debug)]
@@ -54,20 +57,21 @@ struct Args {
     /// Pass `--name` to pin the name a client expects.
     #[arg(long)]
     name: Option<String>,
-    /// Engine: `bf16` runs the model on the GPU; `mock` returns deterministic fake logits.
+    /// Engine: `bf16` runs a bf16 checkpoint on the GPU, `nvfp4` an NVFP4-MLP checkpoint (MLP GEMMs on FP4 tensor
+    /// cores); `mock` returns deterministic fake logits. The checkpoint must match the engine (checked at load).
     #[arg(long, value_enum, default_value_t = EngineKind::Mock)]
     engine: EngineKind,
-    /// bf16 engine: largest packed step (T bucket) in tokens; it must cover --max-request-tokens and
+    /// GPU engines: largest packed step (T bucket) in tokens; it must cover --max-request-tokens and
     /// --token-budget, since a request is never split across steps (default: the larger of the two).
     #[arg(long)]
     max_step_tokens: Option<usize>,
-    /// bf16 engine: run every step eagerly instead of replaying a CUDA graph per T bucket.
+    /// GPU engines: run every step eagerly instead of replaying a CUDA graph per T bucket.
     #[arg(long)]
     no_cuda_graphs: bool,
-    /// bf16 engine: most requests (prefix segments) in one step; each needs 2 MiB of GDN state per step.
+    /// GPU engines: most requests (prefix segments) in one step; each needs 2 MiB of GDN state per step.
     #[arg(long, default_value_t = 256)]
     max_prefixes: usize,
-    /// bf16 engine: implementation of the GatedDeltaNet delta rule: `tile` (cuTile), `simt` (cuda-oxide SIMT
+    /// GPU engines: implementation of the GatedDeltaNet delta rule: `tile` (cuTile), `simt` (cuda-oxide SIMT
     /// kernels, docs/G1.md; needs a kernel artifact for the GPU's architecture, else the load fails), or `auto`
     /// (the architecture's validated default, see docs/E2.md). The choice is logged at startup and reported in
     /// `/metrics` (`sysone_engine_info`).
@@ -99,12 +103,17 @@ struct Args {
     /// above what the real engine consumes.
     #[arg(long)]
     pin_cores: bool,
-    /// Longest state plus one question accepted (qev default).
-    #[arg(long, default_value_t = 32768)]
-    max_branch_tokens: usize,
-    /// Longest whole request accepted (qev default).
-    #[arg(long, default_value_t = 65536)]
-    max_request_tokens: usize,
+    /// Longest state plus one question accepted. Default: the checkpoint profile's (qev's 32,768 for bf16
+    /// checkpoints; 16,384 for the NVFP4 checkpoint, its documented limit).
+    #[arg(long)]
+    max_branch_tokens: Option<usize>,
+    /// Longest whole request accepted. Default: the checkpoint profile's (qev's 65,536).
+    #[arg(long)]
+    max_request_tokens: Option<usize>,
+    /// nvfp4 engine: run the activation quantization as a standalone kernel instead of fusing it into the
+    /// preceding norm / SiLU·mul (bit-identical; for benchmarks and diagnostics).
+    #[arg(long)]
+    nvfp4_unfused: bool,
     /// `debias` when a request has none (default: $QEV_DEBIAS as qev reads it, else 1).
     #[arg(long, allow_negative_numbers = true)]
     debias: Option<i64>,
@@ -150,7 +159,24 @@ impl DecisionEngine for SimulatedEngine {
 fn main() -> Result<()> {
     let args = Args::parse();
     let cfg = ModelConfig::load(&args.model)?;
-    let limits = Limits { max_branch_tokens: args.max_branch_tokens, max_request_tokens: args.max_request_tokens };
+    let profile = cfg.profile()?;
+    let limits = Limits {
+        max_branch_tokens: args.max_branch_tokens.unwrap_or(profile.max_branch_tokens),
+        max_request_tokens: args.max_request_tokens.unwrap_or(profile.max_request_tokens),
+    };
+    eprintln!(
+        "sysone: {} checkpoint; limits {} tokens per branch, {} per request ({})",
+        profile.weights.name(),
+        limits.max_branch_tokens,
+        limits.max_request_tokens,
+        if args.max_branch_tokens.is_some() || args.max_request_tokens.is_some() { "flags" } else { profile.limits_source }
+    );
+    if limits.max_branch_tokens > profile.max_branch_tokens || limits.max_request_tokens > profile.max_request_tokens {
+        eprintln!(
+            "sysone: warning: limits above the checkpoint profile's ({} per branch, {} per request; {})",
+            profile.max_branch_tokens, profile.max_request_tokens, profile.limits_source
+        );
+    }
     let frontend = Arc::new(Frontend::load(&args.model, limits).context("loading the frontend")?);
     let served = match &args.name {
         Some(n) => n.clone(),
@@ -166,7 +192,7 @@ fn main() -> Result<()> {
     };
 
     // The engine must take the largest request the limits admit in one step (requests are never split).
-    let step = args.token_budget.max(args.max_request_tokens);
+    let step = args.token_budget.max(limits.max_request_tokens);
     let engine: EngineFactory = match args.engine {
         EngineKind::Mock => {
             let (fixed, per_token) = (Duration::from_micros(args.mock_step_us), Duration::from_nanos(args.mock_ns_per_token));
@@ -175,20 +201,23 @@ fn main() -> Result<()> {
                 Ok(Box::new(SimulatedEngine { inner, step: fixed, per_token }) as Box<dyn DecisionEngine>)
             })
         }
-        EngineKind::Bf16 => {
+        EngineKind::Bf16 | EngineKind::Nvfp4 => {
             let max_step = args.max_step_tokens.unwrap_or(step);
             ensure!(
                 max_step >= step,
                 "--max-step-tokens {max_step} is below the largest request the limits admit ({} tokens) or the token \
                  budget ({}); requests are never split across steps, so raise it or lower --max-request-tokens",
-                args.max_request_tokens,
+                limits.max_request_tokens,
                 args.token_budget
             );
+            let weights = Some(if args.engine == EngineKind::Nvfp4 { WeightFormat::Nvfp4 } else { WeightFormat::Bf16 });
             let opts = EngineOptions {
                 buckets: EngineOptions::buckets_up_to(max_step),
                 cuda_graphs: !args.no_cuda_graphs,
                 max_prefixes: args.max_prefixes,
                 gdn_backend: parse_gdn_backend(&args.gdn_backend)?,
+                weights,
+                nvfp4_fused: !args.nvfp4_unfused,
                 ..Default::default()
             };
             let (model, slot_ids) = (args.model.clone(), frontend.slot_ids.clone());
@@ -236,10 +265,10 @@ fn main() -> Result<()> {
         args.queue_capacity,
         cpu
     );
-    if policy.max_tokens < args.max_request_tokens {
+    if policy.max_tokens < limits.max_request_tokens {
         eprintln!(
             "sysone: warning: the engine takes {} tokens per step but requests may hold {}; larger ones fail with 500",
-            policy.max_tokens, args.max_request_tokens
+            policy.max_tokens, limits.max_request_tokens
         );
     }
 

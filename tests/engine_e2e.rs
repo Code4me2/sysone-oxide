@@ -1,22 +1,32 @@
-//! End-to-end gates of the bf16 GPU engine (DESIGN §9.2; Phase 2a, I1) on the 52-request model corpus:
+//! End-to-end gates of the GPU engine (DESIGN §9.2; Phase 2a, I1; NVFP4: N1) on the 52-request model corpus.
+//! The engine is selected by `$SYSONE_ENGINE` (`bf16`, the default, or `nvfp4`):
 //!
-//! - `slot_probabilities_match_bf16_goldens`: every branch's slot probabilities vs qev bf16 (batched fork), gated
-//!   by `[e2e.bf16]` (dp p99/max, top-1 agreement where the reference margin exceeds `top1_margin`); also
-//!   reported (and gated by `[e2e.fp32_truth]`) against qev fp32;
+//! - `slot_probabilities_match_goldens`: every branch's slot probabilities vs the reference.
+//!   - bf16: vs qev bf16 (batched fork), gated by `[e2e.bf16]` (dp p99/max, top-1 agreement where the reference
+//!     margin exceeds `top1_margin`); also reported (and gated by `[e2e.fp32_truth]`) against qev fp32.
+//!   - nvfp4: vs the NVFP4 QDQ per-question reference (`nvfp4_perq_r1`, the checkpoint's own evaluation path),
+//!     gated by `[nvfp4]` (dp p99/max; its envelope is the QDQ reference's cross-process drift and its
+//!     per-question vs shared-prefix spread); reported vs the shared-prefix QDQ paths and, as information on the
+//!     cost of quantization, vs qev bf16.
 //! - `batch_invariance`: each request alone vs packed with the others and vs alone in a larger T bucket, gated by
-//!   `[batch_invariance].dp_max` (bit-identity is reported);
+//!   `[batch_invariance].dp_max` (bf16) or `[batch_invariance.nvfp4].dp_max` (nvfp4); bit-identity is reported.
 //! - `graph_replay_equals_eager`: a captured T-bucket graph replayed with new batch metadata gives bit for bit
 //!   the eager forward's logits.
+//! - `nvfp4_fused_equals_unfused` (nvfp4 only): the engine with the activation quantization fused into the norm /
+//!   SiLU·mul epilogues gives bit for bit the logits of the engine with standalone quantize launches.
 //!
-//! Needs the GPU and the checkpoint (`$SYSONE_MODEL_DIR`, default /home/velvet/Desktop/hf_models/elephant-1):
+//! Needs the GPU and the checkpoint: bf16 from `$SYSONE_MODEL_DIR` (default /home/velvet/Desktop/hf_models/
+//! elephant-1), NVFP4 from `$SYSONE_NVFP4_DIR` (default /home/velvet/Desktop/hf_models/elephant-1-nvfp4-mlp):
 //! `scripts/gpu.sh cargo test --release --test engine_e2e -- --nocapture --test-threads=1`
+//! `SYSONE_ENGINE=nvfp4 scripts/gpu.sh cargo test --release --test engine_e2e -- --nocapture --test-threads=1`
 
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
 use sysone::contract::{DecisionBatch, DecisionEngine, SlotLogits};
 use sysone::engine::goldens::{self, GoldenResult, Planned};
-use sysone::engine::gpu::{EngineOptions, GpuEngine, gdn_backend_from_env};
+use sysone::engine::config::WeightFormat;
+use sysone::engine::gpu::{EngineOptions, GpuEngine, gdn_backend_from_env, weight_format_from_env};
 use sysone::frontend::{Frontend, Limits};
 use sysone::tolerances::{Stats, Tolerances};
 
@@ -24,10 +34,31 @@ fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+/// The engine under test (`$SYSONE_ENGINE`, default bf16).
+fn format() -> WeightFormat {
+    weight_format_from_env().unwrap().unwrap_or(WeightFormat::Bf16)
+}
+
 fn model_dir() -> PathBuf {
-    std::env::var_os("SYSONE_MODEL_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/home/velvet/Desktop/hf_models/elephant-1"))
+    let (var, default) = match format() {
+        WeightFormat::Bf16 => ("SYSONE_MODEL_DIR", "/home/velvet/Desktop/hf_models/elephant-1"),
+        WeightFormat::Nvfp4 => ("SYSONE_NVFP4_DIR", "/home/velvet/Desktop/hf_models/elephant-1-nvfp4-mlp"),
+    };
+    std::env::var_os(var).map(PathBuf::from).unwrap_or_else(|| PathBuf::from(default))
+}
+
+/// The reference run whose request statuses select the corpus (and that the gate compares against).
+fn primary_run() -> &'static str {
+    match format() {
+        WeightFormat::Bf16 => "bf16_batched",
+        WeightFormat::Nvfp4 => "nvfp4_perq_r1",
+    }
+}
+
+fn engine_opts(buckets_to: usize, nvfp4_fused: bool) -> EngineOptions {
+    EngineOptions { buckets: EngineOptions::buckets_up_to(buckets_to), warmup: false,
+                    gdn_backend: gdn_backend_from_env().unwrap(), weights: Some(format()), nvfp4_fused,
+                    ..Default::default() }
 }
 
 struct Env {
@@ -39,13 +70,11 @@ fn env() -> &'static Mutex<Env> {
     static ENV: OnceLock<Mutex<Env>> = OnceLock::new();
     ENV.get_or_init(|| {
         let fe = Frontend::load(&model_dir(), Limits::default()).unwrap();
-        let gold = goldens::golden_run(&repo(), "bf16_batched").unwrap();
+        let gold = goldens::golden_run(&repo(), primary_run()).unwrap();
         let cases = goldens::model_corpus(&repo()).unwrap();
         let plans = goldens::plan_corpus(&fe, &cases, |id| gold[id].status == 200).unwrap();
-        let opts = EngineOptions { buckets: EngineOptions::buckets_up_to(32768), warmup: false,
-                                   gdn_backend: gdn_backend_from_env().unwrap(), ..Default::default() };
-        let engine = GpuEngine::load(&model_dir(), &fe.slot_ids, opts).unwrap();
-        eprintln!("engine_e2e: GDN backend {}", engine.gdn_backend().name());
+        let engine = GpuEngine::load(&model_dir(), &fe.slot_ids, engine_opts(32768, true)).unwrap();
+        eprintln!("engine_e2e: {} engine, GDN backend {}", engine.format.name(), engine.gdn_backend().name());
         Mutex::new(Env { engine, plans })
     })
 }
@@ -100,7 +129,7 @@ fn run_alone(env: &mut Env) -> Vec<(String, Vec<Vec<f64>>)> {
 }
 
 #[test]
-fn slot_probabilities_match_bf16_goldens() {
+fn slot_probabilities_match_goldens() {
     let mut guard = env().lock().unwrap_or_else(|e| e.into_inner());
     let env = &mut *guard;
     let t0 = std::time::Instant::now();
@@ -109,7 +138,13 @@ fn slot_probabilities_match_bf16_goldens() {
     println!("ran {} requests ({n_branches} branches) alone in {:.1} s", results.len(), t0.elapsed().as_secs_f64());
     let t = tol();
     let mut failed = Vec::new();
-    for (run, table) in [("bf16_batched", "e2e.bf16"), ("fp32_batched", "e2e.fp32_truth"), ("bf16_sequential", "")] {
+    let runs: &[(&str, &str)] = match format() {
+        WeightFormat::Bf16 => &[("bf16_batched", "e2e.bf16"), ("fp32_batched", "e2e.fp32_truth"), ("bf16_sequential", "")],
+        // Gated against the checkpoint's own evaluation path; the shared-prefix QDQ paths and bf16 are reported.
+        WeightFormat::Nvfp4 => &[("nvfp4_perq_r1", "nvfp4"), ("nvfp4_batched", ""), ("nvfp4_sequential", ""),
+                                 ("bf16_batched", ""), ("fp32_batched", "")],
+    };
+    for &(run, table) in runs {
         let gold = goldens::golden_run(&repo(), run).unwrap();
         let d = compare(&results, &gold);
         let (dp, dl) = (Stats::of(&d.dp).unwrap(), Stats::of(&d.dlogit).unwrap());
@@ -173,7 +208,11 @@ fn batch_invariance() {
         let l = env.engine.step(&b, bucket, false).unwrap();
         bigger.push((p.case.id.clone(), rows(&l, first[0], p)));
     }
-    let lim = t.f64("batch_invariance.dp_max").unwrap();
+    let table = match format() {
+        WeightFormat::Bf16 => "batch_invariance",
+        WeightFormat::Nvfp4 => "batch_invariance.nvfp4",
+    };
+    let lim = t.f64(&format!("{table}.dp_max")).unwrap();
     let mut worst = 0.0f64;
     for (what, other) in [("packed", &packed), ("larger bucket", &bigger)] {
         let (mut same, mut total, mut dp, mut dl) = (0usize, 0usize, Vec::new(), Vec::new());
@@ -191,7 +230,8 @@ fn batch_invariance() {
         worst = worst.max(s.max);
         println!("alone vs {what}: {same}/{total} branches bit-identical; dp {s}; dlogit {}", Stats::of(&dl).unwrap());
     }
-    println!("batch invariance: max |dp| {worst:.3e} (gate [batch_invariance].dp_max {lim}, DESIGN start {})",
+    println!("batch invariance: max |dp| {worst:.3e} (gate [{table}].dp_max {lim}; bf16's [batch_invariance].dp_max {}, \
+              DESIGN start {})", t.f64("batch_invariance.dp_max").unwrap(),
              t.f64("batch_invariance.design_start_dp_max").unwrap());
     assert!(worst <= lim, "batch invariance max |dp| {worst} > {lim}");
 }
@@ -236,4 +276,42 @@ fn graph_replay_equals_eager() {
     assert!(env.engine.last.replayed);
     assert_eq!(ea.data, ra.data, "replay after another batch differs from eager");
     println!("{checked} batches + 1 interleaved: graph replay bit-identical to eager");
+}
+
+/// NVFP4 only: the fused-quantize engine against an engine with standalone `quantize_nvfp4` launches, bit for bit,
+/// on every corpus request up to 4k tokens alone and on one packed batch (eager and replayed).
+#[test]
+fn nvfp4_fused_equals_unfused() {
+    if format() != WeightFormat::Nvfp4 {
+        println!("skipped: SYSONE_ENGINE is not nvfp4");
+        return;
+    }
+    let mut guard = env().lock().unwrap_or_else(|e| e.into_inner());
+    let env = &mut *guard;
+    let fe = Frontend::load(&model_dir(), Limits::default()).unwrap();
+    let mut unfused = GpuEngine::load(&model_dir(), &fe.slot_ids, engine_opts(4096, false)).unwrap();
+    let small: Vec<&Planned> = env.plans.iter().filter(|p| p.plan.total <= 4096).collect();
+    let (mut same, mut total) = (0usize, 0usize);
+    let mut batches: Vec<DecisionBatch> = small.iter().map(|p| goldens::batch_of(&[&p.plan]).unwrap().0).collect();
+    let mut packed = Vec::new();
+    let mut tokens = 0;
+    for p in &small {
+        if tokens + p.plan.total > 4096 {
+            break;
+        }
+        tokens += p.plan.total;
+        packed.push(&p.plan);
+    }
+    batches.push(goldens::batch_of(&packed).unwrap().0);
+    for b in &batches {
+        for _ in 0..2 {
+            // First pass eager (and capture), second a replay in both engines.
+            let (x, y) = (env.engine.run(b).unwrap(), unfused.run(b).unwrap());
+            total += 1;
+            same += (x.data == y.data) as usize;
+        }
+    }
+    println!("fused vs standalone quantize: {same}/{total} steps bit-identical ({} batches, eager and replay)",
+             batches.len());
+    assert_eq!(same, total, "the fused NVFP4 quantization changed the logits");
 }

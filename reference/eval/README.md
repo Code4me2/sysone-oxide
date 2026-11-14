@@ -274,3 +274,13 @@ Throughput (information; one request at a time, server batching idle): 278 recor
 (sum of per-request seconds; chunk wall 181.5 s after an 18.1 s server start incl. 13.4 s JIT warm-up), 550,538
 rendered tokens, 3,034 tok/s; BANKING77 37.2 s, LEDGAR 53.0 s, LongBench-v2 91.2 s (22 records, 3,279 tok/s).
 The `bf16_batched` reference (HF eager) took 492 s for the same records.
+
+## sysone nvfp4 on the gate (N1)
+
+`NAME=sysone_nvfp4 ENGINE=nvfp4 bash reference/eval/run_sysone.sh` (the NVFP4 checkpoint, its profile's limits:
+16,384 per branch, 65,536 per request; otherwise the production configuration above), then `score.py --tier
+nvfp4`: **PASS** against all four NVFP4 QDQ paths with the committed `[eval.nvfp4]` limits (top-1 changes
+0.0216-0.0264 vs 0.0414, mean |dp| 1.88-1.91e-3 vs 2.81e-3, p99 |dp| 4.88-5.14e-2 vs 7.86e-2; accuracy 230/278 vs
+the paths' 225-227). Scored against the bf16 paths as information only (the cost of quantization): p99 |dp|
+5.6-5.8e-2, 22 top-1 changes. 278 records in 108 s at concurrency 1. Files:
+`tests/golden/dev/eval/candidates/sysone_nvfp4{.json,.score.txt,.vs_bf16.info.txt}`; details in docs/N1.md.

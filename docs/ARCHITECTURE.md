@@ -3,7 +3,7 @@
 This document explains how the code is put together: what each module does, how one request moves through the
 system, what the main types and data layouts mean, which library runs each GPU op, and how correctness is checked.
 It describes the code as it is. For *why* it is built this way, read [DESIGN.md](DESIGN.md); for measured numbers,
-read the phase reports ([PHASE0.md](PHASE0.md), [PHASE1.md](PHASE1.md), [PHASE2A.md](PHASE2A.md), [G1.md](G1.md), [E2.md](E2.md)).
+read the phase reports ([PHASE0.md](PHASE0.md), [PHASE1.md](PHASE1.md), [PHASE2A.md](PHASE2A.md), [G1.md](G1.md), [E2.md](E2.md), [N1.md](N1.md)).
 
 Code references name files, types and functions (`src/engine/gpu.rs`, `GpuEngine::step`). Line numbers are avoided
 on purpose. `cargo doc --no-deps --open` renders the per-module docs that this file points into.
@@ -45,7 +45,7 @@ cuBLAS (through `cudarc`) for the bf16 GEMMs.
 | HTTP API, frontend, scheduler | Complete for text requests. Matches qev on the render golden corpus and on qev's error bodies. |
 | bf16 GPU engine (`--engine bf16`) | Full 32-layer packed forward with T-bucket CUDA graphs. The end-to-end gate (b) and the batch-invariance gate pass. |
 | Hidden-state gate (a) | Redefined by A1 (dense rows, paired criteria; PHASE2A.md) and passing with both GDN backends (E2.md). |
-| NVFP4 | Kernels exist and are tested (`src/kernels/nvfp4`), the loader reads NVFP4 checkpoints, but `forward::build` refuses NVFP4 projections: there is no NVFP4 forward yet. |
+| NVFP4 engine (`--engine nvfp4`, N1) | The NVFP4-MLP checkpoint on the same engine: MLP GEMMs on the block-scaled FP4 kernels, activation quantization fused into the preceding norm / SiLU·mul (bit-identical to the standalone quantize), everything else bf16. Passes `[eval.nvfp4]`, `[nvfp4]` and `[batch_invariance.nvfp4]`; 1.48x the bf16 forward at 16k ([N1.md](N1.md)). |
 | `allowed_token_mass` (`?debug=1`) | Computed by `MockEngine` only. `GpuEngine` does not override `DecisionEngine::run_with_mass`, so the field is absent with the GPU engine. |
 | Prefix cache across requests (DESIGN §8), images, `head` readout | Not implemented. |
 | GDN on cuda-oxide SIMT kernels (G1, E2) | Implemented (`kernels-simt/`, `src/kernels/gdn/simt.rs`, docs/G1.md) and wired into the engine (E2, docs/E2.md): `--gdn-backend auto\|tile\|simt`, `EngineOptions::gdn_backend`. Default on sm_121 (`auto`), where every engine gate and the eval gate pass with it; cuTile on every other architecture until validated there. |
@@ -138,7 +138,7 @@ Step by step, with the code that runs:
 9. **Respond**: `respond` records metrics (`sched::metrics::Metrics`) and returns the response.
 
 The process is wired together in `src/main.rs`: it parses the CLI, loads `ModelConfig` and the `Frontend`, builds an
-`EngineFactory` (mock or bf16; the factory runs on the GPU worker thread so the CUDA context belongs to it), starts
+`EngineFactory` (mock, bf16 or nvfp4; the factory runs on the GPU worker thread so the CUDA context belongs to it), starts
 `AppState::start_with`, and serves with `api::server::serve`.
 
 ## 3. Core concepts
@@ -330,16 +330,16 @@ Gotchas:
 
 | File | Responsibility | Key items |
 |---|---|---|
-| `config.rs` | Parse `config.json` and refuse anything v1 cannot serve | `ModelConfig::{load, check}`, `TextConfig`, `LayerType` |
+| `config.rs` | Parse `config.json` and refuse anything v1 cannot serve; the per-checkpoint profile (weight format, request limits; NVFP4: 16,384 per branch) | `ModelConfig::{load, check, profile}`, `CheckpointProfile`, `WeightFormat`, `TextConfig`, `LayerType` |
 | `loader.rs` | Read safetensors headers; stream tensors to the GPU without leaving a page-cache copy | `Checkpoint::open`, `Streamer`, `CacheMode::{Direct, DropBehind, Keep}`, `StreamOptions` |
 | `weights.rs` | Device weights; fused projections; NVFP4 or bf16 per projection; slot head | `ModelWeights::load`, `Linear::{Bf16, Nvfp4}`, `LinearPart`, `LoadOptions`, `LoadReport` |
 | `graph.rs` | The StepGraph IR, arena planning, executor, profiler, the `Kernels` trait, bucket graphs | `StepGraph`, `GraphOp`, `ValueId`, `TensorRef`, `Dim`, `Bucket`, `BucketPlan`, `PoolPlan`, `Executor`, `BucketGraphs`, `Kernels`, `WeightStore`, `Profiler` |
 | `graph/tensor.rs` | Device allocations and typed, strided views | `DevBuf`, `DevTensor`, `GraphDType` |
-| `forward.rs` | Builds the 32-layer forward as a `StepGraph` | `build`, `check_dims`, `Forward`, `Taps` |
+| `forward.rs` | Builds the 32-layer forward as a `StepGraph`, bf16 or NVFP4 per MLP projection | `build`, `build_with` (NVFP4 quantize fused or standalone), `check_dims`, `Forward`, `Taps` |
 | `kernels.rs` | `Kernels` implementation over the cuTile kernels in `crate::kernels`, with the GDN delta rule on the cuTile or the SIMT backend | `TileKernels::{new, prepare, update, gdn_backend}` |
 | `gemm.rs` | cuBLAS bf16 GEMM, fp32 compute, fixed workspace (graph-safe) | `Blas::gemm_bf16` |
 | `meta.rs` | Per-step batch metadata, double-buffered upload | `MetaUploader::{pack, upload}`, `DeviceMeta`, `MetaShape`, `PAD_PARENT` |
-| `gpu.rs` | The GPU `DecisionEngine` | `GpuEngine::{load, run, step, profile, read_tap, gdn_backend}`, `EngineOptions`, `split_batch`, `StepInfo`, `parse_gdn_backend`, `gdn_backend_from_env` |
+| `gpu.rs` | The GPU `DecisionEngine` (bf16 or nvfp4 engine, following the checkpoint) | `GpuEngine::{load, run, step, profile, read_tap, gdn_backend}`, `EngineOptions` (`weights`, `nvfp4_fused`), `split_batch`, `StepInfo`, `parse_gdn_backend`, `gdn_backend_from_env`, `weight_format_from_env` |
 | `goldens.rs` | Readers for the model goldens (corpus, runs, hidden dumps) used by tests and `bench_forward` | `model_corpus`, `golden_run`, `hidden_dump`, `plan_corpus`, `batch_of` |
 | `platform.rs` | Platform profile written by `hwprobe`; the idle-GPU guard for benchmarks | `PlatformProfile`, `require_idle_gpu`, `gpu_contention` |
 | `cpu_ref/` | f32 CPU reference forward over packed trees (tests only; slow) | `CpuRefEngine`, `Layout::{from_batch, flat}`, `check` |
@@ -385,8 +385,13 @@ Gotchas (from code comments and the Phase 2a review):
   f32 q/k) is not the engine's Tile path: it is not bit-identical to the stored-q/k path (fp32-noise level,
   `kernels_gdn::scan_from_bf16_conv_matches_stored_f32_qk`), and the SIMT backend does not need it (it normalises
   q and k inside its own scan). See docs/E2.md.
-- `forward::build` bails on NVFP4 projections, and `TileKernels` does not implement the `Kernels` NVFP4 methods
-  (their defaults return an error).
+- **NVFP4 MLP** (N1): `forward::build_with` emits, per NVFP4 projection, `AddZcRmsNormNvfp4` + `GemmNvfp4` (gate/up)
+  and `SiluMulNvfp4` + `GemmNvfp4` (down); with `nvfp4_fused = false` the bf16 `AddZcRmsNorm` / `SiluMul` outputs
+  go through a standalone `QuantizeNvfp4`. The packed activations (`U8 [T, K/2]`) and scales (`F8E4M3 [T, K/16]`)
+  are arena values. `TileKernels::gemm_nvfp4` runs the `Raw` FP4 GEMM on the checkpoint's packed weights in place,
+  with the per-half epilogue computed from the parts' global scales (`RawAlpha`), at fixed tiles for every T. An
+  NVFP4 projection outside the MLP is refused, and `GpuEngine::load` checks that the loaded weights match the
+  checkpoint profile (every MLP projection NVFP4, or none).
 - `GpuEngine`'s field order is its drop order: graphs and buffers must drop before the CUDA context.
 
 ### 4.6 `kernels` (`src/kernels/`)
@@ -401,7 +406,7 @@ Each module's docs state the reference op it reproduces and its rounding points.
 | `attention` | `qk_norm_rope`, `seg_attn`, `AttnPlan`, `AttnTiles` | head_dim 256, 16 q / 4 kv heads, partial RoPE on 64 dims; softmax and P kept in fp32 (P fed to the bf16 MMA in `p_split` parts). |
 | `gdn` (`mod.rs`, `tile.rs`) | `tree_conv1d_silu`, `gdn_prep`, `gdn_chunk_scan(_with)`, `gated_rmsnorm`, `gdn_mixer`, `GdnPlan`, `GdnScratch`, `GdnPrecision`, `GdnOptions` | Chunked gated delta rule (chunk 64, WY/UT form) in fp32 via split TF32 by default. `tile.rs` documents the chunk and segment tables. |
 | `readout` | `slot_logits` | bf16 × bf16 → f32 slot GEMM. Tested and benchmarked, but the engine computes the readout with cuBLAS instead (`GraphOp::Gemm` on `WeightRef::SlotHead`). |
-| `nvfp4` | `quantize_nvfp4`, `gemm_nvfp4` | compressed-tensors' NVFP4 numerics (module docs list every rounding step). Not yet used by the forward. |
+| `nvfp4` | `quantize_nvfp4`, `zc_rmsnorm_nvfp4`, `add_zc_rmsnorm_nvfp4`, `silu_mul_nvfp4`, `gemm_nvfp4(_raw)`, `gemm_raw_op`, `RawAlpha` | compressed-tensors' NVFP4 numerics (module docs list every rounding step); the fused variants equal the bf16 op followed by `quantize_nvfp4` bit for bit. |
 
 All kernel launchers that take raw device pointers are `unsafe fn`: the caller keeps every buffer alive and
 unaliased until the returned operation completes.
@@ -461,9 +466,11 @@ The ops below are the classes `bench_forward`'s per-op profile reports (`Kernels
 | `readout.gather` | 1 | `kernels::pointwise::gather_rows` at `answer_rows` | exact | `tests/kernels_norm.rs` |
 | `debug.copy` | taps only | `Executor::copy` (device copy) for `Taps` | exact | `tests/engine_layers.rs` uses taps |
 
-NVFP4 ops (`GraphOp::{QuantizeNvfp4, ZcRmsNormNvfp4, AddZcRmsNormNvfp4, GemmNvfp4, SiluMulNvfp4}`, profile labels
-`nvfp4.*` and `gemm_nvfp4.*`) exist in the IR and as kernels (`kernels::nvfp4`, tested in `tests/kernels_nvfp4.rs`),
-but no forward uses them yet.
+The nvfp4 engine (N1) replaces the MLP rows: `nvfp4.add_zc_rmsnorm_nvfp4` (32; residual add + norm + quantize,
+`tests/kernels_nvfp4_fused.rs`), `gemm_nvfp4.MlpGateUp` and `gemm_nvfp4.MlpDown` (32 each; block-scaled FP4 MMA,
+fp32 accumulate, `1/(a_gs·w_gs)` epilogue, bf16 out; `tests/kernels_nvfp4.rs`), `nvfp4.silu_mul_nvfp4` (32), and
+with `--nvfp4-unfused` `nvfp4.quantize_nvfp4` (64) after the bf16 norm and `silu_mul`. `ZcRmsNormNvfp4` exists
+in the IR and the kernels but the forward does not need it (layer 0's plain norm feeds the mixer, not the MLP).
 
 Where the time goes at each bucket is in PHASE2A.md ("Forward speed").
 
@@ -493,12 +500,12 @@ Where the time goes at each bucket is in PHASE2A.md ("Forward speed").
 | Gate (DESIGN §9.2) | What is compared | Test |
 |---|---|---|
 | Frontend | Prompt bytes, token ids, owners, limits, error bodies vs qev, for 100% of the render corpus | `tests/frontend_golden.rs`, `tests/frontend_assemble.rs`; goldens self-check in `tests/render_golden_shape.rs` |
-| Per kernel | Each GPU kernel vs a CPU f64 reference transcribed from transformers 5.19 `modeling_qwen3_5.py`, with the reference's bf16 rounding points | `tests/kernels_norm.rs`, `tests/kernels_attn.rs`, `tests/kernels_gdn.rs`, `tests/kernels_nvfp4.rs` (bit-exact vs compressed-tensors), `tests/engine_gemm.rs` |
+| Per kernel | Each GPU kernel vs a CPU f64 reference transcribed from transformers 5.19 `modeling_qwen3_5.py`, with the reference's bf16 rounding points | `tests/kernels_norm.rs`, `tests/kernels_attn.rs`, `tests/kernels_gdn.rs`, `tests/kernels_nvfp4.rs` (bit-exact vs compressed-tensors), `tests/kernels_nvfp4_fused.rs` (fused = op then quantize, bit for bit), `tests/engine_gemm.rs` |
 | Engine plumbing | StepGraph arena, eager vs captured graphs, metadata upload | `tests/engine_graph.rs`, `tests/engine_loader.rs` |
 | Tree semantics (CPU) | Packed tree forward = flat forward with explicit mask; packed vs alone; vs qev fp32 | `src/engine/cpu_ref/tests.rs` (lib, tiny random model), `tests/cpu_ref.rs` (ignored; real weights) |
 | (a) Hidden states | Per-row relative error at layers 0, 3, 4, 15, 31 and the final norm vs qev fp32, within 1.5× the bf16 reference's own error (`[model.hidden.*]`) | `tests/engine_layers.rs::hidden_states_vs_fp32_truth` (A1's definition, PHASE2A.md; passes with both GDN backends, E2.md) |
-| (b) End to end | Per-option probability \|dp\| vs qev bf16 (`[e2e.bf16]`), also reported and gated vs fp32 (`[e2e.fp32_truth]`); top-1 agreement where the reference margin is large enough | `tests/engine_e2e.rs::slot_probabilities_match_bf16_goldens`; over HTTP: `tests/engine_server.rs` |
-| Batch invariance | Each request alone vs packed with the others vs alone in a larger bucket (`[batch_invariance]`) | `tests/engine_e2e.rs::batch_invariance`; kernel level: `kernels_attn::seg_attn_branch_alone_is_bit_identical`, `kernels_gdn::tree_batched_matches_each_branch_alone` |
+| (b) End to end | Per-option probability \|dp\| vs qev bf16 (`[e2e.bf16]`), also reported and gated vs fp32 (`[e2e.fp32_truth]`); top-1 agreement where the reference margin is large enough. nvfp4 engine (`SYSONE_ENGINE=nvfp4`): vs the NVFP4 QDQ per-question reference (`[nvfp4]`), fused == standalone quantize bit for bit | `tests/engine_e2e.rs::slot_probabilities_match_goldens` (`nvfp4_fused_equals_unfused`); over HTTP: `tests/engine_server.rs` (bf16) |
+| Batch invariance | Each request alone vs packed with the others vs alone in a larger bucket (`[batch_invariance]`; nvfp4 engine: `[batch_invariance.nvfp4]`) | `tests/engine_e2e.rs::batch_invariance`; kernel level: `kernels_attn::seg_attn_branch_alone_is_bit_identical`, `kernels_gdn::tree_batched_matches_each_branch_alone` |
 | Graph replay | Replay with new metadata = eager, bit for bit | `tests/engine_e2e.rs::graph_replay_equals_eager`, `tests/engine_graph.rs` |
 | Eval (statistical) | Accuracy, top-1 agreement, \|dp\| and Brier vs the envelope of the reference's own paths (`[eval.bf16]`, `[eval.nvfp4]`) | `reference/eval/score.py` against a live server; `src/tolerances.rs` tests keep the Rust `EvalGate` equal to `stats.py` |
 | Server behaviour | Routes, error bodies, backpressure, timing semantics, `:batch`, debug diagnostics (mock engine) | `tests/server_e2e.rs` |
@@ -519,7 +526,7 @@ cargo test --release --test cpu_ref -- --ignored --nocapture # minutes of CPU, r
   `CUDA_VISIBLE_DEVICES`; see the script's header and docs/x86/AGENT.md §4).
 - **Data prerequisites:** the checkpoint directory is read from `$SYSONE_MODEL_DIR` (frontend, server and engine
   tests; default `/home/velvet/Desktop/hf_models/elephant-1`); `tests/engine_loader.rs` uses `SYSONE_BF16_DIR` /
-  `SYSONE_NVFP4_DIR`. `tests/engine_layers.rs` needs the hidden-state dumps under `../sysone-ref`. The NVFP4 layer-0
+  `SYSONE_NVFP4_DIR`, and so does `tests/engine_e2e.rs` with `SYSONE_ENGINE=nvfp4`. `tests/engine_layers.rs` needs the hidden-state dumps under `../sysone-ref`. The NVFP4 layer-0
   test needs `reference/nvfp4/data`, which is generated (`reference/nvfp4/gen_layer0.py`), not committed.
 - **Tooling tests:** `tests/scripts.rs` runs the shell tests of `scripts/gpu.sh` and `scripts/x86/check_outgoing.sh`
   (no GPU; bash, flock, git); `tests/platform_gpu.rs` checks on a real GPU that CUDA device 0 is the GPU gpu.sh
@@ -538,7 +545,7 @@ a CUDA context, unless `--allow-shared-gpu` is passed (the output is then marked
 
 | Binary (`benchmarks/s1/` unless noted) | What it measures | Typical command |
 |---|---|---|
-| `bench_forward` | Whole bf16 forward: graph replay and eager time per bucket, plus the per-op profile (§5). Uses the real frontend on synthetic requests. | `scripts/gpu.sh ./target/release/bench_forward --tokens 1024,4096,16384` (flags: `--model`, `--state-tokens`, `--iters`, `--eager-iters`, `--no-profile`) |
+| `bench_forward` | Whole forward (bf16 or nvfp4, following `--model`'s checkpoint; `--nvfp4-unfused`): graph replay and eager time per bucket, plus the per-op profile (§5). Uses the real frontend on synthetic requests. | `scripts/gpu.sh ./target/release/bench_forward --tokens 1024,4096,16384` (flags: `--model`, `--state-tokens`, `--iters`, `--eager-iters`, `--no-profile`) |
 | `bench_gdn` | GDN mixer kernels per layer on segment trees, precision and tile variants | `scripts/gpu.sh ./target/release/bench_gdn` |
 | `bench_attn` | `seg_attn`, norms, RoPE, pointwise and readout kernels; `--sweep` for tile shapes, `--baseline` for cutile-kernels' dense fmha | `scripts/gpu.sh ./target/release/bench_attn --tokens 1024,4096,16384` |
 | `bench_nvfp4` | NVFP4 quantize and FP4 GEMMs at the MLP shapes vs cuBLAS bf16 | `scripts/gpu.sh ./target/release/bench_nvfp4 --tokens 1024,4096,16384` |
