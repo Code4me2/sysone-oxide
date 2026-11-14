@@ -60,6 +60,12 @@ struct Args {
     /// Answer-row capacity of a bucket: one per this many tokens (EngineOptions::tokens_per_answer).
     #[arg(long, default_value_t = 8)]
     tokens_per_answer: usize,
+    /// NVFP4 checkpoints: SiLU·mul + quantize as a separate kernel instead of in the gate/up GEMM epilogue.
+    #[arg(long)]
+    nvfp4_separate_silu: bool,
+    /// Launch shapes as N1 had them (no occupancy hints on the norms and SiLU·mul; F1 A/B runs).
+    #[arg(long)]
+    n1_tuning: bool,
 }
 
 const VOCAB: [&str; 16] = [
@@ -121,10 +127,15 @@ fn main() -> Result<()> {
     };
     let opts = EngineOptions { buckets: a.tokens.clone(), warmup: false, gdn_backend, nvfp4_fused: !a.nvfp4_unfused,
                                gemm: a.gemm.parse()?, trim_last_layer: !a.no_trim,
-                               tokens_per_answer: a.tokens_per_answer, ..Default::default() };
+                               tokens_per_answer: a.tokens_per_answer, nvfp4_swiglu: !a.nvfp4_separate_silu,
+                               ..Default::default() };
     let mut e = GpuEngine::load(&a.model, &fe.slot_ids, opts)?;
+    if a.n1_tuning {
+        e.set_kernel_tuning(sysone::engine::kernels::KernelTuning::N1);
+    }
     let quant = match e.format {
         sysone::engine::config::WeightFormat::Nvfp4 if a.nvfp4_unfused => " (standalone quantize)",
+        sysone::engine::config::WeightFormat::Nvfp4 if !a.nvfp4_separate_silu => " (quantize fused, SiLU·mul in the gate/up GEMM)",
         sysone::engine::config::WeightFormat::Nvfp4 => " (quantize fused)",
         _ => "",
     };
@@ -171,6 +182,7 @@ fn main() -> Result<()> {
         let mut rec = serde_json::json!({
             "engine": e.format.name(), "nvfp4_fused": !a.nvfp4_unfused, "gemm": e.opts.gemm.name(),
             "trimmed": e.fwd.trimmed, "tokens_per_answer": e.opts.tokens_per_answer, "bucket_answers": bucket.answers,
+            "nvfp4_swiglu": !a.nvfp4_separate_silu, "n1_tuning": a.n1_tuning,
             "gdn_backend": e.gdn_backend().name(), "tokens": t, "bucket": bucket.tokens, "requests": n_req, "branches": b.num_branches(),
             "replay_ms_median": rm, "eager_ms_median": em, "replay_ms": replay, "eager_ms": eager,
         });
@@ -187,7 +199,7 @@ fn main() -> Result<()> {
                     "AttnQ" => (8192.0, h),
                     "AttnKv" => (2048.0, h),
                     "AttnO" => (h, 4096.0),
-                    "MlpGateUp" => (2.0 * cfg.intermediate_size as f64, h),
+                    "MlpGateUp" | "MlpGateUpSiluMul" => (2.0 * cfg.intermediate_size as f64, h),
                     "MlpDown" => (h, cfg.intermediate_size as f64),
                     _ => return None,
                 })

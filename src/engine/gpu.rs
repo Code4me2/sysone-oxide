@@ -61,6 +61,10 @@ pub struct EngineOptions {
     /// NVFP4 checkpoints: quantize activations in the epilogue of the preceding norm / SiLU·mul (default) instead of
     /// a standalone `quantize_nvfp4` launch. Both are bit-identical; the fused form saves a bf16 round trip.
     pub nvfp4_fused: bool,
+    /// NVFP4 checkpoints with `nvfp4_fused`: run SiLU·mul + quantize in the gate/up GEMM's epilogue (F1, default)
+    /// instead of a separate `silu_mul_nvfp4` launch over a bf16 `[T, 2I]` gate/up output. Byte-identical; the
+    /// gate/up weight rows are interleaved for it at load (`ModelWeights::interleave_gate_up_nvfp4`).
+    pub nvfp4_swiglu: bool,
     /// Size the buckets to the device: keep only the buckets (of `buckets`) whose activation arena, GDN scratch
     /// and readback fit in this fraction of the device memory free after the weights are loaded. None: use
     /// `buckets` as given (an arena that does not fit fails the load).
@@ -138,6 +142,7 @@ impl Default for EngineOptions {
             gdn_backend: None,
             weights: None,
             nvfp4_fused: true,
+            nvfp4_swiglu: true,
             memory_fraction: None,
             gemm: GemmMode::Pinned,
             trim_last_layer: true,
@@ -226,13 +231,18 @@ impl GpuEngine {
         let stream = ctx.new_stream()?;
         let ckpt = Checkpoint::open(model_dir)?;
         let lopts = LoadOptions { slot_token_ids: Some(slot_ids.to_vec()), full_lm_head: false, stream: StreamOptions::default() };
-        let (weights, load_report) = ModelWeights::load(&cfg, &ckpt, &stream, &lopts)?;
+        let (mut weights, load_report) = ModelWeights::load(&cfg, &ckpt, &stream, &lopts)?;
         let hidden_perm = opts.debug_permute_hidden.map(|seed| debug_permutation(cfg.text_config.hidden_size, seed));
         if let Some(p) = &hidden_perm {
             weights.permute_hidden(&stream, p)?;
         }
         check_weight_format(&weights, format)?;
-        let fopts = ForwardOptions { nvfp4_fused: opts.nvfp4_fused, trim_last_layer: opts.trim_last_layer };
+        let swiglu = format == WeightFormat::Nvfp4 && opts.nvfp4_fused && opts.nvfp4_swiglu;
+        if swiglu {
+            // Row blocks of half the GEMM's BN: one weight tile = the gate and up rows of BN/2 product columns.
+            weights.interleave_gate_up_nvfp4(&stream, crate::kernels::nvfp4::GemmTiles::DEFAULT.bn / 2)?;
+        }
+        let fopts = ForwardOptions { nvfp4_fused: opts.nvfp4_fused, nvfp4_swiglu: swiglu, trim_last_layer: opts.trim_last_layer };
         let fwd = forward::build_opts(&cfg, &weights, slot_ids.len(), &opts.taps, fopts)?;
         if opts.trim_last_layer && !fwd.trimmed {
             eprintln!("sysone engine: last layer not trimmed (a debug tap needs its rows, or it is not full attention)");
@@ -287,7 +297,13 @@ impl GpuEngine {
             format.name(),
             e.load_report.nvfp4_projections,
             if format == WeightFormat::Nvfp4 {
-                if e.opts.nvfp4_fused { ", quantize fused" } else { ", standalone quantize" }
+                if !e.opts.nvfp4_fused {
+                    ", standalone quantize"
+                } else if e.opts.nvfp4_swiglu {
+                    ", quantize fused, SiLU·mul in the gate/up GEMM"
+                } else {
+                    ", quantize fused"
+                }
             } else {
                 ""
             },
@@ -327,6 +343,15 @@ impl GpuEngine {
     /// The GDN delta-rule backend this engine runs.
     pub fn gdn_backend(&self) -> GdnBackend {
         self.kernels.gdn_backend()
+    }
+
+    /// Change the speed-only launch choices of the element-wise kernels (F1 A/B benchmarks and tests; every
+    /// choice is byte-identical). Drops the captured CUDA graphs, which recorded the old launches.
+    pub fn set_kernel_tuning(&mut self, tuning: crate::engine::kernels::KernelTuning) {
+        if self.kernels.tuning != tuning {
+            self.kernels.tuning = tuning;
+            self.graphs.clear_captured();
+        }
     }
 
     pub fn stream(&self) -> &Arc<Stream> {

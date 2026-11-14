@@ -32,7 +32,8 @@ use crate::engine::config::{LayerType, ModelConfig};
 use crate::engine::graph::tensor::GraphDType;
 use crate::engine::graph::{Dim, GraphOp, LayerWeight, StepGraph, TensorRef, ValueId, WeightRef, WeightStore};
 use crate::kernels::{attention as attn, gdn};
-use anyhow::{Result, bail, ensure};
+use crate::engine::weights::Linear;
+use anyhow::{Context as _, Result, bail, ensure};
 
 /// Debug outputs of a forward: copies of the residual stream after chosen layers, and the final-norm output.
 #[derive(Clone, Debug, Default)]
@@ -67,6 +68,10 @@ pub struct Forward {
 pub struct ForwardOptions {
     /// NVFP4 checkpoints: quantize activations in the epilogue of the preceding norm / SiLU·mul.
     pub nvfp4_fused: bool,
+    /// F1: SiLU·mul + quantize fused into the gate/up GEMM epilogue ([`Nvfp4Fusion::swiglu`]). Needs `nvfp4_fused`
+    /// and the gate/up weights interleaved for it (`ModelWeights::interleave_gate_up_nvfp4`); off by default
+    /// because it depends on how the weights were loaded (the engine turns it on together with the interleave).
+    pub nvfp4_swiglu: bool,
     /// L1: compute the last layer's queries, attention, `o_proj`, post-norm and MLP, and the final norm, only for
     /// the answer rows ([`trimmed_last_layer`]); keys and values stay computed for every token. Applies only when
     /// the last layer is full attention and no debug tap needs the last layer's rows (`Taps::norm` or the last
@@ -74,9 +79,25 @@ pub struct ForwardOptions {
     pub trim_last_layer: bool,
 }
 
+impl ForwardOptions {
+    fn fusion(&self) -> Nvfp4Fusion {
+        Nvfp4Fusion { quantize: self.nvfp4_fused, swiglu: self.nvfp4_swiglu }
+    }
+}
+
+/// How the NVFP4 MLP is laid out as graph ops (bf16 projections ignore it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Nvfp4Fusion {
+    /// Quantization fused into the preceding norm / SiLU·mul (N1); `false`: standalone `QuantizeNvfp4`.
+    pub quantize: bool,
+    /// SiLU·mul + quantize fused into the gate/up GEMM epilogue (F1, `GemmNvfp4SwiGlu`; needs `quantize` and
+    /// the gate/up weights interleaved for it, `Linear::Nvfp4::gate_up_block`).
+    pub swiglu: bool,
+}
+
 impl Default for ForwardOptions {
     fn default() -> Self {
-        Self { nvfp4_fused: true, trim_last_layer: true }
+        Self { nvfp4_fused: true, nvfp4_swiglu: false, trim_last_layer: true }
     }
 }
 
@@ -121,13 +142,14 @@ pub fn build(cfg: &ModelConfig, weights: &dyn WeightStore, n_slots: usize, taps:
 /// (`nvfp4_fused`) or runs as a standalone `quantize_nvfp4` on the materialised bf16 activation.
 pub fn build_with(cfg: &ModelConfig, weights: &dyn WeightStore, n_slots: usize, taps: &Taps, nvfp4_fused: bool)
     -> Result<Forward> {
-    build_opts(cfg, weights, n_slots, taps, ForwardOptions { nvfp4_fused, trim_last_layer: false })
+    build_opts(cfg, weights, n_slots, taps, ForwardOptions { nvfp4_fused, nvfp4_swiglu: false, trim_last_layer: false })
 }
 
 /// The forward as `opts` says.
 pub fn build_opts(cfg: &ModelConfig, weights: &dyn WeightStore, n_slots: usize, taps: &Taps, opts: ForwardOptions)
     -> Result<Forward> {
-    let nvfp4_fused = opts.nvfp4_fused;
+    let fusion = opts.fusion();
+    ensure!(!fusion.swiglu || fusion.quantize, "the fused SiLU·mul GEMM needs the fused quantization");
     let trim = opts.trim_last_layer && can_trim_last_layer(cfg, taps);
     check_dims(cfg)?;
     let t = &cfg.text_config;
@@ -149,12 +171,6 @@ pub fn build_opts(cfg: &ModelConfig, weights: &dyn WeightStore, n_slots: usize, 
             }
         }
     }
-    let u8t = GraphDType::U8;
-    let f8 = GraphDType::F8E4M3;
-    // NVFP4 activation of a [T, k] bf16 input: packed e2m1 pairs and e4m3 group scales.
-    let act = |g: &mut StepGraph, k: usize| {
-        (g.value(u8t, vec![Dim::Tokens, Dim::Fixed(k / 2)]), g.value(f8, vec![Dim::Tokens, Dim::Fixed(k / 16)]))
-    };
 
     let mut g = StepGraph::new();
     let bf = GraphDType::BF16;
@@ -188,7 +204,7 @@ pub fn build_opts(cfg: &ModelConfig, weights: &dyn WeightStore, n_slots: usize, 
         if trim && i == t.num_hidden_layers - 1 {
             let dims = TrimDims { h, inter, q_dim, kv_dim };
             let keep = if taps.answer_rows { Some(&mut out_taps) } else { None };
-            let logits = trimmed_last_layer(&mut g, weights, i, dims, x, hn, n_slots, nvfp4_fused, keep)?;
+            let logits = trimmed_last_layer(&mut g, weights, i, dims, x, hn, n_slots, fusion, keep)?;
             g.validate()?;
             return Ok(Forward { graph: g, logits, taps: out_taps, n_slots, trimmed: true });
         }
@@ -230,57 +246,11 @@ pub fn build_opts(cfg: &ModelConfig, weights: &dyn WeightStore, n_slots: usize, 
                 g.push(GraphOp::Gemm { x: ao.into(), w: lw(LayerWeight::AttnO), out: mixer });
             }
         }
-        let (wgu, wdn) = (lw(LayerWeight::MlpGateUp), lw(LayerWeight::MlpDown));
-        let (gu_q, dn_q) = (weights.linear(wgu)?.is_nvfp4(), weights.linear(wdn)?.is_nvfp4());
-        let x2 = tok(&mut g, h);
-        let gu = tok(&mut g, 2 * inter);
-        if gu_q && nvfp4_fused {
-            let (q, s) = act(&mut g, h);
-            g.push(GraphOp::AddZcRmsNormNvfp4 {
-                residual: x,
-                x: mixer.into(),
-                norm: lw(LayerWeight::PostNorm),
-                w: wgu,
-                q,
-                s,
-                residual_out: x2,
-            });
-            g.push(GraphOp::GemmNvfp4 { q: q.into(), s: s.into(), w: wgu, out: gu });
-        } else {
-            let h2 = tok(&mut g, h);
-            g.push(GraphOp::AddZcRmsNorm { residual: x, x: mixer.into(), w: lw(LayerWeight::PostNorm), out: h2,
-                                           residual_out: x2 });
-            if gu_q {
-                let (q, s) = act(&mut g, h);
-                g.push(GraphOp::QuantizeNvfp4 { x: h2.into(), w: wgu, q, s });
-                g.push(GraphOp::GemmNvfp4 { q: q.into(), s: s.into(), w: wgu, out: gu });
-            } else {
-                g.push(GraphOp::Gemm { x: h2.into(), w: wgu, out: gu });
-            }
-        }
+        let (x2, mo) = mlp_block(&mut g, weights, i, Dim::Tokens, h, inter, x, mixer, fusion)?;
         x = x2;
-        let sub = taps.sublayers && taps.layers.contains(&i);
-        if sub {
+        if taps.sublayers && taps.layers.contains(&i) {
             tap(&mut g, format!("mix{i}"), mixer);
             tap(&mut g, format!("mid{i}"), x);
-        }
-        let mo = tok(&mut g, h);
-        if dn_q && nvfp4_fused {
-            let (q, s) = act(&mut g, inter);
-            g.push(GraphOp::SiluMulNvfp4 { gu: gu.into(), w: wdn, q, s });
-            g.push(GraphOp::GemmNvfp4 { q: q.into(), s: s.into(), w: wdn, out: mo });
-        } else {
-            let m = tok(&mut g, inter);
-            g.push(GraphOp::SiluMul { gu: gu.into(), out: m });
-            if dn_q {
-                let (q, s) = act(&mut g, inter);
-                g.push(GraphOp::QuantizeNvfp4 { x: m.into(), w: wdn, q, s });
-                g.push(GraphOp::GemmNvfp4 { q: q.into(), s: s.into(), w: wdn, out: mo });
-            } else {
-                g.push(GraphOp::Gemm { x: m.into(), w: wdn, out: mo });
-            }
-        }
-        if sub {
             tap(&mut g, format!("mlp{i}"), mo);
         }
         pending = Some(mo);
@@ -303,6 +273,89 @@ pub fn build_opts(cfg: &ModelConfig, weights: &dyn WeightStore, n_slots: usize, 
     g.outputs.push(logits);
     g.validate()?;
     Ok(Forward { graph: g, logits, taps: out_taps, n_slots, trimmed: false })
+}
+
+/// One layer's MLP block over rows `rows` (`Dim::Tokens`, or `Dim::Answers` in the trimmed last layer):
+/// `x2 = residual + mixer`, `mo = MLP(post_norm(x2))`, bf16 or NVFP4 as the layer's weights are, with the NVFP4
+/// fusions of `fusion`. Returns `(x2, mo)`. Every op is row-local.
+#[allow(clippy::too_many_arguments)]
+fn mlp_block(g: &mut StepGraph, weights: &dyn WeightStore, i: usize, rows: Dim, h: usize, inter: usize,
+             residual: ValueId, mixer: ValueId, fusion: Nvfp4Fusion) -> Result<(ValueId, ValueId)> {
+    let bf = GraphDType::BF16;
+    let val = |g: &mut StepGraph, n: usize| g.value(bf, vec![rows, Dim::Fixed(n)]);
+    // NVFP4 activation of a [rows, k] bf16 input: packed e2m1 pairs and e4m3 group scales.
+    let act = |g: &mut StepGraph, k: usize| {
+        (g.value(GraphDType::U8, vec![rows, Dim::Fixed(k / 2)]),
+         g.value(GraphDType::F8E4M3, vec![rows, Dim::Fixed(k / 16)]))
+    };
+    let lw = |s| WeightRef::Layer(i, s);
+    let nvfp4_fused = fusion.quantize;
+    let (wgu, wdn) = (lw(LayerWeight::MlpGateUp), lw(LayerWeight::MlpDown));
+    let (gu_q, dn_q) = (weights.linear(wgu)?.is_nvfp4(), weights.linear(wdn)?.is_nvfp4());
+    let gu_swiglu = fusion.swiglu && gu_q && dn_q;
+    let interleaved = matches!(weights.linear(wgu)?, Linear::Nvfp4 { gate_up_block: Some(_), .. });
+    ensure!(gu_swiglu == interleaved, "layer {i}: gate/up rows interleaved = {interleaved}, but the fused \
+                                      SiLU·mul GEMM is {}", if gu_swiglu { "on" } else { "off" });
+    let x2 = val(g, h);
+    // The gate/up output: bf16 `[rows, 2I]`, or (fused SiLU·mul GEMM) the quantized product for the down GEMM.
+    let mut gu = None;
+    let mut swiglu_out = None;
+    if gu_q && nvfp4_fused {
+        let (q, s) = act(g, h);
+        g.push(GraphOp::AddZcRmsNormNvfp4 {
+            residual,
+            x: mixer.into(),
+            norm: lw(LayerWeight::PostNorm),
+            w: wgu,
+            q,
+            s,
+            residual_out: x2,
+        });
+        if gu_swiglu {
+            let (q2, s2) = act(g, inter);
+            g.push(GraphOp::GemmNvfp4SwiGlu { q: q.into(), s: s.into(), w: wgu, w_down: wdn, q_out: q2, s_out: s2 });
+            swiglu_out = Some((q2, s2));
+        } else {
+            let v = val(g, 2 * inter);
+            g.push(GraphOp::GemmNvfp4 { q: q.into(), s: s.into(), w: wgu, out: v });
+            gu = Some(v);
+        }
+    } else {
+        let h2 = val(g, h);
+        g.push(GraphOp::AddZcRmsNorm { residual, x: mixer.into(), w: lw(LayerWeight::PostNorm), out: h2,
+                                       residual_out: x2 });
+        let v = val(g, 2 * inter);
+        if gu_q {
+            let (q, s) = act(g, h);
+            g.push(GraphOp::QuantizeNvfp4 { x: h2.into(), w: wgu, q, s });
+            g.push(GraphOp::GemmNvfp4 { q: q.into(), s: s.into(), w: wgu, out: v });
+        } else {
+            g.push(GraphOp::Gemm { x: h2.into(), w: wgu, out: v });
+        }
+        gu = Some(v);
+    }
+    let mo = val(g, h);
+    if let Some((q2, s2)) = swiglu_out {
+        g.push(GraphOp::GemmNvfp4 { q: q2.into(), s: s2.into(), w: wdn, out: mo });
+    } else {
+        let gu = gu.context("gate/up output")?;
+        if dn_q && nvfp4_fused {
+            let (q, s) = act(g, inter);
+            g.push(GraphOp::SiluMulNvfp4 { gu: gu.into(), w: wdn, q, s });
+            g.push(GraphOp::GemmNvfp4 { q: q.into(), s: s.into(), w: wdn, out: mo });
+        } else {
+            let m = val(g, inter);
+            g.push(GraphOp::SiluMul { gu: gu.into(), out: m });
+            if dn_q {
+                let (q, s) = act(g, inter);
+                g.push(GraphOp::QuantizeNvfp4 { x: m.into(), w: wdn, q, s });
+                g.push(GraphOp::GemmNvfp4 { q: q.into(), s: s.into(), w: wdn, out: mo });
+            } else {
+                g.push(GraphOp::Gemm { x: m.into(), w: wdn, out: mo });
+            }
+        }
+    }
+    Ok((x2, mo))
 }
 
 #[derive(Clone, Copy)]
@@ -330,11 +383,12 @@ struct TrimDims {
 /// hs    = add_zc_rmsnorm(x_a += m_a, final_norm); logits = hs · W_slotᵀ
 /// ```
 ///
-/// The MLP ops repeat the per-layer MLP of [`build_opts`] on `Dim::Answers` values (kept separate from the loop so
-/// the per-layer code is untouched).
+/// The MLP is the same [`mlp_block`] as every layer's, on `Dim::Answers` values. Padding answer rows go through
+/// `o_proj`, the MLP and the readout with unwritten attention output (padding work items write nothing): every op
+/// here is row-local and those rows are never read back, so a kernel added here must stay row-local.
 #[allow(clippy::too_many_arguments)]
 fn trimmed_last_layer(g: &mut StepGraph, weights: &dyn WeightStore, i: usize, d: TrimDims, x: ValueId, hn: ValueId,
-                      n_slots: usize, nvfp4_fused: bool, mut keep: Option<&mut Vec<(String, ValueId)>>)
+                      n_slots: usize, fusion: Nvfp4Fusion, mut keep: Option<&mut Vec<(String, ValueId)>>)
     -> Result<ValueId> {
     let bf = GraphDType::BF16;
     // Debug copies of answer-row values (Taps::answer_rows).
@@ -349,10 +403,6 @@ fn trimmed_last_layer(g: &mut StepGraph, weights: &dyn WeightStore, i: usize, d:
     let TrimDims { h, inter, q_dim, kv_dim } = d;
     let tok = |g: &mut StepGraph, n: usize| g.value(bf, vec![Dim::Tokens, Dim::Fixed(n)]);
     let ans = |g: &mut StepGraph, n: usize| g.value(bf, vec![Dim::Answers, Dim::Fixed(n)]);
-    let act = |g: &mut StepGraph, k: usize| {
-        (g.value(GraphDType::U8, vec![Dim::Answers, Dim::Fixed(k / 2)]),
-         g.value(GraphDType::F8E4M3, vec![Dim::Answers, Dim::Fixed(k / 16)]))
-    };
     let lw = |s| WeightRef::Layer(i, s);
 
     // Keys and values for every token.
@@ -385,46 +435,9 @@ fn trimmed_last_layer(g: &mut StepGraph, weights: &dyn WeightStore, i: usize, d:
     g.push(GraphOp::GatherRows { src: x.into(), out: x_a });
     tap(g, format!("mix{i}_a"), mixer);
 
-    // The MLP on the answer rows: the per-layer MLP of build_opts on Answers-row values.
-    let (wgu, wdn) = (lw(LayerWeight::MlpGateUp), lw(LayerWeight::MlpDown));
-    let (gu_q, dn_q) = (weights.linear(wgu)?.is_nvfp4(), weights.linear(wdn)?.is_nvfp4());
-    let x2 = ans(g, h);
-    let gu = ans(g, 2 * inter);
-    if gu_q && nvfp4_fused {
-        let (q, s) = act(g, h);
-        g.push(GraphOp::AddZcRmsNormNvfp4 { residual: x_a, x: mixer.into(), norm: lw(LayerWeight::PostNorm), w: wgu, q,
-                                            s, residual_out: x2 });
-        g.push(GraphOp::GemmNvfp4 { q: q.into(), s: s.into(), w: wgu, out: gu });
-    } else {
-        let h2 = ans(g, h);
-        g.push(GraphOp::AddZcRmsNorm { residual: x_a, x: mixer.into(), w: lw(LayerWeight::PostNorm), out: h2,
-                                       residual_out: x2 });
-        if gu_q {
-            let (q, s) = act(g, h);
-            g.push(GraphOp::QuantizeNvfp4 { x: h2.into(), w: wgu, q, s });
-            g.push(GraphOp::GemmNvfp4 { q: q.into(), s: s.into(), w: wgu, out: gu });
-        } else {
-            g.push(GraphOp::Gemm { x: h2.into(), w: wgu, out: gu });
-        }
-    }
+    // The MLP on the answer rows: the same block as every layer's, on Answers-row values.
+    let (x2, mo) = mlp_block(g, weights, i, Dim::Answers, h, inter, x_a, mixer, fusion)?;
     tap(g, format!("mid{i}_a"), x2);
-    let mo = ans(g, h);
-    if dn_q && nvfp4_fused {
-        let (q, s) = act(g, inter);
-        g.push(GraphOp::SiluMulNvfp4 { gu: gu.into(), w: wdn, q, s });
-        g.push(GraphOp::GemmNvfp4 { q: q.into(), s: s.into(), w: wdn, out: mo });
-    } else {
-        let m = ans(g, inter);
-        g.push(GraphOp::SiluMul { gu: gu.into(), out: m });
-        if dn_q {
-            let (q, s) = act(g, inter);
-            g.push(GraphOp::QuantizeNvfp4 { x: m.into(), w: wdn, q, s });
-            g.push(GraphOp::GemmNvfp4 { q: q.into(), s: s.into(), w: wdn, out: mo });
-        } else {
-            g.push(GraphOp::Gemm { x: m.into(), w: wdn, out: mo });
-        }
-    }
-
     tap(g, format!("mlp{i}_a"), mo);
     // Final norm and readout on the answer rows.
     let (hs, x_final) = (ans(g, h), ans(g, h));

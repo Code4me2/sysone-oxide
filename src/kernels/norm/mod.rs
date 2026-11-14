@@ -111,8 +111,23 @@ pub fn add_zc_rmsnorm<'a>(
     w: &'a Tensor<bf16>,
     eps: f32,
 ) -> anyhow::Result<impl GraphNode + 'a> {
+    add_zc_rmsnorm_with(residual, out, x, w, eps, None)
+}
+
+/// [`add_zc_rmsnorm`] with a cuTile `occupancy` hint (tile blocks per SM; F1). The hint changes register
+/// allocation, not the arithmetic: the result is byte-identical (tests/kernels_nvfp4_f1.rs).
+pub fn add_zc_rmsnorm_with<'a>(
+    residual: &'a mut Tensor<bf16>,
+    out: &'a mut Tensor<bf16>,
+    x: &'a Tensor<bf16>,
+    w: &'a Tensor<bf16>,
+    eps: f32,
+    occupancy: Option<i32>,
+) -> anyhow::Result<impl GraphNode + 'a> {
     let (_, n) = hidden_of(x, w)?;
     anyhow::ensure!(out.shape() == x.shape() && residual.shape() == x.shape(), "shape mismatch");
+    let opts = cutile::tile_kernel::CompileOptions { occupancy, ..Default::default() };
     Ok(zc_rmsnorm_module::add_zc_rmsnorm(residual.partition([1, n]), out.partition([1, n]), x, w, eps)
-        .generics(vec![n.to_string()]))
+        .generics(vec![n.to_string()])
+        .compile_options(opts))
 }

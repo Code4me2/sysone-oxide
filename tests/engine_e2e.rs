@@ -12,6 +12,8 @@
 //!   `[batch_invariance].dp_max` (bf16) or `[batch_invariance.nvfp4].dp_max` (nvfp4); bit-identity is reported.
 //! - `graph_replay_equals_eager`: a captured T-bucket graph replayed with new batch metadata gives bit for bit
 //!   the eager forward's logits.
+//! - `f1_launches_equal_n1_launches` (both engines): F1's fused SiLU·mul GEMM and occupancy hints vs N1's launches,
+//!   bit for bit.
 //! - `nvfp4_fused_equals_unfused` (nvfp4 only): the engine with the activation quantization fused into the norm /
 //!   SiLU·mul epilogues gives bit for bit the logits of the engine with standalone quantize launches.
 //! - `trimmed_last_layer_equals_untrimmed` (L1): the last layer trimmed to the answer rows gives bit for bit the
@@ -492,4 +494,41 @@ fn trim_diagnostic() {
             break;
         }
     }
+}
+
+/// F1 (docs/F1.md): the engine as it now runs (nvfp4: SiLU·mul + quantize in the gate/up GEMM epilogue on
+/// interleaved gate/up rows; both engines: occupancy hints on the residual-add norms and SiLU·mul) against the
+/// engine with N1's launches (separate bf16 gate/up GEMM + `silu_mul_nvfp4`, compiler-default norms), bit for
+/// bit, on every corpus request up to 4k tokens alone and on one packed batch (eager and replayed).
+#[test]
+fn f1_launches_equal_n1_launches() {
+    let mut guard = env().lock().unwrap_or_else(|e| e.into_inner());
+    let env = &mut *guard;
+    let fe = Frontend::load(&model_dir(), Limits::default()).unwrap();
+    let mut n1 = GpuEngine::load(&model_dir(), &fe.slot_ids, EngineOptions { nvfp4_swiglu: false,
+                                                                          ..engine_opts(4096, true) }).unwrap();
+    n1.set_kernel_tuning(sysone::engine::kernels::KernelTuning::N1);
+    let small: Vec<&Planned> = env.plans.iter().filter(|p| p.plan.total <= 4096).collect();
+    let (mut same, mut total) = (0usize, 0usize);
+    let mut batches: Vec<DecisionBatch> = small.iter().map(|p| goldens::batch_of(&[&p.plan]).unwrap().0).collect();
+    let mut packed = Vec::new();
+    let mut tokens = 0;
+    for p in &small {
+        if tokens + p.plan.total > 4096 {
+            break;
+        }
+        tokens += p.plan.total;
+        packed.push(&p.plan);
+    }
+    batches.push(goldens::batch_of(&packed).unwrap().0);
+    for b in &batches {
+        for _ in 0..2 {
+            let (x, y) = (env.engine.run(b).unwrap(), n1.run(b).unwrap());
+            total += 1;
+            same += (x.data == y.data) as usize;
+        }
+    }
+    println!("{} engine, F1 launches vs N1 launches: {same}/{total} steps bit-identical ({} batches, eager and replay)",
+             format().name(), batches.len());
+    assert_eq!(same, total, "F1's launches changed the logits");
 }

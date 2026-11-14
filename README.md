@@ -20,7 +20,9 @@ Phase 2a is done ([docs/PHASE2A.md](docs/PHASE2A.md) has the numbers):
   GEMMs on FP4 tensor cores with the activation quantization fused into the preceding norm / SiLU·mul. It passes
   the NVFP4 eval gate, the end-to-end NVFP4 gate and its batch-invariance gate; at 16k packed tokens the forward
   is 1.48x faster than bf16 (7,850 vs 5,320 tok/s on GB10). Request limits come from a per-checkpoint profile
-  (NVFP4: 16,384 tokens per branch).
+  (NVFP4: 16,384 tokens per branch). F1 ([docs/F1.md](docs/F1.md), profile in [docs/PROFILE.md](docs/PROFILE.md))
+  fused SiLU·mul + quantize into the gate/up FP4 GEMM and retuned the memory-bound kernels, byte-identical to N1:
+  the nvfp4 forward is 1.10x faster again (16k: 8,177 tok/s against 7,448 for N1 in the same session; 1.65x bf16).
 - `allowed_token_mass` (`?debug=1`) is not computed by the GPU engine. No prefix cache, no images.
 - A faster GatedDeltaNet scan on cuda-oxide SIMT kernels (G1, [docs/G1.md](docs/G1.md)) runs in the engine and passes
   every accuracy gate (E2, [docs/E2.md](docs/E2.md)); it is the default on sm_121 (`--gdn-backend auto`), cuTile
@@ -140,6 +142,8 @@ See [docs/ARCHITECTURE.md §6](docs/ARCHITECTURE.md#6-correctness-and-testing) f
 | [docs/E2.md](docs/E2.md) | The SIMT GDN backend in the engine: selection, every gate on both backends, forward speed |
 | [docs/N1.md](docs/N1.md) | The nvfp4 engine: fused quantization, checkpoint profiles, NVFP4 gates, forward speed |
 | [docs/L1.md](docs/L1.md) | Pinned cuBLASLt GEMMs (batch invariance) and last-layer trimming: design, bit-identity, gates, speed |
+| [docs/PROFILE.md](docs/PROFILE.md) | Where the forward's time goes on GB10 (Nsight Systems / Compute method and commands, PDL estimate, ranked opportunities) |
+| [docs/F1.md](docs/F1.md) | F1: the fused gate/up + SiLU·mul FP4 GEMM and kernel tuning, byte-identity proof, speed before/after |
 | [reference/README.md](reference/README.md) | The reference harness and golden formats |
 | [reference/eval/README.md](reference/eval/README.md) | The labeled eval set and the statistical gate |
 | `cargo doc --no-deps --open` | Per-module API docs |

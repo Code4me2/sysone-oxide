@@ -82,6 +82,7 @@ use anyhow::{Result, bail, ensure};
 use cutile::cuda_core::{Stream, f4e2m1fnx2, f8e4m3fn};
 use cutile::half::bf16;
 use cutile::prelude::*;
+use cutile::tile_kernel::CompileOptions;
 
 /// Group size along K shared by the activation and weight block scales.
 pub const GROUP: usize = 16;
@@ -260,6 +261,114 @@ pub mod kernels {
         let (qt, st) = nvfp4_quantize_tile::<1, B, G>(of, igs);
         q.store(qt.pack(const_shape![1, BP]));
         s.store(st);
+    }
+
+    /// [`silu_mul_nvfp4`] over an `[R, B]` tile (`R` rows, `B` columns of the `I` outputs) per tile block; grid
+    /// `(T/R, I/B)`. The same element-wise operations and the same 16-column quantization groups, so the result
+    /// is identical for every `(R, B)`; the shape only changes registers and occupancy (F1). Generics:
+    /// `I, R, B, B/2, B/16`.
+    #[cutile::entry()]
+    pub fn silu_mul_nvfp4_rb<const I: i32, const R: i32, const B: i32, const BP: i32, const G: i32>(
+        q: &mut Tensor<f4e2m1fnx2, { [R, BP] }>,
+        s: &mut Tensor<f8e4m3fn, { [R, G] }>,
+        gu: &Tensor<bf16, { [-1, -1] }>,
+        igs: f32,
+    ) {
+        let pid: (i32, i32, i32) = get_tile_block_id();
+        let part: Partition<bf16, { [R, B] }> = gu.partition(const_shape![R, B]);
+        let tg: Tile<bf16, { [R, B] }> = part.load([pid.0, pid.1]);
+        let tu: Tile<bf16, { [R, B] }> = part.load([pid.0, pid.1 + I / B]);
+        let g: Tile<f32, { [R, B] }> = convert_tile(tg);
+        let u: Tile<f32, { [R, B] }> = convert_tile(tu);
+        let one: Tile<f32, { [R, B] }> = constant(1.0f32, const_shape![R, B]);
+        let sl: Tile<f32, { [R, B] }> = true_div(g, one + exp(negf(g)));
+        let s_b: Tile<bf16, { [R, B] }> = convert_tile(sl);
+        let s_f: Tile<f32, { [R, B] }> = convert_tile(s_b);
+        let o: Tile<bf16, { [R, B] }> = convert_tile(s_f * u);
+        let of: Tile<f32, { [R, B] }> = convert_tile(o);
+        let (qt, st) = nvfp4_quantize_tile::<R, B, G>(of, igs);
+        q.store(qt.pack(const_shape![R, BP]));
+        s.store(st);
+    }
+
+    /// The gate/up GEMM with SiLU·mul and the NVFP4 quantization of the product in its epilogue (F1), on a
+    /// gate/up weight whose rows are interleaved in blocks of `H = BN/2` ([`interleave_gate_up`]: row block `j` of
+    /// `BN` rows = gate rows `j·H..` then up rows `j·H..`). The main loop is exactly [`gemm_nvfp4_raw`]'s (one
+    /// `[BN, BK]` weight tile, one accumulator), so every gate and up element is the same `mmaf_scaled` chain over K
+    /// as in the unfused GEMM; the epilogue extracts the two `[BM, H]` halves and applies exactly
+    /// [`gemm_nvfp4_raw`]'s epilogue (`bf16(acc · alpha)` per half) followed by [`silu_mul_nvfp4`]'s
+    /// (`bf16(bf16(silu(g)) · u)`, quantized under `igs`, the down projection's input scale). `q`/`s` are
+    /// byte-identical to `gemm_nvfp4_raw` + `silu_mul_nvfp4` (tests/kernels_nvfp4_f1.rs), and the bf16 `[T, 2I]`
+    /// gate/up tensor is never written. Generics: `BM, BN, BK, BK/2, BK/16, GM, H, H/2, H/16`; `num_bid_n = I / H`.
+    /// Safety: no bounds checks (the host validates every shape).
+    #[cutile::entry(unchecked_accesses = true)]
+    pub unsafe fn gemm_nvfp4_swiglu_il<
+        const BM: i32,
+        const BN: i32,
+        const BK: i32,
+        const BKP: i32,
+        const BKS: i32,
+        const GM: i32,
+        const H: i32,
+        const HP: i32,
+        const HS: i32,
+    >(
+        q: &Tensor<f4e2m1fnx2, { [-1, -1] }>,
+        s: &Tensor<f8e4m3fn, { [-1, -1] }>,
+        x: &Tensor<f4e2m1fnx2, { [-1, -1] }>,
+        w: &Tensor<f4e2m1fnx2, { [-1, -1] }>,
+        x_scales: &Tensor<f8e4m3fn, { [-1, -1] }>,
+        w_scales: &Tensor<f8e4m3fn, { [-1, -1] }>,
+        alpha_g: f32,
+        alpha_u: f32,
+        igs: f32,
+        num_bid_m: i32,
+        num_bid_n: i32,
+        num_blocks: i32,
+    ) {
+        let part_x = x.partition(const_shape![BM, BKP]);
+        let part_w = w.partition(const_shape![BN, BKP]);
+        let part_xs = x_scales.partition(const_shape![BM, BKS]);
+        let part_ws = w_scales.partition(const_shape![BN, BKS]);
+        let mut part_q = unsafe { q.partition_full_mut(const_shape![BM, HP]) };
+        let mut part_s = unsafe { s.partition_full_mut(const_shape![BM, HS]) };
+        let total = num_bid_m * num_bid_n;
+        let group = GM * num_bid_n;
+        let mut tile_id = get_tile_block_id().0;
+        while tile_id < total {
+            let first_m = (tile_id / group) * GM;
+            let rem_m = num_bid_m - first_m;
+            let gsz = if rem_m < GM { rem_m } else { GM };
+            let in_group = tile_id % group;
+            let bid_m = first_m + in_group % gsz;
+            let bid_n = in_group / gsz;
+            let mut acc: Tile<f32, { [BM, BN] }> = constant(0.0f32, const_shape![BM, BN]);
+            for k in 0i32..num_tiles(&part_x, 1) {
+                let tx = part_x.load([bid_m, k]).unpack(const_shape![BM, BK]);
+                let tw = part_w.load([bid_n, k]).unpack(const_shape![BN, BK]).transpose();
+                let txs = part_xs.load([bid_m, k]);
+                let tws = part_ws.load([bid_n, k]).transpose();
+                acc = mmaf_scaled(tx, tw, acc, txs, tws);
+            }
+            let zero: Tile<i32, { [] }> = scalar_to_tile(0i32);
+            let one_i: Tile<i32, { [] }> = scalar_to_tile(1i32);
+            let ag: Tile<f32, { [BM, H] }> = extract(acc, [zero, zero]);
+            let au: Tile<f32, { [BM, H] }> = extract(acc, [zero, one_i]);
+            let gb: Tile<bf16, { [BM, H] }> = convert_tile(ag * broadcast_scalar(alpha_g, const_shape![BM, H]));
+            let ub: Tile<bf16, { [BM, H] }> = convert_tile(au * broadcast_scalar(alpha_u, const_shape![BM, H]));
+            let g: Tile<f32, { [BM, H] }> = convert_tile(gb);
+            let u: Tile<f32, { [BM, H] }> = convert_tile(ub);
+            let one: Tile<f32, { [BM, H] }> = constant(1.0f32, const_shape![BM, H]);
+            let sl: Tile<f32, { [BM, H] }> = true_div(g, one + exp(negf(g)));
+            let s_b: Tile<bf16, { [BM, H] }> = convert_tile(sl);
+            let s_f: Tile<f32, { [BM, H] }> = convert_tile(s_b);
+            let o: Tile<bf16, { [BM, H] }> = convert_tile(s_f * u);
+            let of: Tile<f32, { [BM, H] }> = convert_tile(o);
+            let (qt, sct) = nvfp4_quantize_tile::<BM, H, HS>(of, igs);
+            part_q.store(qt.pack(const_shape![BM, HP]), [bid_m, bid_n]);
+            part_s.store(sct, [bid_m, bid_n]);
+            tile_id = tile_id + num_blocks;
+        }
     }
 
     /// `z[T, N] = bf16(alpha[n] · Σ_k x[t, k] · w[n, k])` with NVFP4 operands and e4m3 group-16 block scales.
@@ -669,6 +778,22 @@ pub fn gemm_raw_op(
     tiles: GemmTiles,
     sms: usize,
 ) -> Result<impl DeviceOp<Output = Arc<Tensor<bf16>>>> {
+    gemm_raw_op_with(x, x_scales, w_packed, w_scales, alpha, z, tiles, sms, CompileOptions::default())
+}
+
+/// [`gemm_raw_op`] with explicit cuTile compile options (occupancy / warps per CTA hints; F1 experiments).
+#[allow(clippy::too_many_arguments)]
+pub fn gemm_raw_op_with(
+    x: &Arc<Tensor<f4e2m1fnx2>>,
+    x_scales: &Arc<Tensor<f8e4m3fn>>,
+    w_packed: &Arc<Tensor<f4e2m1fnx2>>,
+    w_scales: &Arc<Tensor<f8e4m3fn>>,
+    alpha: RawAlpha,
+    z: Arc<Tensor<bf16>>,
+    tiles: GemmTiles,
+    sms: usize,
+    opts: CompileOptions,
+) -> Result<impl DeviceOp<Output = Arc<Tensor<bf16>>>> {
     ensure!(tiles.kernel == GemmKernel::Raw, "gemm_raw_op launches the Raw kernel");
     ensure!(w_packed.shape().len() == 2 && x.shape().len() == 2, "gemm: rank-2 operands expected");
     let (n, k) = (w_packed.shape()[0] as usize, 2 * w_packed.shape()[1] as usize);
@@ -699,11 +824,139 @@ pub fn gemm_raw_op(
             ntb as i32,
         )
     };
-    Ok(op.generics(tiles.generics()).grid((ntb, 1, 1)).map(|out| out.0))
+    Ok(op.generics(tiles.generics()).grid((ntb, 1, 1)).compile_options(opts).map(|out| out.0))
+}
+
+/// Packed NVFP4 values and their block scales, as device tensors.
+pub type PackedAct = (Arc<Tensor<f4e2m1fnx2>>, Arc<Tensor<f8e4m3fn>>);
+
+/// The fused gate/up GEMM + SiLU·mul + quantize ([`kernels::gemm_nvfp4_swiglu_il`]) on a gate/up projection
+/// whose rows were interleaved by [`interleave_gate_up`] with block `tiles.bn / 2`: `w_packed_il [2I, K/2]`,
+/// `w_scales_il [2I, K/16]`, `alpha` the gate/up epilogue (gate part's `lo`, up part's `hi`; its split must be at
+/// `I`), `igs` the down projection's `input_global_scale`. Writes the quantized product `q [T, I/2]`,
+/// `s [T, I/16]`: `tiles.bn / 2` product columns per tile. Every shape is validated here.
+#[allow(clippy::too_many_arguments)]
+pub fn gemm_swiglu_il_op(
+    x: &Arc<Tensor<f4e2m1fnx2>>,
+    x_scales: &Arc<Tensor<f8e4m3fn>>,
+    w_packed_il: &Arc<Tensor<f4e2m1fnx2>>,
+    w_scales_il: &Arc<Tensor<f8e4m3fn>>,
+    alpha: RawAlpha,
+    igs: f32,
+    q: Arc<Tensor<f4e2m1fnx2>>,
+    s: Arc<Tensor<f8e4m3fn>>,
+    tiles: GemmTiles,
+    sms: usize,
+) -> Result<impl DeviceOp<Output = PackedAct>> {
+    gemm_swiglu_il_op_with(x, x_scales, w_packed_il, w_scales_il, alpha, igs, q, s, tiles, sms, CompileOptions::default())
+}
+
+/// [`gemm_swiglu_il_op`] with explicit cuTile compile options (F1 experiments).
+#[allow(clippy::too_many_arguments)]
+pub fn gemm_swiglu_il_op_with(
+    x: &Arc<Tensor<f4e2m1fnx2>>,
+    x_scales: &Arc<Tensor<f8e4m3fn>>,
+    w_packed_il: &Arc<Tensor<f4e2m1fnx2>>,
+    w_scales_il: &Arc<Tensor<f8e4m3fn>>,
+    alpha: RawAlpha,
+    igs: f32,
+    q: Arc<Tensor<f4e2m1fnx2>>,
+    s: Arc<Tensor<f8e4m3fn>>,
+    tiles: GemmTiles,
+    sms: usize,
+    opts: CompileOptions,
+) -> Result<impl DeviceOp<Output = PackedAct>> {
+    ensure!(tiles.kernel == GemmKernel::Raw, "the fused gate/up GEMM uses the raw schedule");
+    ensure!(w_packed_il.shape().len() == 2 && x.shape().len() == 2, "gemm: rank-2 operands expected");
+    let (n2, k) = (w_packed_il.shape()[0] as usize, 2 * w_packed_il.shape()[1] as usize);
+    ensure!(n2.is_multiple_of(2), "gate/up weight has an odd number of rows ({n2})");
+    let i = n2 / 2;
+    let t = x.shape()[0] as usize;
+    ensure!(alpha.split_n == i, "gate/up alpha split at {} but I = {i}", alpha.split_n);
+    ensure!(x.shape() == [t as i32, (k / 2) as i32], "gemm: x is {:?}, W has K = {k}", x.shape());
+    ensure!(x_scales.shape() == [t as i32, (k / GROUP) as i32], "gemm: x_scales is {:?}", x_scales.shape());
+    ensure!(w_scales_il.shape() == [n2 as i32, (k / GROUP) as i32], "gemm: W scales is {:?}", w_scales_il.shape());
+    ensure!(q.shape() == [t as i32, (i / 2) as i32], "swiglu: q is {:?}, expected [{t}, {}]", q.shape(), i / 2);
+    ensure!(s.shape() == [t as i32, (i / GROUP) as i32], "swiglu: s is {:?}, expected [{t}, {}]", s.shape(), i / GROUP);
+    tiles.validate(n2, k)?;
+    // Product columns per tile.
+    let h = tiles.bn / 2;
+    ensure!(tiles.bn.is_multiple_of(2) && h.is_multiple_of(GROUP) && i.is_multiple_of(h), "{h} product columns per tile do not tile I = {i}");
+    let (nm, nn) = (t.div_ceil(tiles.bm), i / h);
+    let ntb = tiles.num_tile_blocks(t, n2, sms);
+    let mut g = tiles.generics();
+    g.extend([h.to_string(), (h / 2).to_string(), (h / GROUP).to_string()]);
+    // Safety: every operand was validated against (T, I, K) and the tiles above; the kernel only touches weight
+    // row tiles bid_n < 2I/BN, activation tiles bid_m < ceil(T/BM), k < K/BK, output tiles [BM, H/2] / [BM, H/16]
+    // at (bid_m, bid_n < I/H); partial row tiles are clipped by the partition views.
+    let op = unsafe {
+        kernels::gemm_nvfp4_swiglu_il(
+            q, s, x.clone(), w_packed_il.clone(), x_scales.clone(), w_scales_il.clone(), alpha.lo, alpha.hi, igs,
+            nm as i32, nn as i32, ntb as i32,
+        )
+    };
+    Ok(op.generics(g).grid((ntb, 1, 1)).compile_options(opts).map(|out| (out.0, out.1)))
+}
+
+/// Host-side row interleave of a concatenated gate/up projection (`rows = 2I`, `row_bytes` bytes per row, gate
+/// rows first): output row block `j` (of `2·block` rows) is gate rows `j·block..(j+1)·block` followed by up rows
+/// `j·block..(j+1)·block`. Values are unchanged (a permutation of rows), for packed values and scales alike.
+pub fn interleave_gate_up(data: &[u8], rows: usize, row_bytes: usize, block: usize) -> Result<Vec<u8>> {
+    ensure!(rows.is_multiple_of(2) && data.len() == rows * row_bytes, "interleave: {} bytes for {rows} x {row_bytes}", data.len());
+    let i = rows / 2;
+    ensure!(block > 0 && i.is_multiple_of(block), "interleave: I = {i} is not a multiple of {block}");
+    let mut out = Vec::with_capacity(data.len());
+    for j in 0..i / block {
+        for half in 0..2 {
+            let r0 = half * i + j * block;
+            out.extend_from_slice(&data[r0 * row_bytes..(r0 + block) * row_bytes]);
+        }
+    }
+    Ok(out)
+}
+
+
+/// Tile shape and occupancy hint of [`silu_mul_nvfp4_with`] (F1). Every shape gives the same bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SiluTiles {
+    /// Rows per tile block.
+    pub rows: usize,
+    /// Columns (of the `I` outputs) per tile block; a multiple of 16 dividing `I`.
+    pub cols: usize,
+    /// cuTile `occupancy` hint (tile blocks per SM the compiler should allow); `None`: compiler default.
+    pub occupancy: Option<i32>,
+}
+
+impl SiluTiles {
+    /// N1's shape: one row of 1,024 columns, compiler default (registers cap it at one tile block per SM).
+    pub const N1: SiluTiles = SiluTiles { rows: 1, cols: SILU_Q_BLOCK, occupancy: None };
 }
 
 /// Columns of one row per tile block of [`kernels::silu_mul_nvfp4`].
 pub const SILU_Q_BLOCK: usize = 1024;
+
+/// [`silu_mul_nvfp4`] with an explicit tile shape ([`kernels::silu_mul_nvfp4_rb`]). `T` must be a multiple of
+/// `tiles.rows` and `I` of `tiles.cols`.
+pub fn silu_mul_nvfp4_with<'a>(
+    q: &'a mut Tensor<f4e2m1fnx2>,
+    s: &'a mut Tensor<f8e4m3fn>,
+    gu: &'a Tensor<bf16>,
+    igs: f32,
+    tiles: SiluTiles,
+) -> Result<impl GraphNode + 'a> {
+    let sh = gu.shape();
+    ensure!(sh.len() == 2 && (sh[1] as usize).is_multiple_of(2), "gu must be [T, 2I], got {sh:?}");
+    let (t, i) = (sh[0] as usize, sh[1] as usize / 2);
+    let (r, b) = (tiles.rows, tiles.cols);
+    ensure!(b.is_multiple_of(GROUP) && i.is_multiple_of(b), "I = {i} is not a multiple of B = {b} (B % 16 == 0)");
+    ensure!(r > 0 && t.is_multiple_of(r), "T = {t} is not a multiple of R = {r}");
+    check_act(t, i, q, s)?;
+    let g = vec![i.to_string(), r.to_string(), b.to_string(), (b / 2).to_string(), (b / GROUP).to_string()];
+    let opts = CompileOptions { occupancy: tiles.occupancy, ..Default::default() };
+    Ok(kernels::silu_mul_nvfp4_rb(q.partition([r, b / 2]), s.partition([r, b / GROUP]), gu, igs)
+        .generics(g)
+        .compile_options(opts))
+}
 
 fn check_act(t: usize, k: usize, q: &Tensor<f4e2m1fnx2>, s: &Tensor<f8e4m3fn>) -> Result<()> {
     ensure!(k % GROUP == 0, "K = {k} is not a multiple of {GROUP}");
@@ -741,14 +994,31 @@ pub fn add_zc_rmsnorm_nvfp4<'a>(
     eps: f32,
     igs: f32,
 ) -> Result<impl GraphNode + 'a> {
+    add_zc_rmsnorm_nvfp4_with(residual, q, s, x, w, eps, igs, None)
+}
+
+/// [`add_zc_rmsnorm_nvfp4`] with a cuTile `occupancy` hint (F1; byte-identical results).
+#[allow(clippy::too_many_arguments)]
+pub fn add_zc_rmsnorm_nvfp4_with<'a>(
+    residual: &'a mut Tensor<bf16>,
+    q: &'a mut Tensor<f4e2m1fnx2>,
+    s: &'a mut Tensor<f8e4m3fn>,
+    x: &'a Tensor<bf16>,
+    w: &'a Tensor<bf16>,
+    eps: f32,
+    igs: f32,
+    occupancy: Option<i32>,
+) -> Result<impl GraphNode + 'a> {
     ensure!(x.shape().len() == 2 && residual.shape() == x.shape(), "residual {:?} vs x {:?}", residual.shape(), x.shape());
     let (t, n) = (x.shape()[0] as usize, x.shape()[1] as usize);
     ensure!(w.shape() == [n as i32], "w is {:?}, expected [{n}]", w.shape());
     check_act(t, n, q, s)?;
     let g = vec![n.to_string(), (n / 2).to_string(), (n / GROUP).to_string()];
+    let opts = CompileOptions { occupancy, ..Default::default() };
     Ok(kernels::add_zc_rmsnorm_nvfp4(residual.partition([1, n]), q.partition([1, n / 2]), s.partition([1, n / GROUP]),
                                      x, w, eps, igs)
-        .generics(g))
+        .generics(g)
+        .compile_options(opts))
 }
 
 /// `q, s = nvfp4(bf16(bf16(silu(gu[:, :I])) · gu[:, I:]))` for `gu [T, 2I]`: [`kernels::silu_mul_nvfp4`].

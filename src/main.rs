@@ -120,6 +120,10 @@ struct Args {
     /// Compute the last layer for every token instead of only the answer rows (diagnostics).
     #[arg(long)]
     no_trim_last_layer: bool,
+    /// nvfp4 engine: run SiLU·mul + quantize as its own kernel after a bf16 gate/up GEMM instead of in the GEMM's
+    /// epilogue (bit-identical; for benchmarks and diagnostics).
+    #[arg(long)]
+    nvfp4_separate_silu: bool,
     /// `debias` when a request has none (default: $QEV_DEBIAS as qev reads it, else 1).
     #[arg(long, allow_negative_numbers = true)]
     debias: Option<i64>,
@@ -222,6 +226,7 @@ fn main() -> Result<()> {
                 nvfp4_fused: !args.nvfp4_unfused,
                 gemm: args.gemm.parse()?,
                 trim_last_layer: !args.no_trim_last_layer,
+                nvfp4_swiglu: !args.nvfp4_separate_silu,
                 ..Default::default()
             };
             let (model, slot_ids) = (args.model.clone(), frontend.slot_ids.clone());

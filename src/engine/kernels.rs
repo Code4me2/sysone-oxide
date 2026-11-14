@@ -64,6 +64,33 @@ pub struct TileKernels {
     /// Tiles of the NVFP4 GEMM ([`GemmTiles::DEFAULT`]: fixed at every T, so a row's result never depends on the
     /// batch it is in).
     pub nvfp4_tiles: GemmTiles,
+    /// Launch shapes and occupancy hints that change speed only (F1; every choice is byte-identical).
+    pub tuning: KernelTuning,
+}
+
+/// Speed-only launch choices of the element-wise kernels (F1, docs/F1.md). None of them changes a result bit:
+/// `tests/kernels_nvfp4_f1.rs` checks each against the default launch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KernelTuning {
+    /// cuTile `occupancy` hint of `add_zc_rmsnorm` and `add_zc_rmsnorm_nvfp4` (tile blocks per SM).
+    pub norm_occupancy: Option<i32>,
+    /// Tile shape / occupancy of `silu_mul_nvfp4`.
+    pub silu: nvfp4::SiluTiles,
+    /// cuTile `occupancy` hint of the fused gate/up + SiLU·mul GEMM (`GemmNvfp4SwiGlu`).
+    pub swiglu_occupancy: Option<i32>,
+}
+
+impl KernelTuning {
+    /// GB10-measured (bench_nvfp4_mlp): two norm rows per SM (+9% / +26% bandwidth), SiLU·mul + quantize at three
+    /// tile blocks per SM (+55%), two fused gate/up GEMM tiles per SM (its epilogue then overlaps the other tile's
+    /// main loop: 16.3 -> 13.2 ms at 16k, the cost of the plain gate/up GEMM alone).
+    pub const DEFAULT: KernelTuning = KernelTuning {
+        norm_occupancy: Some(2),
+        silu: nvfp4::SiluTiles { rows: 1, cols: nvfp4::SILU_Q_BLOCK, occupancy: Some(3) },
+        swiglu_occupancy: Some(2),
+    };
+    /// The launches as N1 had them (compiler defaults).
+    pub const N1: KernelTuning = KernelTuning { norm_occupancy: None, silu: nvfp4::SiluTiles::N1, swiglu_occupancy: None };
 }
 
 // SAFETY: the cutile tensors and plans hold device allocations only; the engine's single worker thread drives
@@ -114,6 +141,7 @@ impl TileKernels {
             buckets: HashMap::new(),
             sms,
             nvfp4_tiles: GemmTiles::DEFAULT,
+            tuning: KernelTuning::DEFAULT,
         })
     }
 
@@ -203,7 +231,10 @@ impl Kernels for TileKernels {
         unsafe {
             let (x, w) = (x.tile::<bf16>()?, w.tile::<bf16>()?);
             let (mut r, mut o) = (residual.tile::<bf16>()?, out.tile::<bf16>()?);
-            norm::add_zc_rmsnorm(&mut r, &mut o, &x, &w, self.eps)?.execute(cx.exec).map(|_| ()).map_err(launch_err("add_zc_rmsnorm"))
+            norm::add_zc_rmsnorm_with(&mut r, &mut o, &x, &w, self.eps, self.tuning.norm_occupancy)?
+                .execute(cx.exec)
+                .map(|_| ())
+                .map_err(launch_err("add_zc_rmsnorm"))
         }
     }
 
@@ -244,7 +275,7 @@ impl Kernels for TileKernels {
         unsafe {
             let (x, w, mut r) = (x.tile::<bf16>()?, norm.tile::<bf16>()?, residual.tile::<bf16>()?);
             let (mut q, mut s) = (q.tile::<f4e2m1fnx2>()?, s.tile::<f8e4m3fn>()?);
-            nvfp4::add_zc_rmsnorm_nvfp4(&mut r, &mut q, &mut s, &x, &w, self.eps, a_gs)?
+            nvfp4::add_zc_rmsnorm_nvfp4_with(&mut r, &mut q, &mut s, &x, &w, self.eps, a_gs, self.tuning.norm_occupancy)?
                 .execute(cx.exec)
                 .map(|_| ())
                 .map_err(launch_err("add_zc_rmsnorm_nvfp4"))
@@ -255,17 +286,26 @@ impl Kernels for TileKernels {
         unsafe {
             let gu = gu.tile::<bf16>()?;
             let (mut q, mut s) = (q.tile::<f4e2m1fnx2>()?, s.tile::<f8e4m3fn>()?);
-            nvfp4::silu_mul_nvfp4(&mut q, &mut s, &gu, a_gs)?
-                .execute(cx.exec)
-                .map(|_| ())
-                .map_err(launch_err("silu_mul_nvfp4"))
+            if self.tuning.silu == nvfp4::SiluTiles::N1 {
+                // N1's own entry point (the reference launch of the F1 bit-identity tests).
+                nvfp4::silu_mul_nvfp4(&mut q, &mut s, &gu, a_gs)?
+                    .execute(cx.exec)
+                    .map(|_| ())
+                    .map_err(launch_err("silu_mul_nvfp4"))
+            } else {
+                nvfp4::silu_mul_nvfp4_with(&mut q, &mut s, &gu, a_gs, self.tuning.silu)?
+                    .execute(cx.exec)
+                    .map(|_| ())
+                    .map_err(launch_err("silu_mul_nvfp4"))
+            }
         }
     }
 
     fn gemm_nvfp4(&self, cx: &Launch, q: &DevTensor, s: &DevTensor, w: &Linear, out: &DevTensor) -> Result<()> {
-        let Linear::Nvfp4 { packed, scales, parts, a_gs, .. } = w else {
+        let Linear::Nvfp4 { packed, scales, parts, a_gs, gate_up_block, .. } = w else {
             anyhow::bail!("gemm_nvfp4 on a bf16 projection");
         };
+        ensure!(gate_up_block.is_none(), "gemm_nvfp4 on a gate/up weight interleaved for the fused SiLU·mul GEMM");
         ensure!(q.is_contiguous() && s.is_contiguous() && out.is_contiguous(), "gemm_nvfp4 needs contiguous operands");
         let parts: Vec<(usize, f32)> =
             parts.iter().map(|p| Ok((p.rows, p.w_gs.context("NVFP4 part without weight_global_scale")?))).collect::<Result<_>>()?;
@@ -278,6 +318,32 @@ impl Kernels for TileKernels {
                 .execute(cx.exec)
                 .map(|_| ())
                 .map_err(launch_err("gemm_nvfp4"))
+        }
+    }
+
+    fn gemm_nvfp4_swiglu(&self, cx: &Launch, q: &DevTensor, s: &DevTensor, w: &Linear, a_gs_down: f32,
+                         q_out: &DevTensor, s_out: &DevTensor) -> Result<()> {
+        let Linear::Nvfp4 { packed, scales, parts, a_gs, gate_up_block, .. } = w else {
+            anyhow::bail!("gemm_nvfp4_swiglu on a bf16 projection");
+        };
+        let tiles = self.nvfp4_tiles;
+        ensure!(*gate_up_block == Some(tiles.bn / 2),
+                "gemm_nvfp4_swiglu needs the gate/up rows interleaved in blocks of {} (BN / 2), got {gate_up_block:?}",
+                tiles.bn / 2);
+        ensure!(q.is_contiguous() && s.is_contiguous() && q_out.is_contiguous() && s_out.is_contiguous(),
+                "gemm_nvfp4_swiglu needs contiguous operands");
+        let parts: Vec<(usize, f32)> =
+            parts.iter().map(|p| Ok((p.rows, p.w_gs.context("NVFP4 part without weight_global_scale")?))).collect::<Result<_>>()?;
+        let alpha = RawAlpha::for_parts(*a_gs, &parts)?;
+        unsafe {
+            let (x, xs) = (Arc::new(q.tile::<f4e2m1fnx2>()?), Arc::new(s.tile::<f8e4m3fn>()?));
+            let (wp, ws) = (Arc::new(packed.tile::<f4e2m1fnx2>()?), Arc::new(scales.tile::<f8e4m3fn>()?));
+            let (qo, so) = (Arc::new(q_out.tile::<f4e2m1fnx2>()?), Arc::new(s_out.tile::<f8e4m3fn>()?));
+            let opts = cutile::tile_kernel::CompileOptions { occupancy: self.tuning.swiglu_occupancy, ..Default::default() };
+            nvfp4::gemm_swiglu_il_op_with(&x, &xs, &wp, &ws, alpha, a_gs_down, qo, so, tiles, self.sms, opts)?
+                .execute(cx.exec)
+                .map(|_| ())
+                .map_err(launch_err("gemm_nvfp4_swiglu"))
         }
     }
 
