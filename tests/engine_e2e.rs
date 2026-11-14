@@ -394,7 +394,6 @@ fn packing_diagnostic() {
     opts.taps = Taps { layers: (0..32).collect(), sublayers: true, ..Default::default() };
     let mut e = GpuEngine::load(&model_dir(), &fe.slot_ids, opts).unwrap();
     let small: Vec<&Planned> = env.plans.iter().filter(|p| p.plan.total <= 2048).collect();
-    let h = 4096;
     let mut shown = 0;
     'outer: for (ai, a) in small.iter().enumerate() {
         for b in small.iter().skip(ai + 1).take(3) {
