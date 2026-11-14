@@ -1,0 +1,37 @@
+
+== sysone_bf16_l1: 278/278 records, 0 errors
+run                               overall          banking77             ledgar       longbench_v2   brier    ece
+sysone_bf16_l1             227/278  81.7%     116/128  90.6%     102/128  79.7%        9/22  40.9%  0.2477 0.0614
+                       overall 95% CI [77.0, 86.3]%
+bf16_batched               227/278  81.7%     116/128  90.6%     102/128  79.7%        9/22  40.9%  0.2481 0.0616
+bf16_sequential            227/278  81.7%     116/128  90.6%     102/128  79.7%        9/22  40.9%  0.2475 0.0627
+bf16_perq                  227/278  81.7%     116/128  90.6%     102/128  79.7%        9/22  40.9%  0.2475 0.0617
+fp32_batched               227/278  81.7%     116/128  90.6%     102/128  79.7%        9/22  40.9%  0.2477 0.0614
+
+-- gate [bf16] vs ['bf16_batched', 'bf16_sequential', 'bf16_perq', 'fp32_batched'] (limits from tests/tolerances.toml [eval.bf16]): PASS
+   bf16_batched       disagree    +0 <= +0.002398  ok
+   bf16_batched       dp_mean     +0.0001554 <= +0.0002203  ok
+   bf16_batched       dp_p99      +0.004075 <= +0.00582  ok
+   bf16_batched       acc_ci_lo   +0 >= -0.01079  ok
+   bf16_batched       brier_ci_hi +0.000671 <= +0.002364  ok
+   bf16_batched       info: labeled agreement 100.00%, top-1 changes 0 (any margin), max|dp| 0.025, dAcc +0.00pp [+0.00,+0.00], gains 0 losses 0
+   bf16_sequential    disagree    +0 <= +0.002398  ok
+   bf16_sequential    dp_mean     +0.0001505 <= +0.0002203  ok
+   bf16_sequential    dp_p99      +0.004235 <= +0.00582  ok
+   bf16_sequential    acc_ci_lo   +0 >= -0.01079  ok
+   bf16_sequential    brier_ci_hi +0.001148 <= +0.002364  ok
+   bf16_sequential    info: labeled agreement 100.00%, top-1 changes 0 (any margin), max|dp| 0.035, dAcc +0.00pp [+0.00,+0.00], gains 0 losses 0
+   bf16_perq          disagree    +0 <= +0.002398  ok
+   bf16_perq          dp_mean     +0.0001462 <= +0.0002203  ok
+   bf16_perq          dp_p99      +0.003933 <= +0.00582  ok
+   bf16_perq          acc_ci_lo   +0 >= -0.01079  ok
+   bf16_perq          brier_ci_hi +0.001075 <= +0.002364  ok
+   bf16_perq          info: labeled agreement 100.00%, top-1 changes 0 (any margin), max|dp| 0.030, dAcc +0.00pp [+0.00,+0.00], gains 0 losses 0
+   fp32_batched       disagree    +0 <= +0.002398  ok
+   fp32_batched       dp_mean     +0.0001304 <= +0.0002203  ok
+   fp32_batched       dp_p99      +0.003328 <= +0.00582  ok
+   fp32_batched       acc_ci_lo   +0 >= -0.01079  ok
+   fp32_batched       brier_ci_hi +0.0009587 <= +0.002364  ok
+   fp32_batched       info: labeled agreement 100.00%, top-1 changes 1 (any margin), max|dp| 0.032, dAcc +0.00pp [+0.00,+0.00], gains 0 losses 0
+
+GATE PASS

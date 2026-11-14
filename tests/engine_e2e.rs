@@ -14,6 +14,10 @@
 //!   the eager forward's logits.
 //! - `nvfp4_fused_equals_unfused` (nvfp4 only): the engine with the activation quantization fused into the norm /
 //!   SiLU·mul epilogues gives bit for bit the logits of the engine with standalone quantize launches.
+//! - `trimmed_last_layer_equals_untrimmed` (L1): the last layer trimmed to the answer rows gives bit for bit the
+//!   untrimmed logits with pinned GEMMs (the default); with cuBLAS's per-call heuristic the difference is reported.
+//! - `packing_diagnostic`, `trim_diagnostic` (ignored): locate the first tap where packed vs alone, or trimmed vs
+//!   untrimmed, differ.
 //!
 //! Needs the GPU and the checkpoint: bf16 from `$SYSONE_MODEL_DIR` (default /home/velvet/Desktop/hf_models/
 //! elephant-1), NVFP4 from `$SYSONE_NVFP4_DIR` (default /home/velvet/Desktop/hf_models/elephant-1-nvfp4-mlp):
