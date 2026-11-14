@@ -580,3 +580,165 @@ fn seg_attn_tiles_match_default_bits() {
          set for every T to keep batch invariance"
     );
 }
+
+// ---------------------------------------------------------------------------------------------------------
+// L1: the trimmed last layer (k for every token, q and attention for the answer rows only)
+// ---------------------------------------------------------------------------------------------------------
+
+/// `qk_norm_rope`'s k does not depend on its query input, and `qk_norm_rope` over gathered rows (with
+/// the gathered positions) equals the same rows of `qk_norm_rope` over every row.
+#[test]
+fn qk_norm_rope_k_ignores_q_and_gathered_rows_match_bits() {
+    let stream = setup();
+    let mut rng = Rng(0x1234_5678_9abc_def1);
+    let mut b = DecisionBatch::default();
+    b.push_request(&[1; 300], &[(&[2; 40], 2), (&[3; 7], 2), (&[4; 1], 2)]).unwrap();
+    b.push_request(&[1; 5], &[(&[2; 3], 2)]).unwrap();
+    let mut pos = attn::positions(&b.segments);
+    pos.extend((0..96).map(|_| (rng.next() % 65536) as i32));
+    let t = pos.len();
+    assert_eq!(t % attn::ROPE_TOKENS, 0);
+    let mut qg = Vec::with_capacity(t * HQ * 2 * D);
+    for r in 0..t {
+        qg.extend(rng.bf16s(HQ * 2 * D, [0.05, 1.0, 30.0][r % 3]));
+    }
+    let kv = rng.bf16s(t * 2 * HK * D, 2.0);
+    let qw = rng.bf16s(D, 0.5);
+    let kw = rng.bf16s(D, 0.5);
+    let inv = attn::rope_inv_freq();
+    let (qw_d, kw_d, inv_d) = (upload(qw, &[D], &stream), upload(kw, &[D], &stream), upload(inv.to_vec(), &[32], &stream));
+    let run = |qg: &[bf16], kv: &[bf16], pos: &[i32]| {
+        let n = pos.len();
+        let qg_d = upload(qg.to_vec(), &[n, HQ, 2 * D], &stream);
+        let kv_d = upload(kv.to_vec(), &[n, 2 * HK, D], &stream);
+        let pos_d = upload(pos.to_vec(), &[n], &stream);
+        let mut q = api::zeros::<bf16>(&[n, HQ, D]).sync_on(&stream).unwrap();
+        let mut k = api::zeros::<bf16>(&[n, HK, D]).sync_on(&stream).unwrap();
+        attn::qk_norm_rope(&mut q, &mut k, &qg_d, &kv_d, &pos_d, &qw_d, &kw_d, &inv_d, RMS_EPS)
+            .unwrap()
+            .sync_on(&stream)
+            .unwrap();
+        (q.to_host_vec().sync_on(&stream).unwrap(), k.to_host_vec().sync_on(&stream).unwrap(), ())
+    };
+    let (q_all, k_all, _) = run(&qg, &kv, &pos);
+    // k does not depend on the query input (the trimmed last layer leaves it unwritten): NaN and huge queries.
+    let junk: Vec<bf16> = (0..qg.len()).map(|i| if i % 3 == 0 { bf16::NAN } else { bf16::from_f32(3.0e38) }).collect();
+    let (_, k_junk, _) = run(&junk, &kv, &pos);
+    assert_eq!(k_all, k_junk, "qk_norm_rope's k depends on its query input");
+    // Gathered rows: the answer rows, then a scattered selection (even count).
+    let mut rows: Vec<usize> = b.answer_rows.iter().map(|&r| r as usize).collect();
+    rows.extend((0..30).map(|i| (i * 37 + 11) % t));
+    rows.truncate(rows.len() / 2 * 2);
+    let gather = |v: &[bf16], w: usize| rows.iter().flat_map(|&r| v[r * w..(r + 1) * w].to_vec()).collect::<Vec<_>>();
+    let (qg_r, kv_r) = (gather(&qg, HQ * 2 * D), gather(&kv, 2 * HK * D));
+    let pos_r: Vec<i32> = rows.iter().map(|&r| pos[r]).collect();
+    let (q_r, k_r, _) = run(&qg_r, &kv_r, &pos_r);
+    assert_eq!(q_r, gather(&q_all, HQ * D), "qk_norm_rope over gathered rows differs (q)");
+    assert_eq!(k_r, gather(&k_all, HK * D), "qk_norm_rope over gathered rows differs (k)");
+    println!("qk_norm_rope: k over {t} rows unchanged by NaN / huge queries; over {} gathered rows \
+              bit-identical to the same rows of the full call (tolerance: exact)", rows.len());
+}
+
+/// L1 (batch invariance): a token's q and k from `qk_norm_rope` do not depend on where the token sits in the
+/// packed stream (rows shifted by 1..3 positions, i.e. other tile-block neighbours).
+#[test]
+fn qk_norm_rope_rows_do_not_depend_on_their_position() {
+    let stream = setup();
+    let mut rng = Rng(0x0bad_cafe_dead_beef);
+    let t = 4096usize;
+    let pos: Vec<i32> = (0..t).map(|i| (i % 3000) as i32).collect();
+    let mut qg = Vec::with_capacity(t * HQ * 2 * D);
+    for r in 0..t {
+        qg.extend(rng.bf16s(HQ * 2 * D, [0.05, 1.0, 30.0, 4.0, 0.3][r % 5]));
+    }
+    let kv = rng.bf16s(t * 2 * HK * D, 2.0);
+    let qw = rng.bf16s(D, 0.5);
+    let kw = rng.bf16s(D, 0.5);
+    let inv = attn::rope_inv_freq();
+    let (qw_d, kw_d, inv_d) = (upload(qw, &[D], &stream), upload(kw, &[D], &stream), upload(inv.to_vec(), &[32], &stream));
+    let run = |qg: &[bf16], kv: &[bf16], pos: &[i32]| {
+        let n = pos.len();
+        let qg_d = upload(qg.to_vec(), &[n, HQ, 2 * D], &stream);
+        let kv_d = upload(kv.to_vec(), &[n, 2 * HK, D], &stream);
+        let pos_d = upload(pos.to_vec(), &[n], &stream);
+        let mut q = api::zeros::<bf16>(&[n, HQ, D]).sync_on(&stream).unwrap();
+        let mut k = api::zeros::<bf16>(&[n, HK, D]).sync_on(&stream).unwrap();
+        attn::qk_norm_rope(&mut q, &mut k, &qg_d, &kv_d, &pos_d, &qw_d, &kw_d, &inv_d, RMS_EPS)
+            .unwrap()
+            .sync_on(&stream)
+            .unwrap();
+        (q.to_host_vec().sync_on(&stream).unwrap(), k.to_host_vec().sync_on(&stream).unwrap())
+    };
+    let (q0, k0) = run(&qg, &kv, &pos);
+    let mut bad = 0usize;
+    for shift in 1..=3usize {
+        // `shift` extra rows in front (copies of the last rows), then the same rows; total kept even.
+        let pre = shift;
+        // Pad at the end so the row count stays a multiple of the tile block's rows.
+        let post = (t + pre).next_multiple_of(attn::ROPE_TOKENS) - (t + pre);
+        let mut qg_s = qg[(t - pre) * HQ * 2 * D..].to_vec();
+        qg_s.extend_from_slice(&qg);
+        qg_s.extend_from_slice(&qg[..post * HQ * 2 * D]);
+        let mut kv_s = kv[(t - pre) * 2 * HK * D..].to_vec();
+        kv_s.extend_from_slice(&kv);
+        kv_s.extend_from_slice(&kv[..post * 2 * HK * D]);
+        let mut pos_s = pos[t - pre..].to_vec();
+        pos_s.extend_from_slice(&pos);
+        pos_s.extend_from_slice(&pos[..post]);
+        let (q1, k1) = run(&qg_s, &kv_s, &pos_s);
+        let rows_q = (0..t).filter(|&r| q0[r * HQ * D..(r + 1) * HQ * D] != q1[(r + pre) * HQ * D..(r + pre + 1) * HQ * D]).count();
+        let rows_k = (0..t).filter(|&r| k0[r * HK * D..(r + 1) * HK * D] != k1[(r + pre) * HK * D..(r + pre + 1) * HK * D]).count();
+        println!("qk_norm_rope shifted by {pre} rows: {rows_q}/{t} q rows and {rows_k}/{t} k rows differ (tolerance: exact)");
+        bad += rows_q + rows_k;
+    }
+    assert_eq!(bad, 0, "qk_norm_rope rows depend on their position in the stream");
+}
+
+/// `seg_attn` with [`AttnPlan::answers`] over gathered q / gate rows (keys and values of every token) gives, bit
+/// for bit, the answer rows of the full `seg_attn`; padding items (q_len 0) write nothing.
+#[test]
+fn seg_attn_answers_match_full_rows() {
+    let stream = setup();
+    let reqs = requests();
+    let all: Vec<(&Req, Vec<usize>)> = reqs.iter().map(|r| (r, (0..r.suffixes.len()).collect())).collect();
+    let p = pack(&all);
+    for tiles in [AttnTiles::default(), AttnTiles::for_tokens(1024)] {
+        let dev = device_inputs(&p, &stream);
+        let full = run_attn(&dev, &AttnPlan::new(&p.batch.segments, tiles.bm), tiles, bf16::NAN, &stream);
+        let rows: Vec<usize> = p.batch.answer_rows.iter().map(|&r| r as usize).collect();
+        let q_n = rows.len() + 3; // 3 padding rows
+        let host_q = dev.q.to_host_vec().sync_on(&stream).unwrap();
+        let host_qg = dev.qg.to_host_vec().sync_on(&stream).unwrap();
+        let gather = |v: &[bf16], w: usize| {
+            let mut g: Vec<bf16> = rows.iter().flat_map(|&r| v[r * w..(r + 1) * w].to_vec()).collect();
+            g.resize(q_n * w, bf16::from_f32(1.0));
+            g
+        };
+        let q_a = upload(gather(&host_q, HQ * D), &[q_n, HQ, D], &stream);
+        let qg_a = upload(gather(&host_qg, HQ * 2 * D), &[q_n, HQ, 2 * D], &stream);
+        let sentinel = bf16::from_f32(-123.0);
+        let out = upload(vec![sentinel; q_n * HQ * D], &[q_n, HQ, D], &stream);
+        let mut plan = AttnPlan::answers(&p.batch.segments);
+        assert_eq!(plan.num_items(), rows.len());
+        plan.pad_to(q_n);
+        let work = upload(plan.work.clone(), &[plan.work.len()], &stream);
+        let args = SegAttnArgs {
+            out: out.device_pointer(),
+            q: q_a.device_pointer(),
+            k: dev.k.device_pointer(),
+            kv: dev.kv.device_pointer(),
+            qg: qg_a.device_pointer(),
+            work: work.device_pointer(),
+            num_items: plan.num_items(),
+        };
+        unsafe { attn::seg_attn(args, tiles) }.sync_on(&stream).unwrap();
+        let got = out.to_host_vec().sync_on(&stream).unwrap();
+        for (i, &r) in rows.iter().enumerate() {
+            assert_eq!(got[i * HQ * D..(i + 1) * HQ * D], full[r * HQ * D..(r + 1) * HQ * D],
+                       "answer {i} (row {r}) differs from the full seg_attn (bm={})", tiles.bm);
+        }
+        assert!(got[rows.len() * HQ * D..].iter().all(|v| *v == sentinel), "padding rows were written");
+        println!("seg_attn answers (bm={} d_split={}): {} answer rows bit-identical to the full call, padding \
+                  untouched (tolerance: exact)", tiles.bm, tiles.d_split, rows.len());
+    }
+}

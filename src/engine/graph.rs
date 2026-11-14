@@ -76,13 +76,25 @@ impl BucketPlan {
     /// Buckets for the given token sizes. A bucket of T tokens holds up to `min(T, max_answers)` answers and
     /// `min(T, max_segments) + 1` segments (the extra one is the padding segment).
     pub fn new(tokens: &[usize], max_answers: usize, max_segments: usize) -> Result<Self> {
+        Self::with_answer_density(tokens, max_answers, max_segments, 1)
+    }
+
+    /// [`new`](Self::new), with at most one answer per `tokens_per_answer` tokens: a bucket of T tokens holds
+    /// `min(ceil(T / tokens_per_answer), max_answers)` answers. Values over the
+    /// answer rows (the readout and, with L1's trimmed last layer, that layer's attention and MLP) are sized by
+    /// this, so a smaller capacity is less padded work per step; a batch with more answers than its token count
+    /// allows runs in a larger bucket. `1` gives `min(T, max_answers)`.
+    pub fn with_answer_density(tokens: &[usize], max_answers: usize, max_segments: usize, tokens_per_answer: usize)
+        -> Result<Self> {
+        ensure!(tokens_per_answer >= 1, "tokens_per_answer must be >= 1");
         let mut t = tokens.to_vec();
         t.sort_unstable();
         t.dedup();
         ensure!(!t.is_empty() && t[0] > 0, "no token buckets");
+        let answers = |n: usize| crate::contract::bucket_answers(n, max_answers, tokens_per_answer);
         let buckets = t
             .into_iter()
-            .map(|n| Bucket { tokens: n, answers: n.min(max_answers).max(1), segments: n.min(max_segments) + 1 })
+            .map(|n| Bucket { tokens: n, answers: answers(n), segments: n.min(max_segments) + 1 })
             .collect();
         Ok(Self { buckets })
     }
@@ -282,6 +294,16 @@ pub enum GraphOp {
     /// Segment attention (non-causal, ≤ 2 KV ranges, LSE merge), GQA, `· sigmoid(gate)` epilogue. v is read from
     /// `kv`, the gate from `qg`; `out [T, 4096]`.
     SegAttn { layer: usize, q: TensorRef, k: TensorRef, kv: TensorRef, qg: TensorRef, out: ValueId },
+    /// Declares `out` without writing it (no launch): its contents are unspecified. L1's trimmed last layer runs
+    /// the unchanged `qk_norm_rope` over every token for its keys, with an unwritten query input whose outputs are
+    /// never read (a k-only kernel was not bit-identical to the k half of `qk_norm_rope`; docs/L1.md).
+    Uninit { out: ValueId },
+    /// [`GraphOp::QkNormRope`] over the answer rows: `qg [Q, 16·512]`, `kv [Q, 8·256]` gathered at the answer
+    /// rows, at the answer rows' positions; `q [Q, 16·256]`, `k [Q, 4·256]` (L1; `k` is not used).
+    QkNormRopeAnswers { layer: usize, qg: TensorRef, kv: TensorRef, q: ValueId, k: ValueId },
+    /// [`GraphOp::SegAttn`] for the answer rows only: `q`, `qg`, `out` are `[Q, ..]` (gathered), `k`, `kv` the
+    /// whole `[T, ..]` keys and values; each answer row attends to its prefix and its whole suffix (L1).
+    SegAttnAnswers { layer: usize, q: TensorRef, k: TensorRef, kv: TensorRef, qg: TensorRef, out: ValueId },
     /// `out [Q, C] = src[answer_rows]`.
     GatherRows { src: TensorRef, out: ValueId },
     /// `out = src` (device copy; debug taps of a value that is later updated in place).
@@ -297,7 +319,11 @@ impl GraphOp {
         match self {
             Embedding { out } | ZcRmsNorm { out, .. } | Gemm { out, .. } | GemmNvfp4 { out, .. }
             | SiluMul { out, .. } | TreeConv1dSilu { out, .. } | GatedRmsNorm { out, .. } | SegAttn { out, .. }
-            | GatherRows { out, .. } | GdnChunkScan { out, .. } | Copy { out, .. } => vec![*out],
+            | SegAttnAnswers { out, .. } | GatherRows { out, .. } | GdnChunkScan { out, .. } | Copy { out, .. } => {
+                vec![*out]
+            }
+            Uninit { out } => vec![*out],
+            QkNormRopeAnswers { q, k, .. } => vec![*q, *k],
             AddZcRmsNorm { out, residual_out, .. } => vec![*out, *residual_out],
             QuantizeNvfp4 { q, s, .. } | ZcRmsNormNvfp4 { q, s, .. } | SiluMulNvfp4 { q, s, .. } => vec![*q, *s],
             AddZcRmsNormNvfp4 { q, s, residual_out, .. } => vec![*q, *s, *residual_out],
@@ -320,8 +346,9 @@ impl GraphOp {
             GdnPrep { conv, a, b, .. } => vec![v(conv), v(a), v(b)],
             GdnChunkScan { conv, .. } => vec![v(conv)],
             GatedRmsNorm { o, z, .. } => vec![v(o), v(z)],
-            QkNormRope { qg, kv, .. } => vec![v(qg), v(kv)],
-            SegAttn { q, k, kv, qg, .. } => vec![v(q), v(k), v(kv), v(qg)],
+            QkNormRope { qg, kv, .. } | QkNormRopeAnswers { qg, kv, .. } => vec![v(qg), v(kv)],
+            Uninit { .. } => vec![],
+            SegAttn { q, k, kv, qg, .. } | SegAttnAnswers { q, k, kv, qg, .. } => vec![v(q), v(k), v(kv), v(qg)],
             GatherRows { src, .. } | Copy { src, .. } => vec![v(src)],
             View { input, .. } => vec![*input],
         }
@@ -355,6 +382,9 @@ impl GraphOp {
             GatedRmsNorm { .. } => "gated_rmsnorm",
             QkNormRope { .. } => "qk_norm_rope",
             SegAttn { .. } => "seg_attn_gqa",
+            Uninit { .. } => "uninit",
+            QkNormRopeAnswers { .. } => "qk_norm_rope_answers",
+            SegAttnAnswers { .. } => "seg_attn_gqa_answers",
             GatherRows { .. } => "gather_rows",
             Copy { .. } => "copy",
             View { .. } => "view",
@@ -382,11 +412,11 @@ impl GraphOp {
             GdnPrep { .. } => "gdn.prep".into(),
             GdnChunkScan { .. } => "gdn.scan".into(),
             GatedRmsNorm { .. } => "gdn.gated_rmsnorm".into(),
-            QkNormRope { .. } => "attn.qk_norm_rope".into(),
-            SegAttn { .. } => "attn.seg_attn".into(),
+            QkNormRope { .. } | QkNormRopeAnswers { .. } => "attn.qk_norm_rope".into(),
+            SegAttn { .. } | SegAttnAnswers { .. } => "attn.seg_attn".into(),
             GatherRows { .. } => "readout.gather".into(),
             Copy { .. } => "debug.copy".into(),
-            View { .. } => "view".into(),
+            View { .. } | Uninit { .. } => "view".into(),
         }
     }
 }
@@ -711,6 +741,18 @@ pub trait Kernels: Sync {
                 out: &DevTensor) -> Result<()> {
         missing("seg_attn_gqa")
     }
+    /// `qk_norm_rope` over gathered answer rows, at the answer rows' positions (`cx.meta.answer_pos`).
+    #[allow(clippy::too_many_arguments)]
+    fn qk_norm_rope_answers(&self, cx: &Launch, layer: usize, qg: &DevTensor, kv: &DevTensor, q_norm: &DevTensor,
+                            k_norm: &DevTensor, q: &DevTensor, k: &DevTensor) -> Result<()> {
+        missing("qk_norm_rope_answers")
+    }
+    /// `seg_attn` for the gathered answer rows (`q`, `qg`, `out` `[Q, ..]`) over every token's `k`, `kv`.
+    #[allow(clippy::too_many_arguments)]
+    fn seg_attn_answers(&self, cx: &Launch, layer: usize, q: &DevTensor, k: &DevTensor, kv: &DevTensor, qg: &DevTensor,
+                        out: &DevTensor) -> Result<()> {
+        missing("seg_attn_gqa_answers")
+    }
     /// `out[i] = src[answer_rows[i]]` (answer rows from `cx.meta`).
     fn gather_rows(&self, cx: &Launch, src: &DevTensor, out: &DevTensor) -> Result<()> {
         missing("gather_rows")
@@ -774,7 +816,7 @@ impl<'a> Executor<'a> {
             profiler: self.profiler,
         };
         for (i, op) in self.graph.ops.iter().enumerate() {
-            if matches!(op, GraphOp::View { .. }) {
+            if matches!(op, GraphOp::View { .. } | GraphOp::Uninit { .. }) {
                 continue;
             }
             cx.mark(&self.kernels.profile_label(op))?;
@@ -839,6 +881,13 @@ impl<'a> Executor<'a> {
                 &v(kk)?),
             SegAttn { layer, q, k: kk, kv, qg, out } => {
                 k.seg_attn(cx, layer, &r(q)?, &r(kk)?, &r(kv)?, &r(qg)?, &v(out)?)
+            }
+            Uninit { .. } => Ok(()),
+            QkNormRopeAnswers { layer, qg, kv, q, k: kk } => k.qk_norm_rope_answers(
+                cx, layer, &r(qg)?, &r(kv)?, lw(layer, LayerWeight::QNorm)?, lw(layer, LayerWeight::KNorm)?, &v(q)?,
+                &v(kk)?),
+            SegAttnAnswers { layer, q, k: kk, kv, qg, out } => {
+                k.seg_attn_answers(cx, layer, &r(q)?, &r(kk)?, &r(kv)?, &r(qg)?, &v(out)?)
             }
             GatherRows { src, out } => k.gather_rows(cx, &r(src)?, &v(out)?),
             Copy { src, out } => self.copy(cx, &r(src)?, &v(out)?),
@@ -1084,5 +1133,21 @@ mod tests {
         // A batch exactly filling a bucket needs no pad segment.
         assert_eq!(p.pick(256, 1, 257).unwrap().tokens, 256);
         assert_eq!(p.pick(255, 1, 257).unwrap().tokens, 512);
+    }
+
+    #[test]
+    fn answer_density_caps_bucket_answers() {
+        let p = BucketPlan::with_answer_density(&[256, 1024, 16384, 65536], 2048, 2048, 8).unwrap();
+        let a: Vec<usize> = p.buckets.iter().map(|b| b.answers).collect();
+        assert_eq!(a, [32, 128, 2048, 2048]);
+        // A batch with more answers than a bucket's density allows moves to a larger bucket.
+        assert_eq!(p.pick(200, 32, 40).unwrap().tokens, 256);
+        assert_eq!(p.pick(200, 33, 40).unwrap().tokens, 1024);
+        // ceil(100 / 8).
+        let p = BucketPlan::with_answer_density(&[100], 2048, 2048, 8).unwrap();
+        assert_eq!(p.buckets[0].answers, 13);
+        // Density 1 is the Phase 2a capacity.
+        let p = BucketPlan::with_answer_density(&[256], 64, 1 << 20, 1).unwrap();
+        assert_eq!(p.buckets[0].answers, 64);
     }
 }

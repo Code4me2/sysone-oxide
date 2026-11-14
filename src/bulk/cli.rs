@@ -536,7 +536,8 @@ pub fn simulate_main(argv: &[String]) -> Result<i32> {
             "padding_frac": st.padding(), "est_gpu_s": st.est_seconds,
         })
     };
-    let lim = |max: usize, fine: bool| StepLimits { buckets: ladder(max, fine), max_answers: 2048, max_segments: 2048, max_prefixes: 256 };
+    let lim = |max: usize, fine: bool| StepLimits { buckets: ladder(max, fine), max_answers: 2048, max_segments: 2048, max_prefixes: 256,
+                                                    tokens_per_answer: 8 };
     let maxes: Vec<usize> = list(&a.max_step)?;
     let windows: Vec<usize> = list(&a.window)?;
     let budgets: Option<Vec<usize>> = a.budget.as_deref().map(list).transpose()?;

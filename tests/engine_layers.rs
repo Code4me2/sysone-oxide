@@ -390,7 +390,7 @@ fn hidden_dump_all_layers() {
     let pad = goldens::plan_corpus(&fe, &cases, |id| pad_ids.iter().any(|x| x == id)).unwrap();
     let layers: Vec<usize> = (0..32).collect();
     let sublayers = std::env::var_os("SYSONE_TAP_SUB").is_some();
-    let taps = Taps { layers: layers.clone(), norm: true, sublayers };
+    let taps = Taps { layers: layers.clone(), norm: true, sublayers, ..Default::default() };
     let debug_permute_hidden = std::env::var("SYSONE_TAP_PERM").ok().map(|s| s.parse().unwrap());
     let opts = EngineOptions { buckets: EngineOptions::buckets_up_to(32768), warmup: false, cuda_graphs: false, taps, debug_permute_hidden,
                                ..Default::default() };

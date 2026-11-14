@@ -105,7 +105,7 @@ fn fill(window: &[Size], order: &[usize], cap: usize, lim: &StepLimits) -> (Vec<
     for &i in order {
         let s = window[i];
         if tokens + s.tokens <= cap
-            && answers + s.branches <= lim.max_answers.min(cap)
+            && answers + s.branches <= lim.answers_in(cap)
             && prefixes + 1 <= lim.max_prefixes
             && prefixes + 1 + answers + s.branches <= max_segments
         {
@@ -251,7 +251,7 @@ mod tests {
     use super::*;
 
     fn lim(buckets: Vec<usize>) -> StepLimits {
-        StepLimits { buckets, max_answers: 2048, max_segments: 2048, max_prefixes: 256 }
+        StepLimits { buckets, max_answers: 2048, max_segments: 2048, max_prefixes: 256, tokens_per_answer: 1 }
     }
 
     fn sizes(n: usize, seed: u64) -> Vec<Size> {
@@ -282,7 +282,7 @@ mod tests {
 
     #[test]
     fn choose_respects_every_limit_and_waits_for_a_full_step() {
-        let l = StepLimits { buckets: vec![1024, 2048], max_answers: 10, max_segments: 2048, max_prefixes: 3 };
+        let l = StepLimits { buckets: vec![1024, 2048], max_answers: 10, max_segments: 2048, max_prefixes: 3, tokens_per_answer: 1 };
         let t = Throughput::gb10_default();
         let w = vec![
             Size { tokens: 900, branches: 2 },

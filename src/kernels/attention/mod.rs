@@ -64,8 +64,11 @@ pub fn positions(segments: &[Segment]) -> Vec<i32> {
     pos
 }
 
-/// Tokens per tile block in [`qk_norm_rope`].
-pub const ROPE_TOKENS: usize = 2;
+/// Tokens per tile block in [`qk_norm_rope`]. One (L1): with two tokens per block, a token's q norm rounded
+/// differently on ~0.05% of rows depending on whether it was the first or the second row of its block, i.e. on the
+/// parity of its position in the packed stream, so a request packed after an odd-length one was not bit-identical
+/// to it alone (tests/kernels_attn.rs `qk_norm_rope_rows_do_not_depend_on_their_position`).
+pub const ROPE_TOKENS: usize = 1;
 /// Worker warps per tile block in [`qk_norm_rope`].
 pub const ROPE_WARPS: i32 = 8;
 
@@ -359,6 +362,21 @@ impl AttnPlan {
             }
         }
         // Stable: equal-cost items keep stream order.
+        items.sort_by_key(|w| std::cmp::Reverse(w[3] + w[5]));
+        AttnPlan { work: items.into_iter().flatten().collect() }
+    }
+
+    /// The schedule of the answer rows only (L1, the trimmed last layer): one item per suffix segment, whose
+    /// single query row is that suffix's answer row (its last token). `q0` is the row in the gathered `[Q, ..]`
+    /// q / gate / output (the i-th suffix in segment order is answer row i, as `DecisionBatch` orders them); the
+    /// key ranges are those of the full schedule (parent prefix, then the whole suffix), in packed-token rows.
+    pub fn answers(segments: &[Segment]) -> Self {
+        let mut items: Vec<[i32; WORK_FIELDS]> = Vec::new();
+        for s in segments.iter().filter(|s| !s.is_prefix()) {
+            let p = segments[s.parent as usize];
+            let q = items.len() as u32;
+            items.push([q, 1, p.start, p.len, s.start, s.len, 0, 0].map(|v| v as i32));
+        }
         items.sort_by_key(|w| std::cmp::Reverse(w[3] + w[5]));
         AttnPlan { work: items.into_iter().flatten().collect() }
     }
@@ -765,5 +783,26 @@ mod tests {
         let mut b = DecisionBatch::default();
         b.push_request(&[1, 2, 3], &[(&[4, 5], 2), (&[6], 2)]).unwrap();
         assert_eq!(positions(&b.segments), [0, 1, 2, 3, 4, 3]);
+    }
+
+    #[test]
+    fn answers_plan_has_one_item_per_answer_row() {
+        let mut b = DecisionBatch::default();
+        b.push_request(&[1; 40], &[(&[2; 5], 2), (&[3; 30], 2), (&[4; 1], 2)]).unwrap();
+        b.push_request(&[5; 3], &[(&[6; 17], 2)]).unwrap();
+        let plan = AttnPlan::answers(&b.segments);
+        assert_eq!(plan.num_items(), b.num_branches());
+        let mut seen = vec![0; b.num_branches()];
+        for w in plan.work.chunks(WORK_FIELDS) {
+            let [q0, n, a0, alen, b0, blen, ..] = *w else { unreachable!() };
+            assert_eq!(n, 1);
+            seen[q0 as usize] += 1;
+            // Answer q0 is the last token of the q0-th suffix: its keys are that suffix's prefix and the suffix.
+            let suf = b.segments.iter().filter(|s| !s.is_prefix()).nth(q0 as usize).unwrap();
+            assert_eq!(b.answer_rows[q0 as usize], suf.end() - 1);
+            let pre = &b.segments[suf.parent as usize];
+            assert_eq!((a0, alen, b0, blen), (pre.start as i32, pre.len as i32, suf.start as i32, suf.len as i32));
+        }
+        assert!(seen.iter().all(|&c| c == 1));
     }
 }

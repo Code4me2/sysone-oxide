@@ -5,7 +5,7 @@
 //! of `K · 2^-23 · Σ_k |x·w|` (generous: worst-case linear growth, any summation order).
 
 use cuda_core::Context;
-use sysone::engine::gemm::Blas;
+use sysone::engine::gemm::{Blas, GemmMode};
 use sysone::engine::graph::tensor::{DevTensor, GraphDType, bf16_bytes, bf16_from_bytes, f32_from_bytes};
 
 struct Rng(u64);
@@ -57,9 +57,16 @@ fn check(y: &[f32], x: &[f32], x_stride: usize, w: &[f32], t: usize, n: usize, k
 
 #[test]
 fn cublas_bf16_gemm_matches_f64_reference() {
+    for mode in [GemmMode::Heuristic, GemmMode::Pinned] {
+        println!("mode {}", mode.name());
+        accuracy(mode);
+    }
+}
+
+fn accuracy(mode: GemmMode) {
     let ctx = Context::new(0).unwrap();
     let stream = ctx.new_stream().unwrap();
-    let blas = Blas::new(&stream).unwrap();
+    let blas = Blas::with_mode(&stream, mode).unwrap();
     let mut rng = Rng(0x9e3779b97f4a7c15);
     // (T, N, K, x column offset inside a wider row, output dtype)
     let cases = [
@@ -93,5 +100,67 @@ fn cublas_bf16_gemm_matches_f64_reference() {
             s.max_abs, s.p99_abs, s.max_rel, s.max_ratio
         );
         assert!(s.max_ratio <= 1.0, "T={t} N={n} K={k}: error {:.3} × tolerance", s.max_ratio);
+    }
+}
+
+/// L1: in pinned mode a row's output does not depend on how many rows the GEMM has or where the row sits. For every
+/// projection shape of elephant-1 (and a slot readout), a [T, K] GEMM is compared bit for bit with GEMMs over
+/// sub-batches of its rows (placed at other positions, M from 1 to T - 256). The heuristic mode runs the same check
+/// and its mismatches are reported, not asserted (cuBLAS may legitimately pick another kernel per M).
+#[test]
+fn pinned_gemm_rows_do_not_depend_on_the_batch() {
+    let ctx = Context::new(0).unwrap();
+    let stream = ctx.new_stream().unwrap();
+    let mut rng = Rng(0x2545f4914f6cdd1d);
+    // (N, K, f32 out): GDN in / out, attention q / kv / o, MLP gate-up / down (bf16 engine), slot readout.
+    let shapes = [(12352usize, 4096usize, false), (4096, 4096, false), (8192, 4096, false), (2048, 4096, false),
+                  (24576, 4096, false), (4096, 12288, false), (26, 4096, true)];
+    let t = 2304usize;
+    let subs = [1usize, 2, 7, 64, 129, 300, 1000, 2048];
+    for mode in [GemmMode::Pinned, GemmMode::Heuristic] {
+        let blas = Blas::with_mode(&stream, mode).unwrap();
+        let mut bad_total = 0usize;
+        for &(n, k, f32_out) in &shapes {
+            let out_dt = if f32_out { GraphDType::F32 } else { GraphDType::BF16 };
+            let es = if f32_out { 4 } else { 2 };
+            let xf = rng.bf16_vec(t * k, 1.0);
+            let wf = rng.bf16_vec(n * k, 0.05);
+            let w = DevTensor::alloc(&ctx, GraphDType::BF16, &[n, k]).unwrap();
+            w.copy_from_host(&stream, &bf16_bytes(&wf)).unwrap();
+            let x = DevTensor::alloc(&ctx, GraphDType::BF16, &[t, k]).unwrap();
+            x.copy_from_host(&stream, &bf16_bytes(&xf)).unwrap();
+            let y = DevTensor::zeros(&stream, out_dt, &[t, n]).unwrap();
+            blas.gemm_bf16(&stream, &x, &w, &y).unwrap();
+            let full = y.to_host_bytes(&stream).unwrap();
+            let mut bad_rows = 0usize;
+            for (si, &m) in subs.iter().enumerate() {
+                // The sub-batch: a strided selection of the full batch's rows, each at a new position.
+                let rows: Vec<usize> = (0..m).map(|i| (i * 7 + si * 13 + 3) % t).collect();
+                let mut sx = Vec::with_capacity(m * k);
+                for &r in &rows {
+                    sx.extend_from_slice(&xf[r * k..(r + 1) * k]);
+                }
+                let xs = DevTensor::alloc(&ctx, GraphDType::BF16, &[m, k]).unwrap();
+                xs.copy_from_host(&stream, &bf16_bytes(&sx)).unwrap();
+                let ys = DevTensor::zeros(&stream, out_dt, &[m, n]).unwrap();
+                blas.gemm_bf16(&stream, &xs, &w, &ys).unwrap();
+                let got = ys.to_host_bytes(&stream).unwrap();
+                for (i, &r) in rows.iter().enumerate() {
+                    if got[i * n * es..(i + 1) * n * es] != full[r * n * es..(r + 1) * n * es] {
+                        bad_rows += 1;
+                    }
+                }
+            }
+            let checked: usize = subs.iter().sum();
+            println!("{}: N={n:5} K={k:5} {}: {bad_rows}/{checked} sub-batch rows differ from the T={t} GEMM",
+                     mode.name(), if f32_out { "f32" } else { "bf16" });
+            bad_total += bad_rows;
+        }
+        for ((n, k, ldx, ldy, f32_out), (algo, tile, stages)) in blas.pinned_algos() {
+            println!("  pinned N={n} K={k} ldx={ldx} ldy={ldy} f32={f32_out}: algo {algo} tile {tile} stages {stages}");
+        }
+        if mode == GemmMode::Pinned {
+            assert_eq!(bad_total, 0, "pinned GEMM rows depend on the batch");
+        }
     }
 }

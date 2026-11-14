@@ -25,6 +25,10 @@ Phase 2a is done ([docs/PHASE2A.md](docs/PHASE2A.md) has the numbers):
 - A faster GatedDeltaNet scan on cuda-oxide SIMT kernels (G1, [docs/G1.md](docs/G1.md)) runs in the engine and passes
   every accuracy gate (E2, [docs/E2.md](docs/E2.md)); it is the default on sm_121 (`--gdn-backend auto`), cuTile
   elsewhere. The forward is 18-22% faster with it.
+- Batch invariance and last-layer trimming (L1, [docs/L1.md](docs/L1.md)): the bf16 GEMMs run one pinned
+  cuBLASLt algorithm per weight shape (`--gemm pinned`, default), so every branch's logits are bit-identical alone,
+  packed or in any bucket, in both engines; the last layer computes its queries, attention, MLP and the final norm
+  only for the answer rows (bit-identical to the untrimmed forward). 16k forward 1.5-1.9% faster than before.
 - Bulk tagging (B1, [docs/BULK.md](docs/BULK.md)): `sysone bulk` answers a JSONL file of requests with the server's
   answers, packed for throughput (full steps from a window of requests) over one engine per GPU, resumable. A
   question set over many documents (`--questions Q.json --docs D.jsonl|DIR`, Q1) is validated and rendered once.
@@ -135,6 +139,7 @@ See [docs/ARCHITECTURE.md §6](docs/ARCHITECTURE.md#6-correctness-and-testing) f
 | [docs/BULK.md](docs/BULK.md) | Bulk tagging: `sysone bulk` usage, packing for throughput, multi-GPU design, numbers |
 | [docs/E2.md](docs/E2.md) | The SIMT GDN backend in the engine: selection, every gate on both backends, forward speed |
 | [docs/N1.md](docs/N1.md) | The nvfp4 engine: fused quantization, checkpoint profiles, NVFP4 gates, forward speed |
+| [docs/L1.md](docs/L1.md) | Pinned cuBLASLt GEMMs (batch invariance) and last-layer trimming: design, bit-identity, gates, speed |
 | [reference/README.md](reference/README.md) | The reference harness and golden formats |
 | [reference/eval/README.md](reference/eval/README.md) | The labeled eval set and the statistical gate |
 | `cargo doc --no-deps --open` | Per-module API docs |

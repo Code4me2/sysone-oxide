@@ -315,6 +315,10 @@ fn meta_upload_matches_batch() {
         let slots_dev = rd(&d.answer_slots);
         assert!(slots_dev[..q].iter().zip(&b.answer_slots).all(|(a, b)| *a == *b as u32));
         assert!(slots_dev[q..].iter().all(|&v| v == 0));
+        let apos = rd(&d.answer_pos);
+        let want: Vec<u32> = b.answer_rows.iter().map(|&r| pos[r as usize]).collect();
+        assert_eq!(&apos[..q], &want[..], "answer positions");
+        assert!(apos[q..].iter().all(|&v| v == 0));
         let h = rd(&d.header);
         assert_eq!(&h[..5], &[t as u32, b.segments.len() as u32, q as u32, ord, bucket as u32]);
         assert_eq!(h[5], if pad > 0 { b.segments.len() as u32 } else { u32::MAX });

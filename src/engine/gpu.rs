@@ -16,8 +16,8 @@
 
 use crate::contract::{DecisionBatch, DecisionEngine, MAX_SLOTS, SlotLogits, StepLimits};
 use crate::engine::config::{ModelConfig, WeightFormat};
-use crate::engine::forward::{self, Forward, Taps};
-use crate::engine::gemm::Blas;
+use crate::engine::forward::{self, Forward, ForwardOptions, Taps};
+use crate::engine::gemm::{Blas, GemmMode};
 use crate::engine::graph::tensor::GraphDType;
 use crate::engine::graph::{Bucket, BucketGraphs, BucketPlan, Executor, Profiler, ValueId};
 use crate::engine::kernels::TileKernels;
@@ -65,6 +65,20 @@ pub struct EngineOptions {
     /// and readback fit in this fraction of the device memory free after the weights are loaded. None: use
     /// `buckets` as given (an arena that does not fit fails the load).
     pub memory_fraction: Option<f64>,
+    /// How the bf16 GEMMs pick their cuBLAS kernel (L1). [`GemmMode::Pinned`] (default): one cuBLASLt algorithm
+    /// per weight shape at every T, without split-K, so a row's result never depends on the batch it is in.
+    /// [`GemmMode::Heuristic`]: cuBLAS's per-call choice (Phase 2a / N1 behaviour; not batch-invariant).
+    pub gemm: GemmMode,
+    /// L1: run the last layer's queries, attention, MLP and the final norm only on the answer rows
+    /// ([`ForwardOptions::trim_last_layer`]). Turned off automatically when a debug tap needs the last layer's
+    /// rows (`taps.norm`, or the last layer in `taps.layers`).
+    pub trim_last_layer: bool,
+    /// L1: a bucket of T tokens holds at most `ceil(T / tokens_per_answer)` answer rows (and at most
+    /// `max_answers`; [`BucketPlan::with_answer_density`]). The answer-row values (the readout and the trimmed
+    /// last layer) are sized by it, so a lower capacity is less padding; a batch denser in answers runs in a
+    /// larger bucket. Every branch has at least the chat template's closing tokens as its suffix, so real batches
+    /// stay far below one answer per 8 tokens. 1: `min(T, max_answers)` (the Phase 2a capacities).
+    pub tokens_per_answer: usize,
 }
 
 /// Environment variable the engine tests and benchmarks read the expected weight format from (`bf16`, `nvfp4`;
@@ -125,11 +139,19 @@ impl Default for EngineOptions {
             weights: None,
             nvfp4_fused: true,
             memory_fraction: None,
+            gemm: GemmMode::Pinned,
+            trim_last_layer: true,
+            tokens_per_answer: 8,
         }
     }
 }
 
 impl EngineOptions {
+    /// The bucket capacities for `tokens` under these options.
+    pub fn bucket_plan(&self, tokens: &[usize]) -> Result<BucketPlan> {
+        BucketPlan::with_answer_density(tokens, self.max_answers, self.max_segments, self.tokens_per_answer)
+    }
+
     /// Buckets up to the smallest power of two ≥ `max_tokens` (at least 256), doubling from 256.
     pub fn buckets_up_to(max_tokens: usize) -> Vec<usize> {
         let mut b = vec![256usize];
@@ -210,7 +232,11 @@ impl GpuEngine {
             weights.permute_hidden(&stream, p)?;
         }
         check_weight_format(&weights, format)?;
-        let fwd = forward::build_with(&cfg, &weights, slot_ids.len(), &opts.taps, opts.nvfp4_fused)?;
+        let fopts = ForwardOptions { nvfp4_fused: opts.nvfp4_fused, trim_last_layer: opts.trim_last_layer };
+        let fwd = forward::build_opts(&cfg, &weights, slot_ids.len(), &opts.taps, fopts)?;
+        if opts.trim_last_layer && !fwd.trimmed {
+            eprintln!("sysone engine: last layer not trimmed (a debug tap needs its rows, or it is not full attention)");
+        }
         let (major, minor) = ctx.compute_capability()?;
         let arch = format!("sm_{major}{minor}");
         let (gdn_backend, why) = match opts.gdn_backend {
@@ -223,7 +249,7 @@ impl GpuEngine {
             ctx.bind_to_thread()?;
             opts.buckets = fit_buckets(&fwd, &opts, gdn_backend, slot_ids.len(), frac)?;
         }
-        let plan = BucketPlan::new(&opts.buckets, opts.max_answers, opts.max_segments)?;
+        let plan = opts.bucket_plan(&opts.buckets)?;
         let largest = plan.largest();
         let graphs = BucketGraphs::new(&fwd.graph, plan, &stream)?;
         let kernels = TileKernels::new(&stream, cfg.text_config.rms_norm_eps as f32, largest.tokens, opts.max_prefixes,
@@ -236,7 +262,7 @@ impl GpuEngine {
         })?;
         // Pre-touched (zeroed) pinned readback buffer for the largest step's logits.
         let host_logits = PinnedHostBuffer::zeroed(&ctx, largest.answers * slot_ids.len())?;
-        let blas = Blas::new(&stream)?;
+        let blas = Blas::with_mode(&stream, opts.gemm)?;
         let mut e = Self {
             cfg,
             opts,
@@ -272,6 +298,10 @@ impl GpuEngine {
             e.kernels.scratch_bytes() as f64 / (1u64 << 30) as f64,
             e.opts.max_prefixes
         );
+        eprintln!("sysone engine: bf16 GEMMs {} ({}), last layer {}, {} answer rows at the largest bucket",
+                  e.opts.gemm.name(),
+                  if e.opts.gemm == GemmMode::Pinned { "batch-invariant" } else { "not batch-invariant" },
+                  if e.fwd.trimmed { "trimmed to the answer rows" } else { "untrimmed" }, largest.answers);
         if e.opts.warmup {
             let t = Instant::now();
             let mut b = DecisionBatch::default();
@@ -462,12 +492,12 @@ pub fn device_memory() -> Result<(usize, usize)> {
 /// scratch, the metadata block and the logits readback (the pinned host buffer is not device memory but is
 /// counted too: on an integrated GPU it comes out of the same pool).
 pub fn step_bytes(fwd: &Forward, opts: &EngineOptions, backend: GdnBackend, n_slots: usize, tokens: usize) -> Result<usize> {
-    let plan = BucketPlan::new(&[tokens], opts.max_answers, opts.max_segments)?;
+    let plan = opts.bucket_plan(&[tokens])?;
     let b = plan.largest();
     let arena = fwd.graph.plan(b)?.arena_bytes;
     let scratch = crate::kernels::gdn::GdnScratch::engine_bytes(backend, tokens, opts.max_prefixes);
-    // Metadata: ids, positions, token_seg (3 x u32 per token), segments (16 B) and seg_state, answers (rows, slots).
-    let meta = 2 * (12 * b.tokens + 20 * b.segments + 6 * b.answers + 4096);
+    // Metadata: ids, positions, token_seg (3 x u32 per token), segments (16 B) and seg_state, answers (rows, slots, positions).
+    let meta = 2 * (12 * b.tokens + 20 * b.segments + 12 * b.answers + 4096);
     let logits = b.answers * n_slots * 4 * 2;
     Ok(arena + scratch + meta + logits)
 }
@@ -550,7 +580,8 @@ impl DecisionEngine for GpuEngine {
     }
 
     fn info(&self) -> Vec<(&'static str, String)> {
-        vec![("engine", self.format.name().into()), ("gdn_backend", self.gdn_backend().name().into()), ("arch", self.arch.clone())]
+        vec![("engine", self.format.name().into()), ("gdn_backend", self.gdn_backend().name().into()), ("arch", self.arch.clone()),
+             ("gemm", self.opts.gemm.name().into()), ("trim_last_layer", self.fwd.trimmed.to_string())]
     }
 
     fn step_limits(&self) -> StepLimits {
@@ -561,6 +592,7 @@ impl DecisionEngine for GpuEngine {
             // One segment slot of the largest bucket is the padding segment (used whenever a batch is smaller).
             max_segments: largest.segments - 1,
             max_prefixes: self.kernels.max_prefixes(),
+            tokens_per_answer: self.opts.tokens_per_answer,
         }
     }
 

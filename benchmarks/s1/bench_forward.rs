@@ -50,6 +50,16 @@ struct Args {
     /// NVFP4 checkpoints: standalone quantize launches instead of the fused norm / SiLU·mul epilogues.
     #[arg(long)]
     nvfp4_unfused: bool,
+    /// bf16 GEMM kernel choice: pinned (one cuBLASLt algorithm per weight shape, batch-invariant; default) or
+    /// heuristic (cuBLAS per call).
+    #[arg(long, default_value = "pinned")]
+    gemm: String,
+    /// Run the last layer on every row (L1 trimming off).
+    #[arg(long)]
+    no_trim: bool,
+    /// Answer-row capacity of a bucket: one per this many tokens (EngineOptions::tokens_per_answer).
+    #[arg(long, default_value_t = 8)]
+    tokens_per_answer: usize,
 }
 
 const VOCAB: [&str; 16] = [
@@ -110,14 +120,17 @@ fn main() -> Result<()> {
         None => gdn_backend_from_env()?,
     };
     let opts = EngineOptions { buckets: a.tokens.clone(), warmup: false, gdn_backend, nvfp4_fused: !a.nvfp4_unfused,
-                               ..Default::default() };
+                               gemm: a.gemm.parse()?, trim_last_layer: !a.no_trim,
+                               tokens_per_answer: a.tokens_per_answer, ..Default::default() };
     let mut e = GpuEngine::load(&a.model, &fe.slot_ids, opts)?;
     let quant = match e.format {
         sysone::engine::config::WeightFormat::Nvfp4 if a.nvfp4_unfused => " (standalone quantize)",
         sysone::engine::config::WeightFormat::Nvfp4 => " (quantize fused)",
         _ => "",
     };
-    println!("# engine: {}{quant}; GDN backend: {} on {}", e.format.name(), e.gdn_backend().name(), e.arch);
+    println!("# engine: {}{quant}; GDN backend: {} on {}; bf16 GEMMs {}; last layer {}; tokens/answer {}",
+             e.format.name(), e.gdn_backend().name(), e.arch, e.opts.gemm.name(),
+             if e.fwd.trimmed { "trimmed" } else { "untrimmed" }, e.opts.tokens_per_answer);
     let cfg = e.cfg.text_config.clone();
     println!("# arena {:.2} GiB for buckets {:?} (largest {max})", e.arena_bytes() as f64 / (1u64 << 30) as f64, a.tokens);
     for &target in &a.tokens {
@@ -156,7 +169,8 @@ fn main() -> Result<()> {
             (n_req * 3) as f64 / rm * 1e3,
         );
         let mut rec = serde_json::json!({
-            "engine": e.format.name(), "nvfp4_fused": !a.nvfp4_unfused,
+            "engine": e.format.name(), "nvfp4_fused": !a.nvfp4_unfused, "gemm": e.opts.gemm.name(),
+            "trimmed": e.fwd.trimmed, "tokens_per_answer": e.opts.tokens_per_answer, "bucket_answers": bucket.answers,
             "gdn_backend": e.gdn_backend().name(), "tokens": t, "bucket": bucket.tokens, "requests": n_req, "branches": b.num_branches(),
             "replay_ms_median": rm, "eager_ms_median": em, "replay_ms": replay, "eager_ms": eager,
         });

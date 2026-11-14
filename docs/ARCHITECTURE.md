@@ -47,6 +47,7 @@ cuBLAS (through `cudarc`) for the bf16 GEMMs.
 | bf16 GPU engine (`--engine bf16`) | Full 32-layer packed forward with T-bucket CUDA graphs. The end-to-end gate (b) and the batch-invariance gate pass. |
 | Hidden-state gate (a) | Redefined by A1 (dense rows, paired criteria; PHASE2A.md) and passing with both GDN backends (E2.md). |
 | NVFP4 engine (`--engine nvfp4`, N1) | The NVFP4-MLP checkpoint on the same engine: MLP GEMMs on the block-scaled FP4 kernels, activation quantization fused into the preceding norm / SiLU·mul (bit-identical to the standalone quantize), everything else bf16. Passes `[eval.nvfp4]`, `[nvfp4]` and `[batch_invariance.nvfp4]`; 1.48x the bf16 forward at 16k ([N1.md](N1.md)). |
+| Batch invariance, last-layer trimming (L1) | bf16 GEMMs on one pinned cuBLASLt algorithm per weight shape (§3.6) and one-token RoPE tile blocks: a branch's logits are bit-identical alone, packed or in any bucket, in both engines. The last layer runs its queries, attention, MLP and the final norm on the answer rows only (§3.5), bit-identical to the untrimmed forward. [L1.md](L1.md). |
 | `allowed_token_mass` (`?debug=1`) | Computed by `MockEngine` only. `GpuEngine` does not override `DecisionEngine::run_with_mass`, so the field is absent with the GPU engine. |
 | Prefix cache across requests (DESIGN §8), images, `head` readout | Not implemented. |
 | Bulk tagging (B1) | `sysone bulk` (`src/bulk/`, docs/BULK.md): JSONL jobs in, results keyed by id out, through the server's own `prepare`/`finish`; window packing to full buckets; one worker process per GPU from one queue; resumable. |
@@ -216,8 +217,12 @@ the two agree.
 A CUDA graph replays fixed kernel launches with fixed pointers and grid sizes, so it cannot follow a batch's exact
 size. The engine therefore plans for a few capacities:
 
-- `graph::Bucket { tokens, answers, segments }`. `BucketPlan::new` derives `answers = min(T, max_answers)` and
-  `segments = min(T, max_segments) + 1` for each token size T (the `+1` is the padding segment).
+- `graph::Bucket { tokens, answers, segments }`. `BucketPlan::with_answer_density` derives
+  `answers = min(ceil(T / tokens_per_answer), max_answers)` (`EngineOptions::tokens_per_answer`,
+  default 8; L1, [L1.md](L1.md)) and `segments = min(T, max_segments) + 1` for each token size T (the `+1` is the
+  padding segment). The answer-row values (the readout, and the trimmed last layer) are sized by `answers`; a batch
+  denser in answers than its bucket allows runs in the next larger bucket. `tokens_per_answer = 1` gives Phase 2a's
+  `min(T, max_answers)`. `contract::bucket_answers` is the same formula for `StepLimits` (bulk packing).
 - Buckets come from `EngineOptions::buckets`; `main.rs` uses `EngineOptions::buckets_up_to(max_step)`, i.e. powers of
   two from 256 up to the first one ≥ `--max-step-tokens` (by default the larger of `--token-budget` and
   `--max-request-tokens`, so 256 … 65536 with default flags).
@@ -228,8 +233,9 @@ size. The engine therefore plans for a few capacities:
 - Every batch-dependent input lives in fixed device buffers that are rewritten before each step: the metadata block
   (`engine::meta::DeviceMeta`), the GDN tables (`GdnPlan`, one per bucket) and the attention work list (padded to the
   bucket's maximum item count with empty items).
-- The first step in a bucket runs eagerly (this also JIT-compiles the cuTile kernels and lets cuBLAS pick its
-  algorithms), then `Executor::capture` records the same launches as a CUDA graph. Later steps in that bucket only
+- The first step in a bucket runs eagerly (this also JIT-compiles the cuTile kernels and, in pinned GEMM mode,
+  pins each new weight shape's cuBLASLt algorithm; §3.6), then `Executor::capture` records the same launches as a
+  CUDA graph. Later steps in that bucket only
   upload metadata and replay. `tests/engine_e2e.rs::graph_replay_equals_eager` checks replay is bit-identical.
 
 Padding: a batch of `t` tokens in a bucket of `T > t` gets a dummy segment covering rows `t..T` with
@@ -241,8 +247,9 @@ token-parallel kernels compute garbage rows there that no real row ever reads.
 `MetaUploader::pack` writes one contiguous, 256-byte-aligned block per step (see the `meta.rs` module docs):
 `header [8] u32` (`T`, real segments, answers, prefixes, bucket tokens, pad segment index), `token_ids`, `positions`
 (`pos0 + offset`), `token_seg` (segment of each token), `segments` (16 bytes each, same layout as `contract::Segment`,
-which is `#[repr(C)]`), `seg_state` (GDN state slot per segment), `answer_rows`, `answer_slots`. Two pinned host
-slots alternate (double buffering); a slot is reused only after the event behind its last copy completes.
+which is `#[repr(C)]`), `seg_state` (GDN state slot per segment), `answer_rows`, `answer_slots`, `answer_pos` (the
+RoPE position of each answer row, for the trimmed last layer). Two pinned host slots alternate (double buffering); a
+slot is reused only after the event behind its last copy completes.
 
 ### 3.5 Readout (`slot_lm`)
 
@@ -251,12 +258,38 @@ label's token id (`Tokenizer::verify_slots`, 256 labels: A–Z then two-letter l
 the loader gathers `lm_head[slot_ids]` into `WeightRef::SlotHead` (`[n_slots, 4096]`), and the forward ends with:
 
 ```
+untrimmed (EngineOptions::trim_last_layer = false, or a debug tap on the last layer / final norm):
 hn     = add_zc_rmsnorm(x += last MLP output, final_norm)    over all T rows
 hs     = gather_rows(hn, answer_rows)                         [Q, 4096] bf16
 logits = hs · W_slotᵀ                                         [Q, n_slots] f32 (cuBLAS, f32 output)
+
+trimmed (default, L1): the last layer (full attention) gathers the answer rows after its input norm
+kv     = hn · [Wk; Wv]ᵀ, k = k_norm_rope(kv)                  every token (the answer rows attend to them)
+q_a    = qk_norm_rope(gather(hn) · Wqᵀ)                       [Q, ..] at the answer positions
+o_a    = seg_attn_answers(q_a, k, kv) · Woᵀ                   one work item per answer row
+x_a    = gather(x) += o_a; post-norm, MLP, final norm         [Q, 4096]
+logits = hs_a · W_slotᵀ
 ```
 
+Only rows that are never read are skipped: the last layer's queries, attention output, `o_proj`, residual,
+post-norm and MLP of non-answer rows, and the final norm of non-answer rows. With pinned GEMMs (§3.6) the trimmed
+logits are bit-identical to the untrimmed ones (`tests/engine_e2e.rs::trimmed_last_layer_equals_untrimmed`).
+`forward::can_trim_last_layer` turns trimming off when a tap needs the last layer's rows (`engine_layers`).
+
 Softmax, temperature and everything after the logits happen on the CPU in `frontend::assemble`.
+
+### 3.6 bf16 GEMMs: pinned algorithms (batch invariance)
+
+`EngineOptions::gemm` (`--gemm pinned|heuristic`). `GemmMode::Heuristic` is `cublasGemmEx` with
+`CUBLAS_GEMM_DEFAULT`: cuBLAS picks the kernel and split-K per call shape, so a row's bf16 projection can round
+differently in a 1k bucket than in a 16k one, and a request packed with others is not bit-identical to it alone
+(N1: 103/164 branches). `GemmMode::Pinned` (default) runs cuBLASLt with one algorithm per weight shape (N, K,
+strides, output type), chosen once from cuBLASLt's heuristic at `gemm::PINNED_REF_ROWS` (16,384) rows, restricted
+to candidates with `SPLITK_NUM <= 1` and no reduction scheme, and used for every T (checked with
+`cublasLtMatmulAlgoCheck` per row count). Each output element is then one fp32 dot product whose order depends only
+on the kernel's K tiling, so a row's result does not depend on the number of rows or its position
+(`tests/engine_gemm.rs::pinned_gemm_rows_do_not_depend_on_the_batch`). Same numerics otherwise (fp32 compute and
+scale, one output rounding). Costs and the resulting batch invariance: [L1.md](L1.md).
 
 ## 4. Module map
 
@@ -346,10 +379,10 @@ Gotchas:
 | `weights.rs` | Device weights; fused projections; NVFP4 or bf16 per projection; slot head | `ModelWeights::load`, `Linear::{Bf16, Nvfp4}`, `LinearPart`, `LoadOptions`, `LoadReport` |
 | `graph.rs` | The StepGraph IR, arena planning, executor, profiler, the `Kernels` trait, bucket graphs | `StepGraph`, `GraphOp`, `ValueId`, `TensorRef`, `Dim`, `Bucket`, `BucketPlan`, `PoolPlan`, `Executor`, `BucketGraphs`, `Kernels`, `WeightStore`, `Profiler` |
 | `graph/tensor.rs` | Device allocations and typed, strided views | `DevBuf`, `DevTensor`, `GraphDType` |
-| `forward.rs` | Builds the 32-layer forward as a `StepGraph`, bf16 or NVFP4 per MLP projection | `build`, `build_with` (NVFP4 quantize fused or standalone), `check_dims`, `Forward`, `Taps` |
+| `forward.rs` | Builds the 32-layer forward as a `StepGraph`, bf16 or NVFP4 per MLP projection; the last layer trimmed to the answer rows (L1) | `build`, `build_opts` (`ForwardOptions`: NVFP4 quantize fused or standalone, `trim_last_layer`), `build_with` (untrimmed), `can_trim_last_layer`, `check_dims`, `Forward`, `Taps` |
 | `kernels.rs` | `Kernels` implementation over the cuTile kernels in `crate::kernels`, with the GDN delta rule on the cuTile or the SIMT backend | `TileKernels::{new, prepare, update, gdn_backend}` |
-| `gemm.rs` | cuBLAS bf16 GEMM, fp32 compute, fixed workspace (graph-safe) | `Blas::gemm_bf16` |
-| `meta.rs` | Per-step batch metadata, double-buffered upload | `MetaUploader::{pack, upload}`, `DeviceMeta`, `MetaShape`, `PAD_PARENT` |
+| `gemm.rs` | bf16 GEMM, fp32 compute, fixed workspace (graph-safe): cuBLASLt with one pinned algorithm per weight shape (`GemmMode::Pinned`, default; batch-invariant) or `cublasGemmEx` (`GemmMode::Heuristic`) | `Blas::{with_mode, gemm_bf16, pinned_algos}`, `GemmMode`, `PINNED_REF_ROWS` |
+| `meta.rs` | Per-step batch metadata (incl. answer positions), double-buffered upload | `MetaUploader::{pack, upload}`, `DeviceMeta`, `MetaShape`, `PAD_PARENT` |
 | `gpu.rs` | The GPU `DecisionEngine` (bf16 or nvfp4 engine, following the checkpoint) | `GpuEngine::{load, run, step, profile, read_tap, gdn_backend}`, `EngineOptions` (`weights`, `nvfp4_fused`), `split_batch`, `StepInfo`, `parse_gdn_backend`, `gdn_backend_from_env`, `weight_format_from_env` |
 | `goldens.rs` | Readers for the model goldens (corpus, runs, hidden dumps) used by tests and `bench_forward` | `model_corpus`, `golden_run`, `hidden_dump`, `plan_corpus`, `batch_of` |
 | `platform.rs` | Platform profile written by `hwprobe`; the idle-GPU guard for benchmarks | `PlatformProfile`, `require_idle_gpu`, `gpu_contention` |
@@ -472,13 +505,17 @@ The ops below are the classes `bench_forward`'s per-op profile reports (`Kernels
 `GraphOp::profile_label`; the four GDN scan stages are sub-marks added by `TileKernels::gdn_chunk_scan`, and the
 `gdn.scan` mark before them holds ~0 ms). The GDN rows depend on the engine's GDN backend: `gdn.prep` and
 `gdn.chunk_*`/`gdn.scan_*` on the cuTile backend, `gdn.simt_*` on the SIMT backend. "Count" is per forward of elephant-1 (24 GDN layers,
-8 attention layers). All activations are bf16 unless stated.
+8 attention layers). All activations are bf16 unless stated. With the last layer trimmed (L1, default), that
+layer's `gemm.AttnQ`, `gemm.AttnO`, MLP, post-norm and the final norm run on the `[Q, ..]` answer rows of the
+bucket (Q = `Bucket::answers`), its `attn.qk_norm_rope` is two launches (`k_norm_rope` over every token,
+`qk_norm_rope` over the answer rows) and its `attn.seg_attn` runs one work item per answer row; `readout.gather` is
+three gathers before the layer's queries (`hn`, `kv` and the residual) instead of one after the final norm.
 
 | Profile label | Count | Implementation | Precision | Test |
 |---|---|---|---|---|
 | `embedding` | 1 | cutile-kernels `embedding_batch_f16` (bf16 bits moved as f16), called by `Executor::embedding` | exact gather | `tests/engine_graph.rs`, `tests/kernels_norm.rs` (`gather_rows_and_embedding_are_exact`) |
 | `norm.zc_rmsnorm` | 1 + 64 | `kernels::norm::{zc_rmsnorm, add_zc_rmsnorm}` (cuTile): one plain norm (layer 0's input norm), then 64 fused add + norm, each updating the residual in place; the last one applies the final norm | fp32 statistics, bf16 out | `tests/kernels_norm.rs` |
-| `gemm.GdnInProj` | 24 | cuBLAS, `engine::gemm::Blas::gemm_bf16`, weight `[12352, 4096]` | bf16 in, fp32 compute (`CUBLAS_COMPUTE_32F`, no reduced-precision reduction), bf16 out | `tests/engine_gemm.rs` |
+| `gemm.GdnInProj` | 24 | cuBLAS(Lt), `engine::gemm::Blas::gemm_bf16`, weight `[12352, 4096]`; one pinned cuBLASLt algorithm per weight shape at every T (§3.6) | bf16 in, fp32 compute (`CUBLAS_COMPUTE_32F`, no split-K when pinned; no reduced-precision reduction otherwise), bf16 out | `tests/engine_gemm.rs` (accuracy; row invariance when pinned) |
 | `gemm.GdnOutProj` | 24 | cuBLAS, `[4096, 4096]` | as above | `tests/engine_gemm.rs` |
 | `gemm.AttnQ` | 8 | cuBLAS, `[8192, 4096]` | as above | `tests/engine_gemm.rs` |
 | `gemm.AttnKv` | 8 | cuBLAS, `[2048, 4096]` | as above | `tests/engine_gemm.rs` |
@@ -498,7 +535,7 @@ The ops below are the classes `bench_forward`'s per-op profile reports (`Kernels
 | `gdn.simt_scan_prefix` | 24 | SIMT backend: `gdn_simt_scan` phase 0, prefix segments, register-resident state, `mma.sync` with split-bf16 operands | fp32-grade state products (three-way splits), two-way for output-only products | `tests/kernels_gdn.rs` |
 | `gdn.simt_scan_suffix` | 24 | SIMT backend: `gdn_simt_scan` phase 1, suffixes from the parent's state | as above, bf16 out | `tests/kernels_gdn.rs` |
 | `gdn.gated_rmsnorm` | 24 | `kernels::gdn::gated_rmsnorm` (cuTile), per 128-wide v head, `· w · silu(z)` | fp32 statistics, bf16 out | `tests/kernels_gdn.rs` |
-| `attn.qk_norm_rope` | 8 | `kernels::attention::qk_norm_rope` (cuTile) | reference rounding points (module docs) | `tests/kernels_attn.rs` |
+| `attn.qk_norm_rope` | 8 | `kernels::attention::qk_norm_rope` (cuTile), one token per tile block (`ROPE_TOKENS`, L1: position-invariant) | reference rounding points (module docs) | `tests/kernels_attn.rs` |
 | `attn.seg_attn` | 8 | `kernels::attention::seg_attn` (cuTile), `AttnTiles::default()` | fp32 scores and softmax, P in 3 bf16 parts (`p_split = 3`), sigmoid gate, bf16 out | `tests/kernels_attn.rs` |
 | `pointwise.silu_mul` | 32 | `kernels::pointwise::silu_mul` (cuTile) | bf16 rounding of `silu(g)` and of the product, as the reference | `tests/kernels_norm.rs` |
 | `readout.gather` | 1 | `kernels::pointwise::gather_rows` at `answer_rows` | exact | `tests/kernels_norm.rs` |
@@ -543,7 +580,8 @@ Where the time goes at each bucket is in PHASE2A.md ("Forward speed").
 | Tree semantics (CPU) | Packed tree forward = flat forward with explicit mask; packed vs alone; vs qev fp32 | `src/engine/cpu_ref/tests.rs` (lib, tiny random model), `tests/cpu_ref.rs` (ignored; real weights) |
 | (a) Hidden states | Per-row relative error at layers 0, 3, 4, 15, 31 and the final norm vs qev fp32, within 1.5× the bf16 reference's own error (`[model.hidden.*]`) | `tests/engine_layers.rs::hidden_states_vs_fp32_truth` (A1's definition, PHASE2A.md; passes with both GDN backends, E2.md) |
 | (b) End to end | Per-option probability \|dp\| vs qev bf16 (`[e2e.bf16]`), also reported and gated vs fp32 (`[e2e.fp32_truth]`); top-1 agreement where the reference margin is large enough. nvfp4 engine (`SYSONE_ENGINE=nvfp4`): vs the NVFP4 QDQ per-question reference (`[nvfp4]`), fused == standalone quantize bit for bit | `tests/engine_e2e.rs::slot_probabilities_match_goldens` (`nvfp4_fused_equals_unfused`); over HTTP: `tests/engine_server.rs` (bf16) |
-| Batch invariance | Each request alone vs packed with the others vs alone in a larger bucket (`[batch_invariance]`; nvfp4 engine: `[batch_invariance.nvfp4]`) | `tests/engine_e2e.rs::batch_invariance`; kernel level: `kernels_attn::seg_attn_branch_alone_is_bit_identical`, `kernels_gdn::tree_batched_matches_each_branch_alone` |
+| Batch invariance | Each request alone vs packed with the others vs alone in a larger bucket (`[batch_invariance]`; nvfp4 engine: `[batch_invariance.nvfp4]`). Since L1 every branch is bit-identical in both engines (pinned GEMMs, one-token RoPE blocks) | `tests/engine_e2e.rs::batch_invariance`; kernel level: `kernels_attn::seg_attn_branch_alone_is_bit_identical`, `kernels_attn::qk_norm_rope_rows_do_not_depend_on_their_position`, `kernels_gdn::tree_batched_matches_each_branch_alone`, `engine_gemm::pinned_gemm_rows_do_not_depend_on_the_batch`; diagnostic: `engine_e2e::packing_diagnostic` (ignored) |
+| Last-layer trimming (L1) | Trimmed vs untrimmed logits, bit for bit with pinned GEMMs (heuristic GEMMs reported) | `tests/engine_e2e.rs::trimmed_last_layer_equals_untrimmed`; kernel level: `kernels_attn::seg_attn_answers_match_full_rows`, `kernels_attn::qk_norm_rope_k_ignores_q_and_gathered_rows_match_bits`; diagnostic: `engine_e2e::trim_diagnostic` (ignored) |
 | Graph replay | Replay with new metadata = eager, bit for bit | `tests/engine_e2e.rs::graph_replay_equals_eager`, `tests/engine_graph.rs` |
 | Eval (statistical) | Accuracy, top-1 agreement, \|dp\| and Brier vs the envelope of the reference's own paths (`[eval.bf16]`, `[eval.nvfp4]`) | `reference/eval/score.py` against a live server; `src/tolerances.rs` tests keep the Rust `EvalGate` equal to `stats.py` |
 | Server behaviour | Routes, error bodies, backpressure, timing semantics, `:batch`, debug diagnostics (mock engine) | `tests/server_e2e.rs` |
@@ -583,7 +621,7 @@ a CUDA context, unless `--allow-shared-gpu` is passed (the output is then marked
 
 | Binary (`benchmarks/s1/` unless noted) | What it measures | Typical command |
 |---|---|---|
-| `bench_forward` | Whole forward (bf16 or nvfp4, following `--model`'s checkpoint; `--nvfp4-unfused`): graph replay and eager time per bucket, plus the per-op profile (§5). Uses the real frontend on synthetic requests. | `scripts/gpu.sh ./target/release/bench_forward --tokens 1024,4096,16384` (flags: `--model`, `--state-tokens`, `--iters`, `--eager-iters`, `--no-profile`) |
+| `bench_forward` | Whole forward (bf16 or nvfp4, following `--model`'s checkpoint; `--nvfp4-unfused`): graph replay and eager time per bucket, plus the per-op profile (§5). Uses the real frontend on synthetic requests. | `scripts/gpu.sh ./target/release/bench_forward --tokens 1024,4096,16384` (flags: `--model`, `--state-tokens`, `--iters`, `--eager-iters`, `--no-profile`, `--gemm pinned\|heuristic`, `--no-trim`, `--tokens-per-answer`) |
 | `bench_gdn` | GDN mixer kernels per layer on segment trees, precision and tile variants | `scripts/gpu.sh ./target/release/bench_gdn` |
 | `bench_attn` | `seg_attn`, norms, RoPE, pointwise and readout kernels; `--sweep` for tile shapes, `--baseline` for cutile-kernels' dense fmha | `scripts/gpu.sh ./target/release/bench_attn --tokens 1024,4096,16384` |
 | `bench_nvfp4` | NVFP4 quantize and FP4 GEMMs at the MLP shapes vs cuBLAS bf16 | `scripts/gpu.sh ./target/release/bench_nvfp4 --tokens 1024,4096,16384` |

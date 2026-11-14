@@ -44,6 +44,11 @@ struct BucketState {
     attn_items: usize,
     /// Pinned staging for the work list (rewritten only after the previous step has completed).
     attn_host: PinnedHostBuffer<i32>,
+    /// The answer rows' work list ([`AttnPlan::answers`], padded to the bucket's answer capacity) and its staging,
+    /// for [`GraphOp::SegAttnAnswers`] (L1, the trimmed last layer).
+    ans_work: DevTensor,
+    ans_items: usize,
+    ans_host: PinnedHostBuffer<i32>,
 }
 
 pub struct TileKernels {
@@ -138,7 +143,10 @@ impl TileKernels {
         let attn_items = AttnPlan::max_items(b.tokens, b.segments, self.attn_tiles.bm);
         let attn_work = DevTensor::zeros(stream, GraphDType::I32, &[attn_items * WORK_FIELDS])?;
         let attn_host = PinnedHostBuffer::zeroed(stream.context(), attn_items * WORK_FIELDS)?;
-        self.buckets.insert(b, BucketState { gdn, attn_work, attn_items, attn_host });
+        let ans_items = b.answers.max(1);
+        let ans_work = DevTensor::zeros(stream, GraphDType::I32, &[ans_items * WORK_FIELDS])?;
+        let ans_host = PinnedHostBuffer::zeroed(stream.context(), ans_items * WORK_FIELDS)?;
+        self.buckets.insert(b, BucketState { gdn, attn_work, attn_items, attn_host, ans_work, ans_items, ans_host });
         Ok(())
     }
 
@@ -158,9 +166,15 @@ impl TileKernels {
                 st.attn_items);
         plan.pad_to(st.attn_items);
         st.attn_host.as_mut_slice().copy_from_slice(&plan.work);
+        let mut ans = AttnPlan::answers(&batch.segments);
+        ensure!(ans.num_items() <= st.ans_items, "{} answer rows over the bucket's {}", ans.num_items(), st.ans_items);
+        ans.pad_to(st.ans_items);
+        st.ans_host.as_mut_slice().copy_from_slice(&ans.work);
         stream.context().bind_to_thread()?;
         unsafe {
             cuda_core::memory::memcpy_htod_async(st.attn_work.ptr(), st.attn_host.as_ptr(), plan.work.len() * 4,
+                                                 stream.cu_stream())?;
+            cuda_core::memory::memcpy_htod_async(st.ans_work.ptr(), st.ans_host.as_ptr(), ans.work.len() * 4,
                                                  stream.cu_stream())?
         };
         Ok(())
@@ -348,22 +362,34 @@ impl Kernels for TileKernels {
 
     fn qk_norm_rope(&self, cx: &Launch, _layer: usize, qg: &DevTensor, kv: &DevTensor, q_norm: &DevTensor,
                     k_norm: &DevTensor, q: &DevTensor, k: &DevTensor) -> Result<()> {
-        let t = qg.rows();
-        let (hq, hk, d) = (attn::NUM_Q_HEADS, attn::NUM_KV_HEADS, attn::HEAD_DIM);
-        let pos = &cx.meta.positions;
-        // RoPE positions are u32 in the metadata block; the kernel reads them as i32 (all < 2^31).
-        let pos = DevTensor::new(pos.buf().clone(), pos.offset(), GraphDType::I32, vec![t])?;
-        unsafe {
-            let qg = qg.reshape(&[t, hq, 2 * d])?.tile::<bf16>()?;
-            let kv = kv.reshape(&[t, 2 * hk, d])?.tile::<bf16>()?;
-            let mut qo = q.reshape(&[t, hq, d])?.tile::<bf16>()?;
-            let mut ko = k.reshape(&[t, hk, d])?.tile::<bf16>()?;
-            let (pos, qw, kw) = (pos.tile::<i32>()?, q_norm.tile::<bf16>()?, k_norm.tile::<bf16>()?);
-            let inv = self.inv_freq.tile::<f32>()?;
-            attn::qk_norm_rope(&mut qo, &mut ko, &qg, &kv, &pos, &qw, &kw, &inv, self.eps)?
-                .execute(cx.exec)
-                .map(|_| ()).map_err(launch_err("qk_norm_rope"))
+        self.qk_norm_rope_at(cx, &cx.meta.positions, qg, kv, q_norm, k_norm, q, k)
+    }
+
+    fn qk_norm_rope_answers(&self, cx: &Launch, _layer: usize, qg: &DevTensor, kv: &DevTensor, q_norm: &DevTensor,
+                            k_norm: &DevTensor, q: &DevTensor, k: &DevTensor) -> Result<()> {
+        self.qk_norm_rope_at(cx, &cx.meta.answer_pos, qg, kv, q_norm, k_norm, q, k)
+    }
+
+    fn seg_attn_answers(&self, cx: &Launch, _layer: usize, q: &DevTensor, k: &DevTensor, kv: &DevTensor,
+                        qg: &DevTensor, out: &DevTensor) -> Result<()> {
+        let st = self.bucket(cx.bucket)?;
+        let (a, t) = (q.rows(), k.rows());
+        ensure!(a == st.ans_items, "seg_attn_answers: {a} query rows for {} answer items", st.ans_items);
+        for (name, x, rows, cols) in [("q", q, a, 4096), ("k", k, t, 1024), ("kv", kv, t, 2048), ("qg", qg, a, 8192),
+                                      ("out", out, a, 4096)] {
+            ensure!(x.dtype == GraphDType::BF16 && x.is_contiguous() && x.rows() == rows && x.cols() == cols,
+                    "seg_attn_answers {name}: {x:?}");
         }
+        let args = SegAttnArgs {
+            out: dptr(out),
+            q: dptr(q),
+            k: dptr(k),
+            kv: dptr(kv),
+            qg: dptr(qg),
+            work: dptr(&st.ans_work),
+            num_items: st.ans_items,
+        };
+        unsafe { attn::seg_attn(args, self.attn_tiles).execute(cx.exec) }.map(|_| ()).map_err(launch_err("seg_attn"))
     }
 
     fn seg_attn(&self, cx: &Launch, _layer: usize, q: &DevTensor, k: &DevTensor, kv: &DevTensor, qg: &DevTensor,
@@ -391,6 +417,35 @@ impl Kernels for TileKernels {
         unsafe {
             let (src, idx, mut o) = (src.tile::<bf16>()?, idx.tile::<u32>()?, out.tile::<bf16>()?);
             pointwise::gather_rows(&mut o, &src, &idx)?.execute(cx.exec).map(|_| ()).map_err(launch_err("gather_rows"))
+        }
+    }
+}
+
+/// The first `t` RoPE positions of a u32 metadata array as the i32 tensor the kernels read (all < 2^31).
+fn rope_positions(pos: &DevTensor, t: usize) -> Result<DevTensor> {
+    ensure!(pos.numel() >= t, "{t} positions from an array of {}", pos.numel());
+    DevTensor::new(pos.buf().clone(), pos.offset(), GraphDType::I32, vec![t])
+}
+
+impl TileKernels {
+    /// `qk_norm_rope` over `qg.rows()` rows at the positions in `pos` (every token, or the answer rows).
+    #[allow(clippy::too_many_arguments)]
+    fn qk_norm_rope_at(&self, cx: &Launch, pos: &DevTensor, qg: &DevTensor, kv: &DevTensor, q_norm: &DevTensor,
+                       k_norm: &DevTensor, q: &DevTensor, k: &DevTensor) -> Result<()> {
+        let t = qg.rows();
+        let (hq, hk, d) = (attn::NUM_Q_HEADS, attn::NUM_KV_HEADS, attn::HEAD_DIM);
+        ensure!(t % attn::ROPE_TOKENS == 0, "qk_norm_rope over {t} rows (not a multiple of {})", attn::ROPE_TOKENS);
+        let pos = rope_positions(pos, t)?;
+        unsafe {
+            let qg = qg.reshape(&[t, hq, 2 * d])?.tile::<bf16>()?;
+            let kv = kv.reshape(&[t, 2 * hk, d])?.tile::<bf16>()?;
+            let mut qo = q.reshape(&[t, hq, d])?.tile::<bf16>()?;
+            let mut ko = k.reshape(&[t, hk, d])?.tile::<bf16>()?;
+            let (pos, qw, kw) = (pos.tile::<i32>()?, q_norm.tile::<bf16>()?, k_norm.tile::<bf16>()?);
+            let inv = self.inv_freq.tile::<f32>()?;
+            attn::qk_norm_rope(&mut qo, &mut ko, &qg, &kv, &pos, &qw, &kw, &inv, self.eps)?
+                .execute(cx.exec)
+                .map(|_| ()).map_err(launch_err("qk_norm_rope"))
         }
     }
 }

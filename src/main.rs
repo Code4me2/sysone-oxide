@@ -113,6 +113,13 @@ struct Args {
     /// preceding norm / SiLU·mul (bit-identical; for benchmarks and diagnostics).
     #[arg(long)]
     nvfp4_unfused: bool,
+    /// bf16 GEMM kernel choice: `pinned` (one cuBLASLt algorithm per weight shape at every batch size, so a
+    /// request's results do not depend on what it is packed with; default) or `heuristic` (cuBLAS per call).
+    #[arg(long, default_value = "pinned")]
+    gemm: String,
+    /// Compute the last layer for every token instead of only the answer rows (diagnostics).
+    #[arg(long)]
+    no_trim_last_layer: bool,
     /// `debias` when a request has none (default: $QEV_DEBIAS as qev reads it, else 1).
     #[arg(long, allow_negative_numbers = true)]
     debias: Option<i64>,
@@ -213,6 +220,8 @@ fn main() -> Result<()> {
                 gdn_backend: parse_gdn_backend(&args.gdn_backend)?,
                 weights,
                 nvfp4_fused: !args.nvfp4_unfused,
+                gemm: args.gemm.parse()?,
+                trim_last_layer: !args.no_trim_last_layer,
                 ..Default::default()
             };
             let (model, slot_ids) = (args.model.clone(), frontend.slot_ids.clone());

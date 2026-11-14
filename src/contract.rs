@@ -165,7 +165,7 @@ pub trait DecisionEngine: Send {
 
 /// The capacities of an engine step ([`DecisionEngine::step_limits`]). A batch with at most `buckets.last()`
 /// tokens, `max_answers` answer rows, `max_segments` segments and `max_prefixes` prefixes runs as one step in the
-/// smallest bucket that holds its tokens.
+/// smallest bucket that holds its tokens and its answers ([`answers_in`](Self::answers_in)).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StepLimits {
     /// Token buckets, ascending (the engine pads a batch up to the smallest one that fits).
@@ -173,11 +173,30 @@ pub struct StepLimits {
     pub max_answers: usize,
     pub max_segments: usize,
     pub max_prefixes: usize,
+    /// A bucket of T tokens holds [`bucket_answers`]`(T, max_answers, tokens_per_answer)` answer rows (1: up to
+    /// `min(T, max_answers)`).
+    pub tokens_per_answer: usize,
+}
+
+/// Answer rows a bucket of `tokens` tokens holds when it allows one answer per `tokens_per_answer` tokens and at
+/// most `max_answers` (the GPU engine's [`BucketPlan`](crate::engine::graph::BucketPlan)): `min(T, max_answers)`
+/// for `tokens_per_answer == 1`, else `min(ceil(T / tokens_per_answer), max_answers)`.
+pub fn bucket_answers(tokens: usize, max_answers: usize, tokens_per_answer: usize) -> usize {
+    match tokens_per_answer {
+        0 | 1 => tokens.min(max_answers).max(1),
+        d => tokens.div_ceil(d).min(max_answers).max(1),
+    }
 }
 
 impl StepLimits {
     pub fn tokens_only(max_tokens: usize) -> Self {
-        StepLimits { buckets: vec![max_tokens], max_answers: usize::MAX, max_segments: usize::MAX, max_prefixes: usize::MAX }
+        StepLimits { buckets: vec![max_tokens], max_answers: usize::MAX, max_segments: usize::MAX, max_prefixes: usize::MAX,
+                     tokens_per_answer: 1 }
+    }
+
+    /// Answer rows a step in the bucket of `bucket_tokens` tokens holds.
+    pub fn answers_in(&self, bucket_tokens: usize) -> usize {
+        bucket_answers(bucket_tokens, self.max_answers, self.tokens_per_answer)
     }
 
     pub fn max_tokens(&self) -> usize {
