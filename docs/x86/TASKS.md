@@ -214,8 +214,16 @@ GB10 tuned them; nothing has run on sm_120 yet. Needs the NVFP4 checkpoint on th
       `algo / tile / custom` ids (the engine's `FP4_PREFERRED` table has no sm_120 entry yet; the GB10 side adds one).
    d. With the checkpoint: `SYSONE_FP4_GEMM=cublaslt` + `--nvfp4` run of `engine_e2e_nvfp4` (expect
       `c1_fp4_gemm_cublaslt_vs_cutile` all steps bit-identical) and `bench_forward --fp4-gemm cublaslt` vs default.
+6. S2 (docs/S2.md; added later): `kernels_s2` now runs in the test suite (synthetic, no checkpoint: the 4096-wide
+   `gated_rmsnorm` tile and the residual add in the cuTile FP4 down GEMM's epilogue, byte-identical to the old
+   launches). Per card `scripts/gpu.sh --gpu N ./target/release/bench_s2 --gated --down`. With the checkpoint:
+   `engine_e2e_nvfp4` includes `s2_launches_equal_f1_launches` (expect all steps and taps bit-identical), and
+   `bench_forward` three ways: default (cuTile down + fused residual on sm_120), `--nvfp4-separate-residual
+   --f1-tuning`, and `--fp4-gemm cublaslt` (residual add then stays in the norm). Report which is fastest.
 
 Acceptance:
+- Item 6: `kernels_s2` pass/fail per GPU, the `bench_s2` lines, and with the checkpoint the S2 test counts and the
+  three forward configurations' ms at 1k/4k/16k/32k.
 - Item 5: probe output, check summary (ulps, invariance counts), the whole-MLP table per card, and with the
   checkpoint the e2e result and forward ms for both `--fp4-gemm` values.
 - `kernels_nvfp4_f1` passes on all three GPUs (0 mismatches everywhere), or the failing case is reported with its

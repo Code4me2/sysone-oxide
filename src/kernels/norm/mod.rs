@@ -69,6 +69,27 @@ pub mod zc_rmsnorm_module {
         out.store(yb);
     }
 
+    /// `out[t] = zc_rmsnorm(residual[t])`: [`add_zc_rmsnorm`] without the add (S2). The residual row is read
+    /// through the same `[1, N]` partition and goes through the same operations after the add, for the case where
+    /// the add already happened in the previous op's epilogue (`gemm_nvfp4_raw_residual`).
+    #[cutile::entry()]
+    pub fn zc_rmsnorm_res<const N: i32>(
+        residual: &mut Tensor<bf16, { [1, N] }>,
+        out: &mut Tensor<bf16, { [1, N] }>,
+        w: &Tensor<bf16, { [N] }>,
+        eps: f32,
+    ) {
+        let row_shape: Shape<{ [1, N] }> = const_shape![1, N];
+        let new_res: Tile<bf16, { [1, N] }> = residual.load();
+        let xf: Tile<f32, { [1, N] }> = convert_tile(new_res);
+        let tw: Tile<bf16, { [N] }> = w.partition(const_shape![N]).load([0i32]);
+        let wf: Tile<f32, { [1, N] }> = convert_tile(tw.reshape(row_shape));
+        let one_plus_w: Tile<f32, { [1, N] }> = constant(1.0f32, row_shape) + wf;
+        let y: Tile<f32, { [1, N] }> = zc_scale(xf, one_plus_w, eps);
+        let yb: Tile<bf16, { [1, N] }> = convert_tile(y);
+        out.store(yb);
+    }
+
     /// `(x * rsqrt(sum(x²)/N + eps)) * (1 + w)` in fp32, in the reference's order.
     fn zc_scale<const N: i32>(
         xf: Tile<f32, { [1, N] }>,
@@ -103,6 +124,23 @@ pub fn zc_rmsnorm<'a>(
     Ok(zc_rmsnorm_module::zc_rmsnorm(out.partition([1, n]), x, w, eps).generics(vec![n.to_string()]))
 }
 
+/// [`zc_rmsnorm`] with a cuTile `occupancy` hint (S2: it runs after every layer whose residual add happened in
+/// the down GEMM's epilogue). The hint changes register allocation, not the arithmetic (tests/kernels_s2.rs).
+pub fn zc_rmsnorm_with<'a>(
+    out: &'a mut Tensor<bf16>,
+    x: &'a Tensor<bf16>,
+    w: &'a Tensor<bf16>,
+    eps: f32,
+    occupancy: Option<i32>,
+) -> anyhow::Result<impl GraphNode + 'a> {
+    let (_, n) = hidden_of(x, w)?;
+    anyhow::ensure!(out.shape() == x.shape(), "out {:?} != x {:?}", out.shape(), x.shape());
+    let opts = cutile::tile_kernel::CompileOptions { occupancy, ..Default::default() };
+    Ok(zc_rmsnorm_module::zc_rmsnorm(out.partition([1, n]), x, w, eps)
+        .generics(vec![n.to_string()])
+        .compile_options(opts))
+}
+
 /// `residual = bf16(residual + x)` in place, then `out = zc_rmsnorm(residual, w)`.
 pub fn add_zc_rmsnorm<'a>(
     residual: &'a mut Tensor<bf16>,
@@ -128,6 +166,24 @@ pub fn add_zc_rmsnorm_with<'a>(
     anyhow::ensure!(out.shape() == x.shape() && residual.shape() == x.shape(), "shape mismatch");
     let opts = cutile::tile_kernel::CompileOptions { occupancy, ..Default::default() };
     Ok(zc_rmsnorm_module::add_zc_rmsnorm(residual.partition([1, n]), out.partition([1, n]), x, w, eps)
+        .generics(vec![n.to_string()])
+        .compile_options(opts))
+}
+
+/// `out = zc_rmsnorm(residual, w)` through [`zc_rmsnorm_module::zc_rmsnorm_res`] (S2): the norm half of
+/// [`add_zc_rmsnorm`] for a residual whose add already happened (`residual` is only read), with a cuTile
+/// `occupancy` hint.
+pub fn zc_rmsnorm_res_with<'a>(
+    residual: &'a mut Tensor<bf16>,
+    out: &'a mut Tensor<bf16>,
+    w: &'a Tensor<bf16>,
+    eps: f32,
+    occupancy: Option<i32>,
+) -> anyhow::Result<impl GraphNode + 'a> {
+    let (_, n) = hidden_of(residual, w)?;
+    anyhow::ensure!(out.shape() == residual.shape(), "out {:?} != residual {:?}", out.shape(), residual.shape());
+    let opts = cutile::tile_kernel::CompileOptions { occupancy, ..Default::default() };
+    Ok(zc_rmsnorm_module::zc_rmsnorm_res(residual.partition([1, n]), out.partition([1, n]), w, eps)
         .generics(vec![n.to_string()])
         .compile_options(opts))
 }

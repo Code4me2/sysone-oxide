@@ -70,6 +70,13 @@ struct Args {
     /// `$SYSONE_FP4_GEMM`, else the engine's per-architecture default (cublaslt on sm_121).
     #[arg(long)]
     fp4_gemm: Option<String>,
+    /// NVFP4 checkpoints: the residual add after the down projection in the next norm instead of in the down GEMM
+    /// epilogue (S2 A/B runs).
+    #[arg(long)]
+    nvfp4_separate_residual: bool,
+    /// Launch shapes as F1 had them (pre-S2 `gated_rmsnorm` and `zc_rmsnorm`; S2 A/B runs).
+    #[arg(long)]
+    f1_tuning: bool,
 }
 
 const VOCAB: [&str; 16] = [
@@ -133,10 +140,12 @@ fn main() -> Result<()> {
                                gemm: a.gemm.parse()?, trim_last_layer: !a.no_trim,
                                tokens_per_answer: a.tokens_per_answer, nvfp4_swiglu: !a.nvfp4_separate_silu,
                                fp4_gemm: a.fp4_gemm.as_deref().map(str::parse).transpose()?,
-                               ..Default::default() };
+                               nvfp4_residual: !a.nvfp4_separate_residual, ..Default::default() };
     let mut e = GpuEngine::load(&a.model, &fe.slot_ids, opts)?;
     if a.n1_tuning {
         e.set_kernel_tuning(sysone::engine::kernels::KernelTuning::N1);
+    } else if a.f1_tuning {
+        e.set_kernel_tuning(sysone::engine::kernels::KernelTuning::F1);
     }
     let quant = match e.format {
         sysone::engine::config::WeightFormat::Nvfp4 if a.nvfp4_unfused => " (standalone quantize)",
@@ -189,6 +198,7 @@ fn main() -> Result<()> {
             "trimmed": e.fwd.trimmed, "tokens_per_answer": e.opts.tokens_per_answer, "bucket_answers": bucket.answers,
             "nvfp4_swiglu": !a.nvfp4_separate_silu, "n1_tuning": a.n1_tuning,
             "fp4_gemm": e.opts.fp4_gemm.map(|g| g.name()),
+            "nvfp4_residual": e.opts.nvfp4_residual, "f1_tuning": a.f1_tuning,
             "gdn_backend": e.gdn_backend().name(), "tokens": t, "bucket": bucket.tokens, "requests": n_req, "branches": b.num_branches(),
             "replay_ms_median": rm, "eager_ms_median": em, "replay_ms": replay, "eager_ms": eager,
         });

@@ -129,6 +129,10 @@ struct Args {
     /// else cublaslt on sm_121 (GB10) and cutile elsewhere.
     #[arg(long)]
     fp4_gemm: Option<String>,
+    /// nvfp4 engine: add the MLP output to the residual stream in the next norm instead of in the down GEMM's
+    /// epilogue (bit-identical; for benchmarks and diagnostics).
+    #[arg(long)]
+    nvfp4_separate_residual: bool,
     /// `debias` when a request has none (default: $QEV_DEBIAS as qev reads it, else 1).
     #[arg(long, allow_negative_numbers = true)]
     debias: Option<i64>,
@@ -233,6 +237,7 @@ fn main() -> Result<()> {
                 trim_last_layer: !args.no_trim_last_layer,
                 nvfp4_swiglu: !args.nvfp4_separate_silu,
                 fp4_gemm: args.fp4_gemm.as_deref().map(str::parse).transpose()?,
+                nvfp4_residual: !args.nvfp4_separate_residual,
                 ..Default::default()
             };
             let (model, slot_ids) = (args.model.clone(), frontend.slot_ids.clone());

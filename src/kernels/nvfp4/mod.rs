@@ -473,6 +473,71 @@ pub mod kernels {
         }
     }
 
+    /// [`gemm_nvfp4_raw`] with the residual add of the next norm in its epilogue (S2): the GEMM's own bf16 output
+    /// `z = bf16(acc · alpha)` is added to the bf16 residual stream exactly as `add_zc_rmsnorm` adds it
+    /// (`r = bf16(f32(r) + f32(z))`, one f32 addition, one rounding), and `r` is updated in place; `z` itself is
+    /// never stored. The main loop and the `z` rounding are [`gemm_nvfp4_raw`]'s, so `r` is byte-identical to
+    /// `gemm_nvfp4_raw` followed by `add_zc_rmsnorm`'s residual update (tests/kernels_s2.rs). Each output tile is
+    /// read and written by one tile block only. Generics: `BM, BN, BK, BK/2, BK/16, GM`.
+    /// Safety: no bounds checks; the host wrapper validates every shape.
+    #[cutile::entry(unchecked_accesses = true)]
+    pub unsafe fn gemm_nvfp4_raw_residual<
+        const BM: i32,
+        const BN: i32,
+        const BK: i32,
+        const BKP: i32,
+        const BKS: i32,
+        const GM: i32,
+    >(
+        r: &Tensor<bf16, { [-1, -1] }>,
+        x: &Tensor<f4e2m1fnx2, { [-1, -1] }>,
+        w: &Tensor<f4e2m1fnx2, { [-1, -1] }>,
+        x_scales: &Tensor<f8e4m3fn, { [-1, -1] }>,
+        w_scales: &Tensor<f8e4m3fn, { [-1, -1] }>,
+        alpha_lo: f32,
+        alpha_hi: f32,
+        split_tile: i32,
+        num_bid_m: i32,
+        num_bid_n: i32,
+        num_blocks: i32,
+    ) {
+        let part_x = x.partition(const_shape![BM, BKP]);
+        let part_w = w.partition(const_shape![BN, BKP]);
+        let part_xs = x_scales.partition(const_shape![BM, BKS]);
+        let part_ws = w_scales.partition(const_shape![BN, BKS]);
+        let mut part_r = unsafe { r.partition_full_mut(const_shape![BM, BN]) };
+        let total = num_bid_m * num_bid_n;
+        let group = GM * num_bid_n;
+        let mut tile_id = get_tile_block_id().0;
+        while tile_id < total {
+            let first_m = (tile_id / group) * GM;
+            let rem_m = num_bid_m - first_m;
+            let gsz = if rem_m < GM { rem_m } else { GM };
+            let in_group = tile_id % group;
+            let bid_m = first_m + in_group % gsz;
+            let bid_n = in_group / gsz;
+            let mut acc: Tile<f32, { [BM, BN] }> = constant(0.0f32, const_shape![BM, BN]);
+            for k in 0i32..num_tiles(&part_x, 1) {
+                let tx = part_x.load([bid_m, k]).unpack(const_shape![BM, BK]);
+                let tw = part_w.load([bid_n, k]).unpack(const_shape![BN, BK]).transpose();
+                let txs = part_xs.load([bid_m, k]);
+                let tws = part_ws.load([bid_n, k]).transpose();
+                acc = mmaf_scaled(tx, tw, acc, txs, tws);
+            }
+            let a: f32 = if bid_n < split_tile { alpha_lo } else { alpha_hi };
+            let out: Tile<bf16, { [BM, BN] }> = convert_tile(acc * broadcast_scalar(a, const_shape![BM, BN]));
+            // The residual tile: read and written only by this tile block (the store depends on the load; loaded
+            // after the main loop: a load before it measured slower, 7.33 vs 7.15 ms at 16k).
+            let tr: Tile<bf16, { [BM, BN] }> = unsafe { part_r.load([bid_m, bid_n]) };
+            let trf: Tile<f32, { [BM, BN] }> = convert_tile(tr);
+            let tzf: Tile<f32, { [BM, BN] }> = convert_tile(out);
+            let sum: Tile<f32, { [BM, BN] }> = trf + tzf;
+            let new_res: Tile<bf16, { [BM, BN] }> = convert_tile(sum);
+            part_r.store(new_res, [bid_m, bid_n]);
+            tile_id = tile_id + num_blocks;
+        }
+    }
+
     /// C1: row-major e4m3 block scales `s [R, G]` (G a multiple of 4) → cuBLASLt's tiled block-scale layout
     /// ([`super::lt_scale_offset`]), `out` viewed as `[ceil(R/128), (G/4)·512]`: block `(rb, cb)` holds rows
     /// `128·rb..` and scale columns `4·cb..`, row `r` column `c` at byte `(r % 32)·16 + (r / 32)·4 + c` of the block.
@@ -868,6 +933,54 @@ pub fn gemm_raw_op_with(
     let op = unsafe {
         kernels::gemm_nvfp4_raw(
             z,
+            x.clone(),
+            w_packed.clone(),
+            x_scales.clone(),
+            w_scales.clone(),
+            alpha.lo,
+            alpha.hi,
+            (alpha.split_n / tiles.bn) as i32,
+            nm as i32,
+            nn as i32,
+            ntb as i32,
+        )
+    };
+    Ok(op.generics(tiles.generics()).grid((ntb, 1, 1)).compile_options(opts).map(|out| out.0))
+}
+
+/// The `Raw` GEMM with the residual add in its epilogue ([`kernels::gemm_nvfp4_raw_residual`], S2):
+/// `r [T, N] = bf16(r + bf16(alpha ⊙ (x_q @ W_q^T)))` in place. `r` must not alias any other operand. Every shape
+/// is validated here; the kernel itself has no bounds checks.
+#[allow(clippy::too_many_arguments)]
+pub fn gemm_raw_residual_op_with(
+    x: &Arc<Tensor<f4e2m1fnx2>>,
+    x_scales: &Arc<Tensor<f8e4m3fn>>,
+    w_packed: &Arc<Tensor<f4e2m1fnx2>>,
+    w_scales: &Arc<Tensor<f8e4m3fn>>,
+    alpha: RawAlpha,
+    r: Arc<Tensor<bf16>>,
+    tiles: GemmTiles,
+    sms: usize,
+    opts: CompileOptions,
+) -> Result<impl DeviceOp<Output = Arc<Tensor<bf16>>>> {
+    ensure!(tiles.kernel == GemmKernel::Raw, "gemm_raw_residual_op launches the Raw kernel");
+    ensure!(w_packed.shape().len() == 2 && x.shape().len() == 2, "gemm: rank-2 operands expected");
+    let (n, k) = (w_packed.shape()[0] as usize, 2 * w_packed.shape()[1] as usize);
+    let t = x.shape()[0] as usize;
+    ensure!(x.shape() == [t as i32, (k / 2) as i32], "gemm: x is {:?}, W has K = {k}", x.shape());
+    ensure!(x_scales.shape() == [t as i32, (k / GROUP) as i32], "gemm: x_scales is {:?}", x_scales.shape());
+    ensure!(w_scales.shape() == [n as i32, (k / GROUP) as i32], "gemm: W scales is {:?}", w_scales.shape());
+    ensure!(r.shape() == [t as i32, n as i32], "gemm: residual is {:?}, expected [{t}, {n}]", r.shape());
+    tiles.validate(n, k)?;
+    ensure!(alpha.split_n % tiles.bn == 0 && alpha.split_n <= n, "gemm: alpha split at column {} (N = {n}, BN = {})",
+            alpha.split_n, tiles.bn);
+    let (nm, nn) = (t.div_ceil(tiles.bm), n / tiles.bn);
+    let ntb = tiles.num_tile_blocks(t, n, sms);
+    // Safety: as gemm_raw_op_with; the residual tile (bid_m, bid_n) is loaded and stored by the one tile block that
+    // owns it, and partial row tiles are clipped by the partition view on both.
+    let op = unsafe {
+        kernels::gemm_nvfp4_raw_residual(
+            r,
             x.clone(),
             w_packed.clone(),
             x_scales.clone(),

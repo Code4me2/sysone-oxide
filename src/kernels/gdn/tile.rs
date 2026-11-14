@@ -972,4 +972,59 @@ pub mod gdn_tile {
         let y_bf: Tile<bf16, { [BR, 128] }> = convert_tile(y);
         out_part.store(y_bf, [pid.0, pid.1]);
     }
+
+    /// [`gated_rmsnorm`] over `HB` adjacent heads of `BR` tokens per tile block (S2): the `[BR, HB·128]` tiles are
+    /// reshaped to `[BR·HB, 128]` (one row per token and head) and go through exactly [`gated_rmsnorm`]'s
+    /// operations, so every element gets the same value; only the memory access shape changes. Grid
+    /// `(ceil(T / BR), 32 / HB, 1)`. Generics: `BR, HB, HB·128, BR·HB`.
+    #[cutile::entry(unchecked_accesses = true)]
+    pub unsafe fn gated_rmsnorm_hb<const BR: i32, const HB: i32, const BC: i32, const RH: i32>(
+        x_ptr: *mut bf16,
+        x_stride: i32,
+        z_ptr: *mut bf16,
+        z_stride: i32,
+        w_ptr: *mut bf16,
+        out_ptr: *mut bf16,
+        out_stride: i32,
+        tokens: i32,
+        eps: f32,
+    ) {
+        let pid: (i32, i32, i32) = get_tile_block_id();
+        let tok: Token = new_token_unordered();
+        let x_base: PointerTile<*mut bf16, { [] }> = pointer_to_tile(x_ptr);
+        let x_shape: Shape<{ [-1, -1] }> = Shape::<{ [-1, -1] }> { dims: &[tokens, 4096i32] };
+        let x_strides: Array<{ [-1, 1] }> = Array::<{ [-1, 1] }> { dims: &[x_stride] };
+        let x: Tensor<bf16, { [-1, -1] }> = unsafe { make_tensor_view(x_base, x_shape, x_strides, tok) };
+        let z_base: PointerTile<*mut bf16, { [] }> = pointer_to_tile(z_ptr);
+        let z_shape: Shape<{ [-1, -1] }> = Shape::<{ [-1, -1] }> { dims: &[tokens, 4096i32] };
+        let z_strides: Array<{ [-1, 1] }> = Array::<{ [-1, 1] }> { dims: &[z_stride] };
+        let z: Tensor<bf16, { [-1, -1] }> = unsafe { make_tensor_view(z_base, z_shape, z_strides, tok) };
+        let w_base: PointerTile<*mut bf16, { [] }> = pointer_to_tile(w_ptr);
+        let w_shape: Shape<{ [-1] }> = Shape::<{ [-1] }> { dims: &[128i32] };
+        let w_strides: Array<{ [1] }> = Array::<{ [1] }> { dims: &[] };
+        let w: Tensor<bf16, { [-1] }> = unsafe { make_tensor_view(w_base, w_shape, w_strides, tok) };
+        let out_base: PointerTile<*mut bf16, { [] }> = pointer_to_tile(out_ptr);
+        let out_shape: Shape<{ [-1, -1] }> = Shape::<{ [-1, -1] }> { dims: &[tokens, 4096i32] };
+        let out_strides: Array<{ [-1, 1] }> = Array::<{ [-1, 1] }> { dims: &[out_stride] };
+        let out: Tensor<bf16, { [-1, -1] }> = unsafe { make_tensor_view(out_base, out_shape, out_strides, tok) };
+        let xb: Tile<bf16, { [BR, BC] }> = x.partition(const_shape![BR, BC]).load([pid.0, pid.1]);
+        let zb: Tile<bf16, { [BR, BC] }> = z.partition(const_shape![BR, BC]).load([pid.0, pid.1]);
+        let xt: Tile<f32, { [RH, 128] }> = convert_tile(xb.reshape(const_shape![RH, 128]));
+        let zt: Tile<f32, { [RH, 128] }> = convert_tile(zb.reshape(const_shape![RH, 128]));
+        let w_row: Tile<bf16, { [1, 128] }> = w.partition(const_shape![128]).load([0i32]).reshape(const_shape![1, 128]);
+        let w_row: Tile<f32, { [1, 128] }> = convert_tile(w_row);
+        let wt: Tile<f32, { [RH, 128] }> = w_row.broadcast(const_shape![RH, 128]);
+        let ss: Tile<f32, { [RH] }> = reduce_sum(xt * xt, 1i32);
+        let n128: Tile<f32, { [RH] }> = constant(128.0f32, const_shape![RH]);
+        let var: Tile<f32, { [RH, 1] }> = true_div(ss, n128).reshape(const_shape![RH, 1]);
+        let inv: Tile<f32, { [RH, 1] }> = rsqrt(var + broadcast_scalar(eps, const_shape![RH, 1]), ftz::Disabled);
+        let normed: Tile<bf16, { [RH, 128] }> = convert_tile(xt * inv.broadcast(const_shape![RH, 128]));
+        let normed: Tile<f32, { [RH, 128] }> = convert_tile(normed);
+        let weighted: Tile<bf16, { [RH, 128] }> = convert_tile(normed * wt);
+        let weighted: Tile<f32, { [RH, 128] }> = convert_tile(weighted);
+        let y: Tile<f32, { [RH, 128] }> = weighted * silu_f32(zt);
+        let mut out_part: PartitionMut<bf16, { [BR, BC] }> = unsafe { out.partition_full_mut(const_shape![BR, BC]) };
+        let y_bf: Tile<bf16, { [RH, 128] }> = convert_tile(y);
+        out_part.store(y_bf.reshape(const_shape![BR, BC]), [pid.0, pid.1]);
+    }
 }

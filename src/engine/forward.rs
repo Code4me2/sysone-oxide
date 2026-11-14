@@ -24,6 +24,9 @@
 //!   q2, s2 = silu_mul_nvfp4(gu)                      SiLU·mul + quantize (down's input_global_scale)
 //!   m      = gemm_nvfp4(q2, s2, Wdown)
 //! ```
+//! F1 fuses the SiLU·mul + quantize into the gate/up GEMM (`GemmNvfp4SwiGlu`), and S2 the residual add after the
+//! down GEMM into its epilogue (`GemmNvfp4Residual`: `x += m` in place; the next input norm, or the final norm, is
+//! then `ZcRmsNormRes`). Both are byte-identical to the separate ops (tests/kernels_nvfp4_f1.rs, tests/kernels_s2.rs).
 //! Unfused ([`build_with`] with `nvfp4_fused = false`) the bf16 norm and SiLU·mul outputs are materialised and a
 //! standalone `quantize_nvfp4` runs before each GEMM; both forms are bit-identical (tests/kernels_nvfp4_fused.rs).
 //! Every other projection stays bf16 (cuBLAS); an NVFP4 projection outside the MLP is refused.
@@ -77,11 +80,16 @@ pub struct ForwardOptions {
     /// the last layer is full attention and no debug tap needs the last layer's rows (`Taps::norm` or the last
     /// layer in `Taps::layers`); otherwise the forward is built untrimmed ([`Forward::trimmed`] says which).
     pub trim_last_layer: bool,
+    /// S2: NVFP4 down projections add their output to the residual stream in the GEMM's epilogue
+    /// ([`GraphOp::GemmNvfp4Residual`]); the next input norm (or the final norm) is then `ZcRmsNormRes`.
+    /// Byte-identical to the separate add; not applied to a layer whose MLP output or mid-layer residual is tapped
+    /// (`Taps::sublayers`, `Taps::answer_rows`), so those taps keep their values. bf16 down projections ignore it.
+    pub nvfp4_residual: bool,
 }
 
 impl ForwardOptions {
     fn fusion(&self) -> Nvfp4Fusion {
-        Nvfp4Fusion { quantize: self.nvfp4_fused, swiglu: self.nvfp4_swiglu }
+        Nvfp4Fusion { quantize: self.nvfp4_fused, swiglu: self.nvfp4_swiglu, residual: self.nvfp4_residual }
     }
 }
 
@@ -93,11 +101,13 @@ pub struct Nvfp4Fusion {
     /// SiLU·mul + quantize fused into the gate/up GEMM epilogue (F1, `GemmNvfp4SwiGlu`; needs `quantize` and
     /// the gate/up weights interleaved for it, `Linear::Nvfp4::gate_up_block`).
     pub swiglu: bool,
+    /// The residual add after the down projection fused into its epilogue (S2, `GemmNvfp4Residual`).
+    pub residual: bool,
 }
 
 impl Default for ForwardOptions {
     fn default() -> Self {
-        Self { nvfp4_fused: true, nvfp4_swiglu: false, trim_last_layer: true }
+        Self { nvfp4_fused: true, nvfp4_swiglu: false, trim_last_layer: true, nvfp4_residual: true }
     }
 }
 
@@ -142,7 +152,8 @@ pub fn build(cfg: &ModelConfig, weights: &dyn WeightStore, n_slots: usize, taps:
 /// (`nvfp4_fused`) or runs as a standalone `quantize_nvfp4` on the materialised bf16 activation.
 pub fn build_with(cfg: &ModelConfig, weights: &dyn WeightStore, n_slots: usize, taps: &Taps, nvfp4_fused: bool)
     -> Result<Forward> {
-    build_opts(cfg, weights, n_slots, taps, ForwardOptions { nvfp4_fused, nvfp4_swiglu: false, trim_last_layer: false })
+    build_opts(cfg, weights, n_slots, taps,
+               ForwardOptions { nvfp4_fused, nvfp4_swiglu: false, trim_last_layer: false, nvfp4_residual: false })
 }
 
 /// The forward as `opts` says.
@@ -185,19 +196,26 @@ pub fn build_opts(cfg: &ModelConfig, weights: &dyn WeightStore, n_slots: usize, 
 
     let mut x = tok(&mut g, h);
     g.push(GraphOp::Embedding { out: x });
-    let mut pending: Option<ValueId> = None; // the previous layer's MLP output, not yet added to x
+    // The previous layer's MLP output: not yet added to x, or (S2) already added by the down GEMM.
+    let mut pending: Option<Pending> = None;
     for (i, ty) in t.layer_types.iter().enumerate() {
         let ln1 = WeightRef::Layer(i, LayerWeight::InputNorm);
         let hn = tok(&mut g, h);
         match pending.take() {
             None => g.push(GraphOp::ZcRmsNorm { x: x.into(), w: ln1, out: hn }),
-            Some(m) => {
+            Some(Pending::Mlp(m)) => {
                 let x2 = tok(&mut g, h);
                 g.push(GraphOp::AddZcRmsNorm { residual: x, x: m.into(), w: ln1, out: hn, residual_out: x2 });
                 x = x2;
                 if taps.layers.contains(&(i - 1)) {
                     tap(&mut g, format!("layer{}", i - 1), x);
                 }
+            }
+            Some(Pending::Added) => {
+                if taps.layers.contains(&(i - 1)) {
+                    tap(&mut g, format!("layer{}", i - 1), x);
+                }
+                g.push(GraphOp::ZcRmsNormRes { residual: x, w: ln1, out: hn });
             }
         }
         let lw = |s| WeightRef::Layer(i, s);
@@ -246,20 +264,37 @@ pub fn build_opts(cfg: &ModelConfig, weights: &dyn WeightStore, n_slots: usize, 
                 g.push(GraphOp::Gemm { x: ao.into(), w: lw(LayerWeight::AttnO), out: mixer });
             }
         }
-        let (x2, mo) = mlp_block(&mut g, weights, i, Dim::Tokens, h, inter, x, mixer, fusion)?;
+        let sub_taps = taps.sublayers && taps.layers.contains(&i);
+        // The mid-layer residual and the MLP output of a tapped layer must exist: no residual fusion there.
+        let fuse_residual = fusion.residual && !sub_taps;
+        let (x2, mo) = mlp_block(&mut g, weights, i, Dim::Tokens, h, inter, x, mixer, fusion, fuse_residual)?;
         x = x2;
-        if taps.sublayers && taps.layers.contains(&i) {
-            tap(&mut g, format!("mix{i}"), mixer);
-            tap(&mut g, format!("mid{i}"), x);
-            tap(&mut g, format!("mlp{i}"), mo);
+        match mo {
+            Some(mo) => {
+                if sub_taps {
+                    tap(&mut g, format!("mix{i}"), mixer);
+                    tap(&mut g, format!("mid{i}"), x);
+                    tap(&mut g, format!("mlp{i}"), mo);
+                }
+                pending = Some(Pending::Mlp(mo));
+            }
+            None => pending = Some(Pending::Added),
         }
-        pending = Some(mo);
     }
     let last = t.num_hidden_layers - 1;
     let normed = tok(&mut g, h);
-    let x_final = tok(&mut g, h);
-    let m = pending.expect("at least one layer");
-    g.push(GraphOp::AddZcRmsNorm { residual: x, x: m.into(), w: WeightRef::FinalNorm, out: normed, residual_out: x_final });
+    let x_final = match pending.expect("at least one layer") {
+        Pending::Mlp(m) => {
+            let x_final = tok(&mut g, h);
+            g.push(GraphOp::AddZcRmsNorm { residual: x, x: m.into(), w: WeightRef::FinalNorm, out: normed,
+                                           residual_out: x_final });
+            x_final
+        }
+        Pending::Added => {
+            g.push(GraphOp::ZcRmsNormRes { residual: x, w: WeightRef::FinalNorm, out: normed });
+            x
+        }
+    };
     if taps.layers.contains(&last) {
         tap(&mut g, format!("layer{last}"), x_final);
     }
@@ -275,12 +310,23 @@ pub fn build_opts(cfg: &ModelConfig, weights: &dyn WeightStore, n_slots: usize, 
     Ok(Forward { graph: g, logits, taps: out_taps, n_slots, trimmed: false })
 }
 
+/// The previous layer's MLP output as seen by the next norm.
+#[derive(Clone, Copy)]
+enum Pending {
+    /// Not yet added to the residual stream (`AddZcRmsNorm` adds it).
+    Mlp(ValueId),
+    /// Already added by the down GEMM's epilogue (S2, `GemmNvfp4Residual`): the next norm is `ZcRmsNormRes`.
+    Added,
+}
+
 /// One layer's MLP block over rows `rows` (`Dim::Tokens`, or `Dim::Answers` in the trimmed last layer):
 /// `x2 = residual + mixer`, `mo = MLP(post_norm(x2))`, bf16 or NVFP4 as the layer's weights are, with the NVFP4
-/// fusions of `fusion`. Returns `(x2, mo)`. Every op is row-local.
+/// fusions of `fusion`. Returns `(x2, Some(mo))`; or, when `fuse_residual` and the down projection is NVFP4 (S2),
+/// `(x3, None)` with `x3 = x2 + mo` added in the down GEMM's epilogue (`mo` never exists). Every op is row-local.
 #[allow(clippy::too_many_arguments)]
 fn mlp_block(g: &mut StepGraph, weights: &dyn WeightStore, i: usize, rows: Dim, h: usize, inter: usize,
-             residual: ValueId, mixer: ValueId, fusion: Nvfp4Fusion) -> Result<(ValueId, ValueId)> {
+             residual: ValueId, mixer: ValueId, fusion: Nvfp4Fusion, fuse_residual: bool)
+    -> Result<(ValueId, Option<ValueId>)> {
     let bf = GraphDType::BF16;
     let val = |g: &mut StepGraph, n: usize| g.value(bf, vec![rows, Dim::Fixed(n)]);
     // NVFP4 activation of a [rows, k] bf16 input: packed e2m1 pairs and e4m3 group scales.
@@ -334,28 +380,38 @@ fn mlp_block(g: &mut StepGraph, weights: &dyn WeightStore, i: usize, rows: Dim, 
         }
         gu = Some(v);
     }
+    // The NVFP4 down GEMM on its quantized input: into a bf16 `mo`, or (S2) added into the residual in place.
+    let residual_add = fuse_residual && dn_q;
+    // `mo`, or (S2) the residual stream after the add (in place: `x2`'s storage).
     let mo = val(g, h);
+    let down = |g: &mut StepGraph, q: ValueId, s: ValueId| {
+        if residual_add {
+            g.push(GraphOp::GemmNvfp4Residual { q: q.into(), s: s.into(), w: wdn, residual: x2, residual_out: mo })
+        } else {
+            g.push(GraphOp::GemmNvfp4 { q: q.into(), s: s.into(), w: wdn, out: mo })
+        }
+    };
     if let Some((q2, s2)) = swiglu_out {
-        g.push(GraphOp::GemmNvfp4 { q: q2.into(), s: s2.into(), w: wdn, out: mo });
+        down(g, q2, s2);
     } else {
         let gu = gu.context("gate/up output")?;
         if dn_q && nvfp4_fused {
             let (q, s) = act(g, inter);
             g.push(GraphOp::SiluMulNvfp4 { gu: gu.into(), w: wdn, q, s });
-            g.push(GraphOp::GemmNvfp4 { q: q.into(), s: s.into(), w: wdn, out: mo });
+            down(g, q, s);
         } else {
             let m = val(g, inter);
             g.push(GraphOp::SiluMul { gu: gu.into(), out: m });
             if dn_q {
                 let (q, s) = act(g, inter);
                 g.push(GraphOp::QuantizeNvfp4 { x: m.into(), w: wdn, q, s });
-                g.push(GraphOp::GemmNvfp4 { q: q.into(), s: s.into(), w: wdn, out: mo });
+                down(g, q, s);
             } else {
                 g.push(GraphOp::Gemm { x: m.into(), w: wdn, out: mo });
             }
         }
     }
-    Ok((x2, mo))
+    Ok(if residual_add { (mo, None) } else { (x2, Some(mo)) })
 }
 
 #[derive(Clone, Copy)]
@@ -391,6 +447,8 @@ fn trimmed_last_layer(g: &mut StepGraph, weights: &dyn WeightStore, i: usize, d:
                       n_slots: usize, fusion: Nvfp4Fusion, mut keep: Option<&mut Vec<(String, ValueId)>>)
     -> Result<ValueId> {
     let bf = GraphDType::BF16;
+    // S2: the residual add goes into the down GEMM unless the answer-row taps need the MLP output.
+    let fuse_residual = fusion.residual && keep.is_none();
     // Debug copies of answer-row values (Taps::answer_rows).
     let mut tap = |g: &mut StepGraph, name: String, src: ValueId| {
         if let Some(k) = keep.as_deref_mut() {
@@ -435,13 +493,22 @@ fn trimmed_last_layer(g: &mut StepGraph, weights: &dyn WeightStore, i: usize, d:
     g.push(GraphOp::GatherRows { src: x.into(), out: x_a });
     tap(g, format!("mix{i}_a"), mixer);
 
-    // The MLP on the answer rows: the same block as every layer's, on Answers-row values.
-    let (x2, mo) = mlp_block(g, weights, i, Dim::Answers, h, inter, x_a, mixer, fusion)?;
-    tap(g, format!("mid{i}_a"), x2);
-    tap(g, format!("mlp{i}_a"), mo);
+    // The MLP on the answer rows: the same block as every layer's, on Answers-row values (with the residual add
+    // in the down GEMM unless the answer-row taps need the mid-layer residual and the MLP output).
+    // (`fuse_residual` is decided above, before `tap` borrows `keep`.)
+    let (x2, mo) = mlp_block(g, weights, i, Dim::Answers, h, inter, x_a, mixer, fusion, fuse_residual)?;
     // Final norm and readout on the answer rows.
-    let (hs, x_final) = (ans(g, h), ans(g, h));
-    g.push(GraphOp::AddZcRmsNorm { residual: x2, x: mo.into(), w: WeightRef::FinalNorm, out: hs, residual_out: x_final });
+    let hs = ans(g, h);
+    match mo {
+        Some(mo) => {
+            tap(g, format!("mid{i}_a"), x2);
+            tap(g, format!("mlp{i}_a"), mo);
+            let x_final = ans(g, h);
+            g.push(GraphOp::AddZcRmsNorm { residual: x2, x: mo.into(), w: WeightRef::FinalNorm, out: hs,
+                                           residual_out: x_final });
+        }
+        None => g.push(GraphOp::ZcRmsNormRes { residual: x2, w: WeightRef::FinalNorm, out: hs }),
+    }
     tap(g, "norm_a".into(), hs);
     let logits = g.value(GraphDType::F32, vec![Dim::Answers, Dim::Fixed(n_slots)]);
     g.push(GraphOp::Gemm { x: hs.into(), w: WeightRef::SlotHead, out: logits });

@@ -255,6 +255,10 @@ impl From<ValueId> for TensorRef {
 pub enum GraphOp {
     /// `out [T, hidden] bf16 = embed[token_ids]` (executor, cutile-kernels).
     Embedding { out: ValueId },
+    /// S2: `out = zc_rmsnorm(residual, w)` for a residual stream whose add already happened in the previous op's
+    /// epilogue (`GemmNvfp4Residual`): the norm half of `AddZcRmsNorm` (its own kernel, `zc_rmsnorm_res`, because
+    /// the `ZcRmsNorm` kernel is not bit-identical to `AddZcRmsNorm`'s norm). `residual` is only read.
+    ZcRmsNormRes { residual: ValueId, w: WeightRef, out: ValueId },
     /// Zero-centred RMSNorm `(x · rsqrt(mean x² + eps)) · (1 + w)`, fp32 statistics, bf16 out.
     ZcRmsNorm { x: TensorRef, w: WeightRef, out: ValueId },
     /// `residual_out = bf16(residual + x); out = zc_rmsnorm(residual_out, w)`, in place: `residual_out` is
@@ -271,6 +275,11 @@ pub enum GraphOp {
                         residual_out: ValueId },
     /// Block-scaled FP4 GEMM, per-part epilogue `1 / (a_gs · w_gs)`, bf16 out.
     GemmNvfp4 { q: TensorRef, s: TensorRef, w: WeightRef, out: ValueId },
+    /// S2: `GemmNvfp4` with the following residual add in its epilogue, in place like `AddZcRmsNorm`:
+    /// `residual_out = bf16(residual + bf16(GEMM))` (`residual_out` is `residual`'s storage). Equal byte for byte to
+    /// `GemmNvfp4` into a bf16 value `m` followed by the residual update of `AddZcRmsNorm { residual, x: m, .. }`;
+    /// the bf16 GEMM output never exists. The norm that followed becomes a `ZcRmsNormRes` of `residual_out`.
+    GemmNvfp4Residual { q: TensorRef, s: TensorRef, w: WeightRef, residual: ValueId, residual_out: ValueId },
     /// F1: the gate/up FP4 GEMM (`w`, rows interleaved for it at load) with SiLU·mul and the NVFP4 quantization
     /// of the product under `w_down`'s input scale in its epilogue: `q_out [T, I/2]`, `s_out [T, I/16]`. Equal
     /// byte for byte to `GemmNvfp4` (bf16 `[T, 2I]`) followed by `SiluMulNvfp4`; the bf16 gate/up output never exists.
@@ -321,7 +330,7 @@ impl GraphOp {
     pub fn outputs(&self) -> Vec<ValueId> {
         use GraphOp::*;
         match self {
-            Embedding { out } | ZcRmsNorm { out, .. } | Gemm { out, .. } | GemmNvfp4 { out, .. }
+            Embedding { out } | ZcRmsNorm { out, .. } | ZcRmsNormRes { out, .. } | Gemm { out, .. } | GemmNvfp4 { out, .. }
             | SiluMul { out, .. } | TreeConv1dSilu { out, .. } | GatedRmsNorm { out, .. } | SegAttn { out, .. }
             | SegAttnAnswers { out, .. } | GatherRows { out, .. } | GdnChunkScan { out, .. } | Copy { out, .. } => {
                 vec![*out]
@@ -332,6 +341,7 @@ impl GraphOp {
             QuantizeNvfp4 { q, s, .. } | ZcRmsNormNvfp4 { q, s, .. } | SiluMulNvfp4 { q, s, .. } => vec![*q, *s],
             GemmNvfp4SwiGlu { q_out, s_out, .. } => vec![*q_out, *s_out],
             AddZcRmsNormNvfp4 { q, s, residual_out, .. } => vec![*q, *s, *residual_out],
+            GemmNvfp4Residual { residual_out, .. } => vec![*residual_out],
             QkNormRope { q, k, .. } => vec![*q, *k],
             GdnPrep { .. } | View { .. } => vec![],
         }
@@ -343,10 +353,12 @@ impl GraphOp {
         let v = |r: &TensorRef| r.value();
         match self {
             Embedding { .. } => vec![],
+            ZcRmsNormRes { residual, .. } => vec![*residual],
             ZcRmsNorm { x, .. } | Gemm { x, .. } | QuantizeNvfp4 { x, .. } | ZcRmsNormNvfp4 { x, .. }
             | TreeConv1dSilu { x, .. } => vec![v(x)],
             AddZcRmsNorm { residual, x, .. } | AddZcRmsNormNvfp4 { residual, x, .. } => vec![*residual, v(x)],
             GemmNvfp4 { q, s, .. } | GemmNvfp4SwiGlu { q, s, .. } => vec![v(q), v(s)],
+            GemmNvfp4Residual { q, s, residual, .. } => vec![v(q), v(s), *residual],
             SiluMul { gu, .. } | SiluMulNvfp4 { gu, .. } => vec![v(gu)],
             GdnPrep { conv, a, b, .. } => vec![v(conv), v(a), v(b)],
             GdnChunkScan { conv, .. } => vec![v(conv)],
@@ -363,7 +375,8 @@ impl GraphOp {
     pub fn in_place(&self) -> Option<(ValueId, ValueId)> {
         match self {
             GraphOp::AddZcRmsNorm { residual, residual_out, .. }
-            | GraphOp::AddZcRmsNormNvfp4 { residual, residual_out, .. } => Some((*residual, *residual_out)),
+            | GraphOp::AddZcRmsNormNvfp4 { residual, residual_out, .. }
+            | GraphOp::GemmNvfp4Residual { residual, residual_out, .. } => Some((*residual, *residual_out)),
             _ => None,
         }
     }
@@ -373,6 +386,7 @@ impl GraphOp {
         match self {
             Embedding { .. } => "embedding",
             ZcRmsNorm { .. } => "zc_rmsnorm",
+            ZcRmsNormRes { .. } => "zc_rmsnorm_res",
             AddZcRmsNorm { .. } => "add_zc_rmsnorm",
             Gemm { .. } => "gemm",
             QuantizeNvfp4 { .. } => "quantize_nvfp4",
@@ -380,6 +394,7 @@ impl GraphOp {
             AddZcRmsNormNvfp4 { .. } => "add_zc_rmsnorm_nvfp4",
             GemmNvfp4 { .. } => "gemm_nvfp4",
             GemmNvfp4SwiGlu { .. } => "gemm_nvfp4_swiglu",
+            GemmNvfp4Residual { .. } => "gemm_nvfp4_residual",
             SiluMul { .. } => "silu_mul",
             SiluMulNvfp4 { .. } => "silu_mul_nvfp4",
             TreeConv1dSilu { .. } => "tree_conv1d_silu",
@@ -409,8 +424,9 @@ impl GraphOp {
             Gemm { w, .. } => format!("gemm.{}", proj(w)),
             GemmNvfp4 { w, .. } => format!("gemm_nvfp4.{}", proj(w)),
             GemmNvfp4SwiGlu { w, .. } => format!("gemm_nvfp4.{}SiluMul", proj(w)),
+            GemmNvfp4Residual { w, .. } => format!("gemm_nvfp4.{}Residual", proj(w)),
             Embedding { .. } => "embedding".into(),
-            ZcRmsNorm { .. } | AddZcRmsNorm { .. } => "norm.zc_rmsnorm".into(),
+            ZcRmsNorm { .. } | ZcRmsNormRes { .. } | AddZcRmsNorm { .. } => "norm.zc_rmsnorm".into(),
             QuantizeNvfp4 { .. } | ZcRmsNormNvfp4 { .. } | AddZcRmsNormNvfp4 { .. } | SiluMulNvfp4 { .. } => {
                 format!("nvfp4.{}", self.name())
             }
@@ -695,6 +711,10 @@ pub trait Kernels: Sync {
     fn zc_rmsnorm(&self, cx: &Launch, x: &DevTensor, w: &DevTensor, out: &DevTensor) -> Result<()> {
         missing("zc_rmsnorm")
     }
+    /// `out = zc_rmsnorm(residual, w)` with `AddZcRmsNorm`'s norm arithmetic (`GraphOp::ZcRmsNormRes`, S2).
+    fn zc_rmsnorm_res(&self, cx: &Launch, residual: &DevTensor, w: &DevTensor, out: &DevTensor) -> Result<()> {
+        missing("zc_rmsnorm_res")
+    }
     /// `residual = bf16(residual + x)` in place, then `out = zc_rmsnorm(residual, w)`.
     fn add_zc_rmsnorm(&self, cx: &Launch, residual: &DevTensor, x: &DevTensor, w: &DevTensor, out: &DevTensor)
         -> Result<()> {
@@ -719,6 +739,11 @@ pub trait Kernels: Sync {
     /// `[lt_scale_bytes(R, K/16)]`), for the cuBLASLt FP4 GEMM.
     fn nvfp4_scales_to_lt(&self, cx: &Launch, s: &DevTensor, out: &DevTensor) -> Result<()> {
         missing("nvfp4_scales_to_lt")
+    }
+    /// `residual = bf16(residual + bf16(gemm_nvfp4(q, s, w)))` in place (`GraphOp::GemmNvfp4Residual`, S2).
+    fn gemm_nvfp4_residual(&self, cx: &Launch, q: &DevTensor, s: &DevTensor, w: &Linear, residual: &DevTensor)
+        -> Result<()> {
+        missing("gemm_nvfp4_residual")
     }
     /// The fused gate/up GEMM + SiLU·mul + quantize (`GraphOp::GemmNvfp4SwiGlu`); `a_gs_down` is the down
     /// projection's `input_global_scale`.
@@ -861,6 +886,7 @@ impl<'a> Executor<'a> {
         match *op {
             Embedding { out } => self.embedding(cx, &v(out)?),
             ZcRmsNorm { x, w: n, out } => k.zc_rmsnorm(cx, &r(x)?, w(n)?, &v(out)?),
+            ZcRmsNormRes { residual, w: n, out } => k.zc_rmsnorm_res(cx, &v(residual)?, w(n)?, &v(out)?),
             // `residual_out` is `residual`'s storage (planned in place).
             AddZcRmsNorm { x, w: n, out, residual_out, .. } => {
                 k.add_zc_rmsnorm(cx, &v(residual_out)?, &r(x)?, w(n)?, &v(out)?)
@@ -899,6 +925,10 @@ impl<'a> Executor<'a> {
                 }
                 lin => k.gemm_nvfp4(cx, &r(q)?, &r(s)?, lin, &v(out)?),
             },
+            // `residual_out` is `residual`'s storage (planned in place).
+            GemmNvfp4Residual { q, s, w: wr, residual_out, .. } => {
+                k.gemm_nvfp4_residual(cx, &r(q)?, &r(s)?, self.weights.linear(wr)?, &v(residual_out)?)
+            }
             GemmNvfp4SwiGlu { q, s, w: wr, w_down, q_out, s_out } => k.gemm_nvfp4_swiglu(
                 cx, &r(q)?, &r(s)?, self.weights.linear(wr)?, self.a_gs(w_down)?, &v(q_out)?, &v(s_out)?),
             SiluMul { gu, out } => k.silu_mul(cx, &r(gu)?, &v(out)?),

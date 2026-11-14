@@ -78,19 +78,41 @@ pub struct KernelTuning {
     pub silu: nvfp4::SiluTiles,
     /// cuTile `occupancy` hint of the fused gate/up + SiLU·mul GEMM (`GemmNvfp4SwiGlu`).
     pub swiglu_occupancy: Option<i32>,
+    /// S2: cuTile `occupancy` hint of `zc_rmsnorm` (layer 0's input norm). The norms after a residual add fused into
+    /// the down GEMM (`zc_rmsnorm_res`) take `norm_occupancy`, as the residual-add norms they replace.
+    pub zc_norm_occupancy: Option<i32>,
+    /// S2: launch shape of the GDN `gated_rmsnorm` (both GDN backends run it).
+    pub gated_norm: gdn::GatedNormTiles,
 }
 
 impl KernelTuning {
     /// GB10-measured (bench_nvfp4_mlp): two norm rows per SM (+9% / +26% bandwidth), SiLU·mul + quantize at three
     /// tile blocks per SM (+55%), two fused gate/up GEMM tiles per SM (its epilogue then overlaps the other tile's
-    /// main loop: 16.3 -> 13.2 ms at 16k, the cost of the plain gate/up GEMM alone).
+    /// main loop: 16.3 -> 13.2 ms at 16k, the cost of the plain gate/up GEMM alone). S2 (bench_s2): `gated_rmsnorm`
+    /// one token's 32 heads (a whole 4096-wide row) per tile block (210 -> 238 GB/s at 16k, at DRAM bandwidth;
+    /// occupancy hints and the other shapes were slower at 4k-32k), layer 0's `zc_rmsnorm` two rows per SM (as the
+    /// residual norms; +37% at 1k, neutral at 16k).
     pub const DEFAULT: KernelTuning = KernelTuning {
         norm_occupancy: Some(2),
         silu: nvfp4::SiluTiles { rows: 1, cols: nvfp4::SILU_Q_BLOCK, occupancy: Some(3) },
         swiglu_occupancy: Some(2),
+        zc_norm_occupancy: Some(2),
+        gated_norm: gdn::GatedNormTiles { rows: 1, heads: gdn::NUM_V_HEADS, occupancy: None, warps: None },
+    };
+    /// The launches as F1 had them (before S2: default `zc_rmsnorm` and `gated_rmsnorm`).
+    pub const F1: KernelTuning = KernelTuning {
+        zc_norm_occupancy: None,
+        gated_norm: gdn::GatedNormTiles::F1,
+        ..KernelTuning::DEFAULT
     };
     /// The launches as N1 had them (compiler defaults).
-    pub const N1: KernelTuning = KernelTuning { norm_occupancy: None, silu: nvfp4::SiluTiles::N1, swiglu_occupancy: None };
+    pub const N1: KernelTuning = KernelTuning {
+        norm_occupancy: None,
+        silu: nvfp4::SiluTiles::N1,
+        swiglu_occupancy: None,
+        zc_norm_occupancy: None,
+        gated_norm: gdn::GatedNormTiles::F1,
+    };
 }
 
 // SAFETY: the cutile tensors and plans hold device allocations only; the engine's single worker thread drives
@@ -222,7 +244,28 @@ impl Kernels for TileKernels {
     fn zc_rmsnorm(&self, cx: &Launch, x: &DevTensor, w: &DevTensor, out: &DevTensor) -> Result<()> {
         unsafe {
             let (x, w, mut o) = (x.tile::<bf16>()?, w.tile::<bf16>()?, out.tile::<bf16>()?);
-            norm::zc_rmsnorm(&mut o, &x, &w, self.eps)?.execute(cx.exec).map(|_| ()).map_err(launch_err("zc_rmsnorm"))
+            match self.tuning.zc_norm_occupancy {
+                // F1's own launch (no compile options).
+                None => norm::zc_rmsnorm(&mut o, &x, &w, self.eps)?
+                    .execute(cx.exec)
+                    .map(|_| ())
+                    .map_err(launch_err("zc_rmsnorm")),
+                occ => norm::zc_rmsnorm_with(&mut o, &x, &w, self.eps, occ)?
+                    .execute(cx.exec)
+                    .map(|_| ())
+                    .map_err(launch_err("zc_rmsnorm")),
+            }
+        }
+    }
+
+    fn zc_rmsnorm_res(&self, cx: &Launch, residual: &DevTensor, w: &DevTensor, out: &DevTensor) -> Result<()> {
+        unsafe {
+            let w = w.tile::<bf16>()?;
+            let (mut r, mut o) = (residual.tile::<bf16>()?, out.tile::<bf16>()?);
+            norm::zc_rmsnorm_res_with(&mut r, &mut o, &w, self.eps, self.tuning.norm_occupancy)?
+                .execute(cx.exec)
+                .map(|_| ())
+                .map_err(launch_err("zc_rmsnorm_res"))
         }
     }
 
@@ -329,6 +372,29 @@ impl Kernels for TileKernels {
         }
     }
 
+    fn gemm_nvfp4_residual(&self, cx: &Launch, q: &DevTensor, s: &DevTensor, w: &Linear, residual: &DevTensor)
+        -> Result<()> {
+        let Linear::Nvfp4 { packed, scales, parts, a_gs, gate_up_block, .. } = w else {
+            anyhow::bail!("gemm_nvfp4_residual on a bf16 projection");
+        };
+        ensure!(gate_up_block.is_none(), "gemm_nvfp4_residual on an interleaved gate/up weight");
+        ensure!(q.is_contiguous() && s.is_contiguous() && residual.is_contiguous(),
+                "gemm_nvfp4_residual needs contiguous operands");
+        let parts: Vec<(usize, f32)> =
+            parts.iter().map(|p| Ok((p.rows, p.w_gs.context("NVFP4 part without weight_global_scale")?))).collect::<Result<_>>()?;
+        let alpha = RawAlpha::for_parts(*a_gs, &parts)?;
+        unsafe {
+            let (x, xs) = (Arc::new(q.tile::<f4e2m1fnx2>()?), Arc::new(s.tile::<f8e4m3fn>()?));
+            let (wp, ws) = (Arc::new(packed.tile::<f4e2m1fnx2>()?), Arc::new(scales.tile::<f8e4m3fn>()?));
+            let r = Arc::new(residual.tile::<bf16>()?);
+            nvfp4::gemm_raw_residual_op_with(&x, &xs, &wp, &ws, alpha, r, self.nvfp4_tiles, self.sms,
+                                             Default::default())?
+                .execute(cx.exec)
+                .map(|_| ())
+                .map_err(launch_err("gemm_nvfp4_residual"))
+        }
+    }
+
     fn gemm_nvfp4_swiglu(&self, cx: &Launch, q: &DevTensor, s: &DevTensor, w: &Linear, a_gs_down: f32,
                          q_out: &DevTensor, s_out: &DevTensor) -> Result<()> {
         let Linear::Nvfp4 { packed, scales, parts, a_gs, gate_up_block, .. } = w else {
@@ -428,8 +494,8 @@ impl Kernels for TileKernels {
         let st = self.bucket(cx.bucket)?;
         unsafe {
             let w = w.tile::<bf16>()?;
-            let op = gdn::gated_rmsnorm(&st.gdn, dview(o, GraphDType::BF16)?, dview(z, GraphDType::BF16)?, &w, self.eps,
-                                        dview(out, GraphDType::BF16)?)?;
+            let op = gdn::gated_rmsnorm_with(&st.gdn, dview(o, GraphDType::BF16)?, dview(z, GraphDType::BF16)?, &w,
+                                             self.eps, dview(out, GraphDType::BF16)?, self.tuning.gated_norm)?;
             op.execute(cx.exec).map_err(launch_err("gated_rmsnorm"))
         }
     }
