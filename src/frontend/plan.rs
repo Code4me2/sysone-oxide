@@ -130,6 +130,43 @@ impl Plan {
     }
 }
 
+/// A branch's tokens after the head and their code-point offsets in `suffix_text + tail`.
+type SuffixTokens = (Vec<u32>, Vec<(usize, usize)>);
+
+/// The part of planning that depends only on the questions and `debias`: the rendered branches and the tokens of
+/// each `suffix_text + tail` ([`Frontend::prepare_questions`]).
+///
+/// A branch's tokens after the head are `encode(suffix_text + tail)` (module docs), and neither string depends on
+/// the state: the suffix is rendered from the question alone, and the tail is what the chat template emits after
+/// the user turn (`<|im_end|>` and the generation prompt; the turn ends with the suffix's `.`, so `|trim` never
+/// reaches it). [`Frontend::plan_prepared`] still renders each request's own frame and compares its tail with
+/// this one, so a template whose tail did depend on the state would only lose the reuse, not correctness.
+#[derive(Clone, Debug)]
+pub struct PreparedQuestions {
+    branches: Vec<Branch>,
+    num_questions: usize,
+    tail: String,
+    own: Vec<SuffixTokens>,
+}
+
+impl PreparedQuestions {
+    pub fn num_branches(&self) -> usize {
+        self.branches.len()
+    }
+
+    /// The template's text after the suffix that the cached tokens were computed with: a plan whose
+    /// `prompt_tail` equals it reused them.
+    pub fn tail(&self) -> &str {
+        &self.tail
+    }
+
+    /// Tokens of the longest and of all question suffixes (tail included).
+    pub fn suffix_tokens(&self) -> (usize, usize) {
+        let lens = self.own.iter().map(|(ids, _)| ids.len());
+        (lens.clone().max().unwrap_or(0), lens.sum())
+    }
+}
+
 /// `_plan_chunks`: balanced chunks of at most `max_slots - 1` option names.
 pub fn plan_chunks(n: usize, max_slots: usize) -> Vec<std::ops::Range<usize>> {
     let n_chunks = n.div_ceil(max_slots - 1);
@@ -155,7 +192,13 @@ impl Frontend {
 
     /// Branches, rendering, tokenization and the prefix split, without the limit and `_split` checks.
     pub fn plan_unchecked(&self, req: &SystemOneRequest, debias: i64) -> Result<Plan, PlanError> {
-        // 1. Branches, in decide()'s order.
+        let branches = self.render_branches(&req.questions, debias)?;
+        self.plan_branches(&req.state, branches, req.questions.len(), None)
+    }
+
+    /// Step 1 of planning, which depends only on the questions and `debias` (not on the state): the branches in
+    /// `decide()`'s order with their suffix text and slots, without tokens.
+    pub fn render_branches(&self, questions: &[(String, Question)], debias: i64) -> Result<Vec<Branch>, PlanError> {
         let mut branches: Vec<Branch> = Vec::new();
         let mut add = |question: usize, chunk, order: Vec<usize>, parts: &QuestionParts<'_>, permute: bool| {
             let r = render_question(parts, permute.then_some(order.as_slice())).map_err(PlanError::Value)?;
@@ -174,7 +217,7 @@ impl Frontend {
             });
             Ok::<_, PlanError>(())
         };
-        for (qi, (_, q)) in req.questions.iter().enumerate() {
+        for (qi, (_, q)) in questions.iter().enumerate() {
             if let Question::Choice { instructions, criteria } = q
                 && criteria.len() > self.max_slots
             {
@@ -194,12 +237,19 @@ impl Frontend {
                 add(qi, None, order, &parts, s != 0)?;
             }
         }
+        Ok(branches)
+    }
 
-        // 2. Render the prompt frame once and tokenize the head once.
-        let block = state_block(&req.state);
-        let (head, tail) = self.template.frame(SYSTEM_PROMPT, &block, &branches[0].suffix_text)?;
-        let head_ids = self.tokenizer.encode(&head)?;
-        let mut own: Vec<(Vec<u32>, Vec<(usize, usize)>)> = Vec::with_capacity(branches.len());
+    /// A question set's branches rendered and their suffixes tokenized once, for planning the same questions over
+    /// many states with [`Frontend::plan_prepared`] (`sysone bulk --questions`, docs/BULK.md).
+    pub fn prepare_questions(&self, questions: &[(String, Question)], debias: i64) -> Result<PreparedQuestions, PlanError> {
+        let branches = self.render_branches(questions, debias)?;
+        if branches.is_empty() {
+            return Err(PlanError::Internal(anyhow::anyhow!("a question set without branches")));
+        }
+        // The tail of an empty state's prompt. A plan uses these tokens only when its own tail is the same text.
+        let (_, tail) = self.template.frame(SYSTEM_PROMPT, &state_block(&Json::str("")), &branches[0].suffix_text)?;
+        let mut own = Vec::with_capacity(branches.len());
         let mut text = String::new();
         for b in &branches {
             text.clear();
@@ -207,6 +257,45 @@ impl Frontend {
             text.push_str(&tail);
             own.push(self.tokenizer.encode_with_offsets(&text)?);
         }
+        Ok(PreparedQuestions { branches, num_questions: questions.len(), tail, own })
+    }
+
+    /// [`Frontend::plan`] of a request with this `state` and the prepared questions: the same plan (the same
+    /// checks and errors), with the suffix tokens reused instead of recomputed.
+    pub fn plan_prepared(&self, state: &Json, pq: &PreparedQuestions) -> Result<Plan, PlanError> {
+        let mut plan = self.plan_branches(state, pq.branches.clone(), pq.num_questions, Some(pq))?;
+        self.check(&mut plan)?;
+        Ok(plan)
+    }
+
+    /// Planning from step 2 on: the prompt frame for `state`, tokenization and the prefix split. `cache`: the
+    /// suffix tokens of these same branches, used when this prompt's tail is the cache's text (the tokens of
+    /// `suffix_text + tail` are a function of that text alone).
+    fn plan_branches(
+        &self,
+        state: &Json,
+        mut branches: Vec<Branch>,
+        num_questions: usize,
+        cache: Option<&PreparedQuestions>,
+    ) -> Result<Plan, PlanError> {
+        // 2. Render the prompt frame once and tokenize the head once.
+        let block = state_block(state);
+        let (head, tail) = self.template.frame(SYSTEM_PROMPT, &block, &branches[0].suffix_text)?;
+        let head_ids = self.tokenizer.encode(&head)?;
+        let own: Vec<SuffixTokens> = match cache {
+            Some(c) if c.tail == tail => c.own.clone(),
+            _ => {
+                let mut own = Vec::with_capacity(branches.len());
+                let mut text = String::new();
+                for b in &branches {
+                    text.clear();
+                    text.push_str(&b.suffix_text);
+                    text.push_str(&tail);
+                    own.push(self.tokenizer.encode_with_offsets(&text)?);
+                }
+                own
+            }
+        };
 
         // The marker render cuts the prompt at the first occurrence of the marker, which is the end of the head
         // unless the state itself contains the marker.
@@ -262,7 +351,7 @@ impl Frontend {
             prompt_head: head,
             prompt_tail: tail,
             prompt_sha256,
-            num_questions: req.questions.len(),
+            num_questions,
         })
     }
 

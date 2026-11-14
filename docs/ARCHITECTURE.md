@@ -302,7 +302,7 @@ calibration; it is `Sync` and shared by all CPU workers.
 | `render.rs` | Question → suffix text and slot labels; state → state block (`qev/prompt.py`) | `render_question`, `question_parts`, `state_block`, `slot_labels`, `SYSTEM_PROMPT`, `PROMPT_VERSION` |
 | `template.rs` | `chat_template.jinja` via minijinja, configured like transformers' Jinja2 | `ChatTemplate::{render, frame}` |
 | `tokenize.rs` | `tokenizer.json` via HF tokenizers, no special tokens | `Tokenizer::{encode, encode_with_offsets, verify_slots}` |
-| `plan.rs` | Request → branches → token ids; limits; serve.patch `_split` | `Frontend::{plan, plan_unchecked, check}`, `Plan`, `Branch`, `Limits`, `PlanError`, `plan_chunks` |
+| `plan.rs` | Request → branches → token ids; limits; serve.patch `_split`; a question set rendered and its suffixes tokenized once for many states | `Frontend::{plan, plan_unchecked, check, render_branches, prepare_questions, plan_prepared}`, `Plan`, `Branch`, `PreparedQuestions`, `Limits`, `PlanError`, `plan_chunks` |
 | `assemble.rs` | Slot logits → answers (temperature, softmax, chunk recombination, debias averaging), op for op in f64 | `assemble`, `Calibration`, `Assembled` |
 | `pyjson.rs` | JSON and float formatting with Python's exact semantics | `Json`, `parse`, `dumps_compact`, `dumps_indent2`, `py_float_repr`, `py_round6`, `py_fsum` |
 
@@ -313,6 +313,9 @@ Gotchas:
 - The once-per-request head tokenization relies on the tokenizer always splitting between the head (ending in
   `</state>\n\n`) and the suffix; `frontend_golden::per_request_shortcuts_equal_full_prompt_rendering_and_tokenization`
   checks this on the whole corpus.
+- The same split makes a branch's tokens after the head `encode(suffix_text + tail)`, which does not depend on the
+  state: `plan_prepared` reuses them across documents when the request's tail is the prepared one (it always is with
+  qev's template); `tests/bulk_qset.rs::prepared_plans_equal_full_plans` checks plan equality.
 - `PlanError::Value` becomes a 422 with qev's message; `PlanError::Internal` becomes a 500.
 
 ### 4.4 `sched` (`src/sched/`)
@@ -404,18 +407,20 @@ Gotchas (from code comments and the Phase 2a review):
 
 ### 4.5a `bulk` (`src/bulk/`)
 
-`sysone bulk` (docs/BULK.md): a JSONL file of `/v1/systemone` jobs in, one result line per job id out.
+`sysone bulk` (docs/BULK.md): a JSONL file of `/v1/systemone` jobs (or a question set and its documents) in, one
+result line per job id out.
 
 | File | Responsibility | Key items |
 |---|---|---|
-| `job.rs` | Input lines (`id`, `body`/`body_text`, `query`), result lines, id digests | `parse_line`, `Line`, `Job`, `result_line`, `id_key` |
+| `job.rs` | Input lines (`id`, `body`/`body_text`, `query`), document lines (`id`, `state`, `query`, `overrides`) and files, result lines, id digests | `parse_line`, `parse_doc_line`, `doc_file`, `Line`, `Job`, `Payload`, `result_line`, `id_key` |
 | `output.rs` | The results file: `flock`, resume (done ids), cutting a torn last line, `fdatasync` | `Output::{open, write, sync}`, `Resume` |
+| `qset.rs` | Question-set runs: the question file validated once (before any worker), the equivalent full body of a document, planning from the prepared questions (or the full body when a document overrides `model`/`questions`) | `QuestionSet::{load, body, prepare}` |
 | `pack.rs` | Choosing a step: first-fit decreasing from the window into the worker's largest bucket; bucket choice at the tail by a throughput curve; ladders; FIFO and bulk packing simulations | `choose`, `Size`, `Throughput`, `PackPolicy`, `ladder`, `simulate_fifo`, `simulate_bulk` |
-| `run.rs` | The coordinator: reader (credits bound the read-ahead), planner threads (`server::prepare`), dispatcher (reorder to input order, window, `choose`, steps to workers, requeue on worker exit), writer (`server::finish`, append); the summary | `run`, `RunOptions`, `Summary`, `WorkerSummary` |
+| `run.rs` | The coordinator: reader (JSONL jobs or documents, or a directory of text files; credits bound the read-ahead), planner threads (`server::prepare`), dispatcher (reorder to input order, window, `choose`, steps to workers, requeue on worker exit), writer (`server::finish`, append); the summary | `run`, `RunOptions`, `Summary`, `WorkerSummary` |
 | `worker.rs` | Workers: engine build and sizing per device (`EngineSpec`), the worker process (`sysone bulk worker`) and thread loops, the coordinator's handle, the mock `SimEngine` | `EngineSpec`, `build`, `process_main`, `Handle::{thread, process}`, `Event`, `command` |
 | `wire.rs` | The coordinator ↔ worker pipe protocol (length-prefixed frames: HELLO, STEP, DONE, FAILED) | `Frame`, `Hello`, `Done`, `encode`, `decode` |
 | `compare.rs` | Two result files by id (statuses, fields, probability differences) | `main`, `walk`, `Diffs` |
-| `synth.rs`, `cli.rs` | Synthetic requests (loadgen's) and corpora; the `sysone bulk` subcommands | `body`, `CorpusSpec`; `main` |
+| `synth.rs`, `cli.rs` | Synthetic requests (loadgen's) and corpora (also as a question set and documents); the `sysone bulk` subcommands | `body`, `CorpusSpec`, `question_set`, `doc_line`; `main` |
 
 Gotchas:
 - Results must be *keyed by id*: steps reorder requests by size and mix them.

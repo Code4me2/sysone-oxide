@@ -6,7 +6,8 @@ latency, and spreads the steps over one engine per GPU. The answers are the serv
 same validation, planning and answer assembly code as `POST /v1/systemone`, so a result's status and body are what
 the server returns for that body.
 
-Numbers: [Results on GB10](#results-on-gb10). Design: [Design](#design). x86 task: [docs/x86/TASKS.md](x86/TASKS.md) T7.
+Numbers: [Results on GB10](#results-on-gb10). Design: [Design](#design). One question set over many documents:
+[Question sets](#question-sets-one-set-of-questions-over-many-documents-q1). x86 task: [docs/x86/TASKS.md](x86/TASKS.md) T7.
 
 ## Usage
 
@@ -27,6 +28,10 @@ Numbers: [Results on GB10](#results-on-gb10). Design: [Design](#design). x86 tas
 
 # Compare two result files by id (bulk vs bulk, or bulk vs `loadgen --corpus ... --responses FILE`).
 ./target/release/sysone bulk compare a.jsonl b.jsonl
+
+# One question set over many documents (Q1): a JSONL of {"id", "state"} or a directory of text files.
+./target/release/sysone bulk --model M --questions questions.json --docs docs.jsonl --output out.jsonl
+./target/release/sysone bulk --model M --questions questions.json --docs ./documents/ --output out.jsonl
 ```
 
 **Input** (one job per line; blank lines are skipped):
@@ -188,6 +193,119 @@ or one GPU when the coordinator itself runs under gpu.sh.
     others changes its rows slightly, docs/PHASE2A.md), not something bulk adds;
   - the same packed run twice, and on two engines sharing the GPU (`--gpus 0,0`, 3 + 8 steps), gives identical bytes.
 
+## Question sets: one set of questions over many documents (Q1)
+
+The key workload asks the same questions of every document. Instead of repeating the questions in every job line,
+give them once:
+
+```bash
+# questions.json: a request body without "state" (any other top-level fields apply to every document).
+{"model": "jev-latest", "questions": {
+  "late":    {"type": "noul", "instructions": "Is the invoice late?"},
+  "route":   {"type": "choice", "criteria": {"billing": "Billing team", "tech": "Technical support", "other": null}},
+  "urgency": {"type": "score", "criteria": ["low", "medium", "high"]}}}
+
+# docs.jsonl: one document per line. `query` and `overrides` are optional.
+{"id": "inv-1", "state": "The invoice is 40 days overdue."}
+{"id": 2, "state": {"ticket": "refund", "amount": 40}, "query": "debias=2"}
+{"id": "inv-3", "state": "...", "overrides": {"model": "elephant-1"}}
+
+./target/release/sysone bulk --model M --questions questions.json --docs docs.jsonl --output out.jsonl
+# or a directory: every regular file whose name does not start with "." is a document (id = file name, state = its
+# UTF-8 text), in file-name order; subdirectories are not read.
+./target/release/sysone bulk --model M --questions questions.json --docs ./documents/ --output out.jsonl
+# A synthetic question set and documents (and the equivalent full-body jobs, for comparisons):
+./target/release/sysone bulk gen --docs 20000 --question-set q.json --output docs.jsonl --jobs-out jobs.jsonl
+```
+
+**Semantics.** A document's result line is exactly the one its **equivalent full body** would get as a job
+(`{"id", "body", "query"}`): `{"state": <state>}`, then the question file's fields, then the document's
+`overrides`, where a repeated key keeps its first position and takes the last value (Python dict semantics); the
+query is the document's `query`, else `--query`. Everything else is as for job files: output format, completion
+order, resume (rerun the same command; ids already in the output are skipped), crash safety, the summary, exit
+codes, and every option. A document line without `id` or `state`, with `overrides` that is not an object or holds
+`state`, or a repeated id, is a bad line (reported, counted, not processed); so is a file that is not UTF-8.
+
+**Validation up front.** The question file is read and validated before the output file is opened or any worker
+(GPU) starts, and the run refuses to start with a clear message when the server would refuse every document:
+not JSON, not an object, no `questions`, a `state` field, a schema error (the 422 body is printed), a model that is
+not served (the 404 message), a `--query` whose `debias` is not an integer, or questions that alone exceed the
+request limits. Per-document errors (a state too long for the limits, an override the schema refuses, a
+document's own bad `debias`) are result lines with the server's status and body, as in a job file.
+
+**What is computed once.** The server's planner validates the body, renders every question to its suffix text and
+tokenizes each `suffix + tail` again for every request. With a question set this happens once per `debias` value
+(`Frontend::prepare_questions`); a document costs only the rendering of its own prompt head and the tokenization of
+its state (`Frontend::plan_prepared`). This is exact, not approximate:
+
+- Validation never looks at `state` (any JSON value is a valid state), so a document that overrides neither `model`
+  nor `questions` validates exactly as the question set did. A document that overrides one of them goes through the
+  server's whole path on its equivalent body (`docs_full_body` in the summary).
+- A branch's tokens after the shared head are `encode(suffix_text + tail)` (the tokenizer always splits between the
+  head, which ends in `</state>\n\n`, and the suffix, which starts with `Question:` or `Rate the state:`; the
+  frontend has relied on this since Phase 1 and `frontend_golden` checks it on the whole render corpus). The suffix
+  text is rendered from the question alone. The tail is what the chat template emits after the user turn
+  (`<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n`): the user turn is `<state>...` + suffix and ends
+  with the suffix's `.`, so the template's `|trim` never reaches the state, and the only per-message branches of
+  elephant-1's template (`<tool_response>` turns, assistant `</think>` splitting, images) do not apply to a user turn
+  that starts with `<state>`. Nothing in the suffix tokens depends on the document. `plan_prepared` still renders
+  each document's frame and reuses the cached tokens only if its tail is the same text, so a template where the
+  tail did depend on the document would lose the saving, not correctness.
+- A state that contains `QEV_PREFIX_MARK` (the marker split) or that `_split` refuses under noncausal attention goes
+  through the same code with the same tokens, so it gets the same plan or the same error.
+
+**What cannot be shared.** The GPU work per document is unchanged. Every question branch attends to its own
+document's prefix (system prompt + state), so its keys, values and GDN state differ per document; no question
+computation can be cached across documents, and the packed tokens per document are exactly those of the equivalent
+job (the tests check equal `packed_tokens` and steps). Question sets save CPU planning only (and the reader no longer
+parses the questions on every input line).
+
+**Tests.** `tests/bulk_qset.rs` (mock engine): `Frontend::plan_prepared` equals `Frontend::plan` (the `Plan`
+struct compared whole: token ids, offsets, option token spans, sha256) for 14 states that stress the frame and the
+split (empty, whitespace, the marker, a fake suffix, template tokens, unicode, non-string JSON) at debias 1/2/3/5,
+causal and noncausal, with default and small limits (equal errors too), and every cached plan has the cached tail;
+a question set over 63 documents (per-document queries incl. `debug=1` and a bad `debias`, seven overrides,
+a too-long state; statuses 200/404/422/500) and over a directory of text files gives result lines byte for byte
+equal (apart from `qev.timing`) to the equivalent full-body jobs, with the same steps and packed tokens; resume after
+SIGKILL plus a torn last line equals a clean run; 12 invalid question sets and 4 bad argument combinations are
+refused before the output exists or a worker starts. `tests/bulk_qset_gpu.rs` (bf16 engine, under gpu.sh):
+24 documents of 300-3,000 words with per-document queries and overrides, question set vs equivalent jobs: every
+result line byte for byte identical apart from timing (GB10, 2026-11-14: passed, 24 of 24, same steps).
+
+### Planner CPU per document
+
+`sysone bulk gen --docs 20000 --question-set q.json --output docs.jsonl --jobs-out jobs.jsonl` (16 questions:
+noul / choice of 5 / score of 4, 1,013 suffix tokens per document with the tail), mock engine with zero step time,
+so the run is bound by the coordinator's CPU (reader, 18 planner threads, writer) and its rate is the most the
+coordinator can feed the GPUs. GB10 (20 Arm cores: 10 Cortex-X925 + 10 Cortex-A725), quiet machine (under the GPU
+lock), 2026-11-14. "Before" is main at 6183295 with the job file; "jobs" is this branch with the same job file (the
+server's path, unchanged); "question set" is this branch with `--questions/--docs`. CPU ms/doc is the process's user
++ sys time over 20,000 documents; the single-thread rows are `plan_ms_per_job` from the summary with
+`--cpu-workers 1 --limit 2000` (planning only, one core, no contention).
+
+| corpus | input | CPU ms/doc (whole process) | planning ms/doc, 1 thread | coordinator ceiling docs/s | packed tok/s |
+|---|---|---:|---:|---:|---:|
+| 300..8,000 words, mean 3,404 packed tok/doc | before (job file) | 4.56 | - | 3,568 | 12.1 M |
+| | jobs (this branch) | 4.60 | 3.08 | 4,033 | 13.7 M |
+| | question set | **3.37** (-26%) | **2.15** (-30%) | **4,897** | **16.7 M** |
+| 50..1,000 words, mean 1,375 packed tok/doc | before (job file) | 2.14 | - | 6,245 | 8.6 M |
+| | jobs (this branch) | 2.06 | 1.27 | 6,511 | 9.0 M |
+| | question set | **0.59** (-72%) | **0.40** (-69%) | **11,901** | **16.4 M** |
+
+What is left per document is the state: rendering its prompt head and tokenizing it (the saving is the questions'
+share, so larger for short documents and many questions). All 20,000 results of each question-set run are byte for
+byte equal to the job-file run's (`sysone bulk compare`: 20,000 identical bodies, 0 status or field mismatches).
+
+**The planners never starve the GPUs.** The GPUs consume packed tokens: on GB10 at most 7,850 tok/s (the nvfp4
+forward at 16k; bf16 bulk 5,062), i.e. 2.3 documents/s of the long corpus. One planner thread plans 1.58 M packed
+tok/s of that corpus with a question set (1.1 M with job lines), 200 times GB10's nvfp4 rate, and the default 18
+planners sustain 16.7 M tok/s through the whole coordinator. For the x86 box (2x RTX PRO 6000 + RTX 5090, one
+coordinator feeding three workers), even at an assumed 10x GB10's forward per card (~240 k tok/s for the three, not
+measured) one planner core of GB10's speed covers it 5-7x, and the default planner count (cores - 2) by two orders of
+magnitude; the summary's `plan_ms_per_job` and `planner_threads` show the margin on any host (T7 reports them).
+Planning runs ahead of the GPUs by the window (1,024 requests) plus the read-ahead, so a GPU is never waiting for a
+plan unless the whole coordinator falls below the GPUs' rate.
+
 ## Results on GB10
 
 2,000 synthetic documents (`sysone bulk gen --docs 2000`, seed 1: states 300..8,000 words, about one token each,
@@ -248,3 +366,5 @@ way to more throughput on one GB10 is fuller steps (bulk: +13.9%), then a faster
 2. Throughput per token depends on document length (attention grows with the prefix): the GB10 numbers above are
    for this corpus' length mix.
 3. `allowed_token_mass` (`?debug=1`) is still absent with the GPU engine (as in the server).
+4. `sysone bulk simulate` reads job files only (a question-set corpus can be simulated through its equivalent jobs,
+   `bulk gen --jobs-out`).

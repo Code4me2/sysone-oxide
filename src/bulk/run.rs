@@ -21,11 +21,13 @@ use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use super::job::{IdKey, Line, parse_line, result_line};
+use super::job::{IdKey, Line, Payload, doc_file, parse_doc_line, parse_line, result_line};
+use super::qset::QuestionSet;
 use super::output::Output;
 use super::pack::{PackPolicy, Size, Throughput, choose, fits_alone};
 use super::wire::Hello;
@@ -47,8 +49,16 @@ pub struct Worker {
     pub start: WorkerStart,
 }
 
+/// What a run reads.
+pub enum Input {
+    /// A JSONL file of jobs (`{"id", "body"}`).
+    Jobs(PathBuf),
+    /// A question set and its documents: a JSONL file (`{"id", "state"}`) or a directory of text files.
+    Docs { questions: Arc<QuestionSet>, docs: PathBuf },
+}
+
 pub struct RunOptions {
-    pub input: PathBuf,
+    pub input: Input,
     pub output: PathBuf,
     pub workers: Vec<Worker>,
     /// Planned requests the packer chooses from.
@@ -65,6 +75,87 @@ pub struct RunOptions {
     pub limit: Option<u64>,
     /// Write one line per step here: `{"step", "worker", "bucket", "tokens", "ids"}` (determinism checks, tuning).
     pub trace: Option<PathBuf>,
+}
+
+/// The input as a stream of parsed records, read by the reader thread.
+enum Source {
+    /// JSONL: jobs, or documents of a question set.
+    Lines { r: BufReader<std::fs::File>, docs: bool, line: u64, buf: Vec<u8> },
+    /// A directory of text files, in file-name order (names read up front, contents one at a time).
+    Dir { dir: PathBuf, names: std::vec::IntoIter<Result<String, String>>, index: u64 },
+}
+
+impl Source {
+    fn open(input: &Input) -> Result<Self> {
+        let (path, docs) = match input {
+            Input::Jobs(p) => (p, false),
+            Input::Docs { docs, .. } => (docs, true),
+        };
+        if docs && path.is_dir() {
+            Ok(Source::Dir { dir: path.clone(), names: doc_names(path)?.into_iter(), index: 0 })
+        } else {
+            let f = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+            Ok(Source::Lines { r: BufReader::with_capacity(1 << 20, f), docs, line: 0, buf: Vec::new() })
+        }
+    }
+
+    /// How reports name a record.
+    fn what(&self) -> &'static str {
+        match self {
+            Source::Lines { .. } => "input line",
+            Source::Dir { .. } => "document file #",
+        }
+    }
+
+    /// The next record; None at the end of the input.
+    fn next(&mut self) -> Result<Option<Line>> {
+        match self {
+            Source::Lines { r, docs, line, buf } => {
+                buf.clear();
+                if r.read_until(b'\n', buf)? == 0 {
+                    return Ok(None);
+                }
+                *line += 1;
+                if buf.last() == Some(&b'\n') {
+                    buf.pop();
+                }
+                Ok(Some(if *docs { parse_doc_line(*line, buf) } else { parse_line(*line, buf) }))
+            }
+            Source::Dir { dir, names, index } => {
+                let Some(name) = names.next() else { return Ok(None) };
+                *index += 1;
+                Ok(Some(match name {
+                    Err(msg) => Line::Bad { line: *index, msg },
+                    Ok(name) => match std::fs::read(dir.join(&name)) {
+                        Ok(bytes) => doc_file(*index, &name, bytes),
+                        Err(e) => Line::Bad { line: *index, msg: format!("reading {name:?}: {e}") },
+                    },
+                }))
+            }
+        }
+    }
+}
+
+/// The documents of a directory: regular files (or links to them) whose names do not start with `.`, sorted by
+/// name; a name that is not UTF-8 is reported as a bad record.
+fn doc_names(dir: &std::path::Path) -> Result<Vec<Result<String, String>>> {
+    let mut names = Vec::new();
+    for e in std::fs::read_dir(dir).with_context(|| format!("listing {}", dir.display()))? {
+        let e = e?;
+        let is_file = std::fs::metadata(e.path()).map(|m| m.is_file()).unwrap_or(false);
+        let name = e.file_name();
+        if !is_file || name.as_encoded_bytes().first() == Some(&b'.') {
+            continue;
+        }
+        names.push(name.into_string().map_err(|n| format!("file name {n:?} is not UTF-8")));
+    }
+    names.sort_by(|a, b| match (a, b) {
+        (Ok(a), Ok(b)) => a.cmp(b),
+        (Err(a), Err(b)) => a.cmp(b),
+        (Ok(_), Err(_)) => std::cmp::Ordering::Less,
+        (Err(_), Ok(_)) => std::cmp::Ordering::Greater,
+    });
+    Ok(names)
 }
 
 /// Per-worker totals.
@@ -122,8 +213,28 @@ pub struct Summary {
     pub packed_tok_per_s: f64,
     pub window: usize,
     pub workers: Vec<WorkerSummary>,
+    /// Planning time (validation, rendering, tokenization) summed over the planner threads, and per job planned:
+    /// the CPU cost of feeding the GPUs (wall time inside planning, so it includes any wait for a core).
+    pub plan_s: f64,
+    pub plan_ms_per_job: f64,
+    pub planner_threads: usize,
+    /// Question-set runs only.
+    pub question_set: Option<QuestionSetSummary>,
     /// Set when the run stopped early (every worker gone); a rerun resumes.
     pub aborted: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct QuestionSetSummary {
+    pub questions: usize,
+    /// At the default debias.
+    pub branches: usize,
+    pub longest_suffix_tokens: usize,
+    pub suffix_tokens: usize,
+    /// Documents planned from the prepared question set, and from their full body (they override `model` or
+    /// `questions`).
+    pub docs_prepared: u64,
+    pub docs_full_body: u64,
 }
 
 /// A planned request waiting in the window or in a step.
@@ -184,7 +295,11 @@ pub fn run(opts: RunOptions, frontend: Arc<Frontend>) -> Result<Summary> {
             resume.truncated_bytes
         );
     }
-    let input = std::fs::File::open(&opts.input).with_context(|| format!("opening {}", opts.input.display()))?;
+    let mut source = Source::open(&opts.input)?;
+    let qset = match &opts.input {
+        Input::Docs { questions, .. } => Some(questions.clone()),
+        Input::Jobs(_) => None,
+    };
     let mut summary = Summary {
         resumed_lines: resume.lines,
         truncated_partial_bytes: resume.truncated_bytes,
@@ -226,26 +341,19 @@ pub fn run(opts: RunOptions, frontend: Arc<Frontend>) -> Result<Summary> {
     let consumed = Arc::new((Mutex::new(0u64), std::sync::Condvar::new()));
     let credits = consumed.clone();
     let reader = std::thread::Builder::new().name("bulk-reader".into()).spawn(move || -> Result<()> {
-        let mut r = BufReader::with_capacity(1 << 20, input);
         let mut seen: HashSet<IdKey> = HashSet::new();
         let (mut lines, mut jobs, mut skipped, mut bad, mut dup) = (0u64, 0u64, 0u64, 0u64, 0u64);
-        let mut buf = Vec::new();
         let mut shown = 0;
+        let what = source.what();
         loop {
-            buf.clear();
-            if r.read_until(b'\n', &mut buf)? == 0 {
-                break;
-            }
+            let Some(parsed) = source.next()? else { break };
             lines += 1;
-            if buf.last() == Some(&b'\n') {
-                buf.pop();
-            }
-            match parse_line(lines, &buf) {
+            match parsed {
                 Line::Blank => {}
                 Line::Bad { line, msg } => {
                     bad += 1;
                     if shown < 20 {
-                        eprintln!("sysone bulk: input line {line}: {msg}; skipped");
+                        eprintln!("sysone bulk: {what} {line}: {msg}; skipped");
                         shown += 1;
                     }
                 }
@@ -255,7 +363,7 @@ pub fn run(opts: RunOptions, frontend: Arc<Frontend>) -> Result<Summary> {
                     } else if !seen.insert(j.key) {
                         dup += 1;
                         if shown < 20 {
-                            eprintln!("sysone bulk: input line {}: duplicate id {}; skipped", j.line, j.id.dumps_compact().unwrap_or_default());
+                            eprintln!("sysone bulk: {what} {}: duplicate id {}; skipped", j.line, j.id.dumps_compact().unwrap_or_default());
                             shown += 1;
                         }
                     } else {
@@ -284,14 +392,24 @@ pub fn run(opts: RunOptions, frontend: Arc<Frontend>) -> Result<Summary> {
     let (plan_tx, plan_rx) = mpsc::sync_channel::<Planned>(opts.window.max(cpu * 2));
     let job_rx = Arc::new(Mutex::new(job_rx));
     let mut planners = Vec::new();
+    // (nanoseconds planning, jobs planned) over all planners.
+    let plan_time = Arc::new((AtomicU64::new(0), AtomicU64::new(0)));
     for k in 0..cpu {
         let (rx, tx, fe, info, query) = (job_rx.clone(), plan_tx.clone(), frontend.clone(), opts.info.clone(), opts.query.clone());
+        let (qset, plan_time) = (qset.clone(), plan_time.clone());
         planners.push(std::thread::Builder::new().name(format!("bulk-plan-{k}")).spawn(move || {
             loop {
                 let next = rx.lock().unwrap().recv();
                 let Ok((seq, job)) = next else { return };
+                let t = Instant::now();
                 let p = server::params(job.query.as_deref().or(query.as_deref()), info.default_debias);
-                let result = server::prepare(&fe, &info, job.body, &p);
+                let result = match (job.payload, &qset) {
+                    (Payload::Body(body), _) => server::prepare(&fe, &info, body, &p),
+                    (Payload::Doc(doc), Some(qs)) => qs.prepare(&fe, &info, doc, &p),
+                    (Payload::Doc(_), None) => Err(Outcome::Internal),
+                };
+                plan_time.0.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                plan_time.1.fetch_add(1, Ordering::Relaxed);
                 if tx.send(Planned { seq, id: job.id, result }).is_err() {
                     return;
                 }
@@ -568,6 +686,18 @@ pub fn run(opts: RunOptions, frontend: Arc<Frontend>) -> Result<Summary> {
     }
     drop(w);
     write_result?;
+    let (plan_ns, planned) = (plan_time.0.load(Ordering::Relaxed), plan_time.1.load(Ordering::Relaxed));
+    summary.plan_s = plan_ns as f64 * 1e-9;
+    summary.plan_ms_per_job = if planned > 0 { plan_ns as f64 * 1e-6 / planned as f64 } else { 0.0 };
+    summary.planner_threads = cpu;
+    summary.question_set = qset.map(|q| QuestionSetSummary {
+        questions: q.num_questions,
+        branches: q.num_branches,
+        longest_suffix_tokens: q.suffix_tokens.0,
+        suffix_tokens: q.suffix_tokens.1,
+        docs_prepared: q.docs_prepared.load(Ordering::Relaxed),
+        docs_full_body: q.docs_full_body.load(Ordering::Relaxed),
+    });
     summary.aborted = abort;
     Ok(summary)
 }

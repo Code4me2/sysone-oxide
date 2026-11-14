@@ -13,6 +13,7 @@
 //! | [`job`] | Input lines and result lines |
 //! | [`output`] | The results file: lock, resume, crash-safe appends |
 //! | [`pack`] | Choosing each step (window, bucket ladder, throughput curve) and the padding simulations |
+//! | [`qset`] | Question-set runs: one question set over many documents, validated and rendered once |
 //! | [`run`] | The coordinator: reader, planners, dispatcher, writer; the summary |
 //! | [`worker`] | Engines per GPU: worker processes (`sysone bulk worker`) or threads; per-device sizing |
 //! | [`wire`] | The coordinator ↔ worker-process pipe protocol |
@@ -25,6 +26,7 @@ pub mod compare;
 pub mod job;
 pub mod output;
 pub mod pack;
+pub mod qset;
 pub mod run;
 pub mod synth;
 pub mod wire;
