@@ -9,11 +9,10 @@ const VOCAB: [&str; 16] = [
     "package", "warehouse", "address", "invoice",
 ];
 
-/// Request body `i` with a state of `words` words and `questions` questions (loadgen's body for
-/// `--state-tokens words --questions questions`).
-pub fn body(i: usize, words: usize, questions: usize) -> String {
+/// `n` pseudo-random words of document `i`, space-separated.
+pub fn words(i: usize, n: usize) -> String {
     let mut x = (i as u64 + 1).wrapping_mul(0x9e3779b97f4a7c15);
-    let words: Vec<&str> = (0..words)
+    let words: Vec<&str> = (0..n)
         .map(|_| {
             x ^= x << 13;
             x ^= x >> 7;
@@ -21,18 +20,31 @@ pub fn body(i: usize, words: usize, questions: usize) -> String {
             VOCAB[(x % VOCAB.len() as u64) as usize]
         })
         .collect();
-    let questions: Vec<String> = (0..questions)
+    words.join(" ")
+}
+
+/// The questions object (JSON text) of `n` questions; `case`: the case number their instructions name (None: the
+/// same text for every document, as in a question set).
+pub fn questions(case: Option<usize>, n: usize) -> String {
+    let c = case.map(|i| format!(" {i}")).unwrap_or_default();
+    let qs: Vec<String> = (0..n)
         .map(|q| match q % 3 {
-            0 => format!(r#""q{q}": {{"type": "noul", "instructions": "Should case {i} be escalated (check {q})?"}}"#),
+            0 => format!(r#""q{q}": {{"type": "noul", "instructions": "Should case{c} be escalated (check {q})?"}}"#),
             1 => format!(
-                r#""q{q}": {{"type": "choice", "instructions": "Route case {i}", "criteria": {{"billing": "Billing team", "tech": "Technical support", "ship": "Shipping", "fraud": "Fraud review", "other": null}}}}"#
+                r#""q{q}": {{"type": "choice", "instructions": "Route case{c}", "criteria": {{"billing": "Billing team", "tech": "Technical support", "ship": "Shipping", "fraud": "Fraud review", "other": null}}}}"#
             ),
             _ => format!(
-                r#""q{q}": {{"type": "score", "instructions": "Urgency of case {i}", "criteria": ["low", "medium", "high", "critical"]}}"#
+                r#""q{q}": {{"type": "score", "instructions": "Urgency of case{c}", "criteria": ["low", "medium", "high", "critical"]}}"#
             ),
         })
         .collect();
-    format!(r#"{{"state": {{"ticket": "{}", "case": {i}}}, "questions": {{{}}}}}"#, words.join(" "), questions.join(", "))
+    format!("{{{}}}", qs.join(", "))
+}
+
+/// Request body `i` with a state of `n_words` words and `n_questions` questions (loadgen's body for
+/// `--state-tokens n_words --questions n_questions`).
+pub fn body(i: usize, n_words: usize, n_questions: usize) -> String {
+    format!(r#"{{"state": {{"ticket": "{}", "case": {i}}}, "questions": {}}}"#, words(i, n_words), questions(Some(i), n_questions))
 }
 
 /// Parameters of a synthetic bulk corpus.
@@ -70,6 +82,24 @@ pub fn doc_shape(spec: &CorpusSpec, i: usize) -> (usize, usize) {
 pub fn corpus_line(spec: &CorpusSpec, i: usize) -> String {
     let (words, q) = doc_shape(spec, i);
     format!("{{\"id\": \"doc-{i:06}\", \"body\": {}}}", body(i, words, q))
+}
+
+/// A question set of `n` questions (`sysone bulk gen --question-set`): `{"questions": {...}}`.
+pub fn question_set(n: usize) -> String {
+    format!(r#"{{"questions": {}}}"#, questions(None, n))
+}
+
+/// Document `i` of a question-set corpus: `{"id": "doc-000001", "state": "<words>"}` (the state is text).
+pub fn doc_line(spec: &CorpusSpec, i: usize) -> String {
+    let (w, _) = doc_shape(spec, i);
+    format!(r#"{{"id": "doc-{i:06}", "state": "{}"}}"#, words(i, w))
+}
+
+/// The job line equivalent to [`doc_line`] with [`question_set`]`(n)`: `{"state": ..., "questions": ...}`, the
+/// order `QuestionSet::body` gives.
+pub fn doc_job_line(spec: &CorpusSpec, i: usize, n: usize) -> String {
+    let (w, _) = doc_shape(spec, i);
+    format!(r#"{{"id": "doc-{i:06}", "body": {{"state": "{}", "questions": {}}}}}"#, words(i, w), questions(None, n))
 }
 
 #[cfg(test)]

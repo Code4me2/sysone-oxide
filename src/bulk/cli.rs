@@ -7,7 +7,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::pack::{PackPolicy, PackStats, Size, Throughput, ladder, simulate_bulk, simulate_fifo};
-use super::run::{RunOptions, Worker, WorkerStart};
+use super::qset::QuestionSet;
+use super::run::{Input, RunOptions, Worker, WorkerStart};
 use super::worker::{DEFAULT_MAX_STEP, EngineSpec};
 use crate::api::server::ServerInfo;
 use crate::contract::StepLimits;
@@ -40,9 +41,17 @@ pub struct RunArgs {
     /// Model directory (config.json, model.safetensors, tokenizer.json, chat_template.jinja).
     #[arg(long)]
     pub model: PathBuf,
-    /// Jobs: one `{"id": ..., "body": {...}}` per line (also `body_text`, `query`).
-    #[arg(long)]
-    pub input: PathBuf,
+    /// Jobs: one `{"id": ..., "body": {...}}` per line (also `body_text`, `query`). Or --questions and --docs.
+    #[arg(long, required_unless_present = "questions", conflicts_with_all = ["questions", "docs"])]
+    pub input: Option<PathBuf>,
+    /// A question set: a request body without `state` (`{"questions": {...}}` plus other top-level fields such as
+    /// `model`), evaluated over every document of --docs. Validated before any worker starts.
+    #[arg(long, requires = "docs")]
+    pub questions: Option<PathBuf>,
+    /// The documents for --questions: a JSONL file of `{"id": ..., "state": ...}` (also `query`, `overrides`), or a
+    /// directory of UTF-8 text files (id = file name, state = the text).
+    #[arg(long, requires = "questions")]
+    pub docs: Option<PathBuf>,
     /// Results: one `{"id": ..., "status": ..., "body": ...}` per line, appended; ids already there are skipped.
     #[arg(long)]
     pub output: PathBuf,
@@ -220,6 +229,24 @@ pub fn run_main(argv: &[String]) -> Result<i32> {
     );
     let frontend = Arc::new(Frontend::load(&a.model, limits).context("loading the frontend")?);
     let info = ServerInfo::for_cli(&a.model, &cfg.model_type, a.name.as_deref(), &a.fork_mode, a.debias)?;
+    // The question set is validated here, before any worker (GPU) starts.
+    let input = match (&a.input, &a.questions, &a.docs) {
+        (Some(p), None, None) => Input::Jobs(p.clone()),
+        (None, Some(q), Some(d)) => {
+            let qs = QuestionSet::load(q, &frontend, &info, a.query.as_deref())?;
+            ensure!(d.exists(), "--docs {}: no such file or directory", d.display());
+            eprintln!(
+                "sysone bulk: question set {}: {} questions, {} branches, {} suffix tokens per document (longest {})",
+                q.display(),
+                qs.num_questions,
+                qs.num_branches,
+                qs.suffix_tokens.1,
+                qs.suffix_tokens.0
+            );
+            Input::Docs { questions: Arc::new(qs), docs: d.clone() }
+        }
+        _ => bail!("pass --input, or --questions with --docs"),
+    };
     let base = EngineSpec {
         engine: match a.engine {
             EngineKind::Bf16 => "bf16".into(),
@@ -307,7 +334,7 @@ pub fn run_main(argv: &[String]) -> Result<i32> {
     }
     let cpu = a.cpu_workers.unwrap_or_else(|| std::thread::available_parallelism().map_or(4, |n| n.get()).saturating_sub(2).max(1));
     let opts = RunOptions {
-        input: a.input.clone(),
+        input,
         output: a.output.clone(),
         workers,
         window: a.window,
@@ -380,8 +407,16 @@ pub struct GenArgs {
     pub max_questions: usize,
     #[arg(long, default_value_t = 1)]
     pub seed: u64,
+    /// Jobs (`{"id", "body"}`), or with --question-set the documents (`{"id", "state"}`, states as text).
     #[arg(long)]
     pub output: PathBuf,
+    /// Write a question set of --max-questions questions here (the same for every document) and the documents to
+    /// --output, for `sysone bulk --questions FILE --docs OUTPUT`.
+    #[arg(long)]
+    pub question_set: Option<PathBuf>,
+    /// With --question-set: also write the equivalent full-body jobs here (for `--input`, comparisons).
+    #[arg(long, requires = "question_set")]
+    pub jobs_out: Option<PathBuf>,
 }
 
 pub fn gen_main(argv: &[String]) -> Result<i32> {
@@ -396,9 +431,29 @@ pub fn gen_main(argv: &[String]) -> Result<i32> {
         max_questions: a.max_questions,
         seed: a.seed,
     };
-    let mut f = std::io::BufWriter::new(std::fs::File::create(&a.output).with_context(|| format!("creating {}", a.output.display()))?);
-    for i in 0..spec.docs {
-        writeln!(f, "{}", super::synth::corpus_line(&spec, i))?;
+    let create = |p: &Path| -> Result<std::io::BufWriter<std::fs::File>> {
+        Ok(std::io::BufWriter::new(std::fs::File::create(p).with_context(|| format!("creating {}", p.display()))?))
+    };
+    let mut f = create(&a.output)?;
+    match &a.question_set {
+        None => {
+            for i in 0..spec.docs {
+                writeln!(f, "{}", super::synth::corpus_line(&spec, i))?;
+            }
+        }
+        Some(q) => {
+            std::fs::write(q, super::synth::question_set(a.max_questions) + "\n").with_context(|| format!("writing {}", q.display()))?;
+            let mut jobs = a.jobs_out.as_deref().map(create).transpose()?;
+            for i in 0..spec.docs {
+                writeln!(f, "{}", super::synth::doc_line(&spec, i))?;
+                if let Some(j) = &mut jobs {
+                    writeln!(j, "{}", super::synth::doc_job_line(&spec, i, a.max_questions))?;
+                }
+            }
+            if let Some(mut j) = jobs {
+                j.flush()?;
+            }
+        }
     }
     f.flush()?;
     Ok(0)
@@ -449,9 +504,9 @@ pub fn simulate_main(argv: &[String]) -> Result<i32> {
         .par_iter()
         .enumerate()
         .map(|(i, l)| match super::job::parse_line(i as u64 + 1, l) {
-            super::job::Line::Job(j) => {
-                let p = crate::api::server::params(j.query.as_deref().or(a.query.as_deref()), info.default_debias);
-                crate::api::server::prepare(&frontend, &info, j.body, &p)
+            super::job::Line::Job(super::job::Job { payload: super::job::Payload::Body(body), query, .. }) => {
+                let p = crate::api::server::params(query.as_deref().or(a.query.as_deref()), info.default_debias);
+                crate::api::server::prepare(&frontend, &info, body, &p)
                     .ok()
                     .map(|r| Size { tokens: r.plan.total, branches: r.plan.branches.len() })
             }

@@ -547,15 +547,29 @@ pub(crate) fn prepare(frontend: &Frontend, info: &ServerInfo, body: Result<Json,
     let req = body.and_then(|v| SystemOneRequest::validate(&v)).map_err(|e| Outcome::api(&e))?;
     check_model(&req.model, &info.served_name).map_err(|e| Outcome::api(&e))?;
     let Some(debias) = p.debias else { return Err(Outcome::Internal) };
-    let plan = match frontend.plan(&req, debias) {
-        Ok(plan) => plan,
-        Err(PlanError::Value(msg)) => return Err(Outcome::api(&ApiError::value_error(msg))),
-        Err(PlanError::Internal(e)) => {
-            eprintln!("sysone: planning failed: {e:#}");
-            return Err(Outcome::Internal);
-        }
-    };
+    let plan = frontend.plan(&req, debias).map_err(plan_error)?;
     Ok(Ready { req, plan: Arc::new(plan), debug: p.debug, started, planned: Instant::now() })
+}
+
+/// The response to a request `decide()` refuses while planning.
+pub(crate) fn plan_error(e: PlanError) -> Outcome {
+    match e {
+        PlanError::Value(msg) => Outcome::api(&ApiError::value_error(msg)),
+        PlanError::Internal(e) => {
+            eprintln!("sysone: planning failed: {e:#}");
+            Outcome::Internal
+        }
+    }
+}
+
+impl Params {
+    pub(crate) fn debias(&self) -> Option<i64> {
+        self.debias
+    }
+
+    pub(crate) fn debug(&self) -> bool {
+        self.debug
+    }
 }
 
 /// Answer assembly and the response body.

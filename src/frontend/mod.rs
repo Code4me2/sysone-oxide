@@ -26,7 +26,7 @@ use std::path::Path;
 use crate::api::schema::{Answer, QevMeta, SystemOneRequest, SystemOneResponse, Usage};
 use crate::contract::MAX_SLOTS;
 pub use assemble::{Assembled, Calibration};
-pub use plan::{Branch, Limits, Plan, PlanError};
+pub use plan::{Branch, Limits, Plan, PlanError, PreparedQuestions};
 
 pub struct Frontend {
     pub tokenizer: tokenize::Tokenizer,
