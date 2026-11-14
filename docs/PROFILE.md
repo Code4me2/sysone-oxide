@@ -205,3 +205,56 @@ Two of the readings above did not survive testing; F1.md has the numbers.
   GEMM only pays when the main loop stays the plain GEMM's (one accumulator over one 128-row weight tile, which
   takes interleaving the gate and up rows at load) and two tile blocks share an SM (cuTile `occupancy` 2), so one
   tile's epilogue runs under the other's MMAs: the fused launch then costs what the plain gate/up GEMM costs.
+
+## Diagnostics after C1 + S2 (main e49527f, 2026-11-14)
+
+Same method as above (one `scripts/gpu.sh` session, idle GPU, SIMT GDN). Raw reports stay in `sysone-prof/diag/`.
+
+**Where a 16k nvfp4 forward goes now** (1,827 ms replay, 8,962 packed tok/s; `bench_forward` per-op profile, and
+`ncu` counters over the eager forwards):
+
+| part | ms | share | limit (ncu) | headroom |
+|---|---:|---:|---|---|
+| bf16 GDN in-projection (cuBLAS nvjet 128x208) | 437 | 24% | tensor pipe 82.5% | ~5-10%: hwprobe's best bf16 GEMM is 99-109 TFLOP/s, this runs at ~92 |
+| FP4 gate/up + SiLU·mul + quantize (cuTile, F1) | 417 | 23% | tensor pipe 55%; not L2 (F1 addendum) but the kernel's pipeline | ~130-140 ms at cuBLASLt's 82% (C1 §7): needs a new kernel structure |
+| bf16 out_proj / o_proj / q_proj / kv_proj (cuBLAS sm80 `Kernel2`) | 328 | 18% | tensor pipe 74% (~86 TFLOP/s) | ~15-30 ms if a split-K-free nvjet algorithm is pinned for these shapes |
+| FP4 down (cuBLASLt, C1) | 147 | 8% | tensor pipe 82% | small |
+| GDN scan + tinv + gates | 232 | 13% | scan: SM 27%, 255 registers, 1 block per SM (latency) | uncertain, maybe 60-100 ms |
+| norms, conv1d, gated norm, scale re-layout | ~290 | 16% | at DRAM bandwidth (~210-240 GB/s vs 230 measured) | only by fusing into neighbours |
+| attention (seg_attn, qk_norm_rope) | 49 | 3% | | 9% of the step with ~7k-token documents |
+| launch gaps inside a replay / step boundary | ~0 / 0.44 ms | 0.02% | nsys | none |
+
+**Scans:**
+- **Bucket size:** bucket tok/s 8,170 (1k), 8,520 (8k), 8,970 (16k), 9,100 (32k), 9,050 (48k), 9,060 (64k).
+  Steps of 16k-32k are the plateau; larger steps buy nothing.
+- **`tokens_per_answer` 4 / 8 / 16 / 32:** 16k replay 1,873 / 1,881 / 1,875 / 1,873 ms. 4k and 32k are equally
+  flat (±1%). There is no speed effect, so the default stays 8; it sets only how many answer rows a bucket holds.
+- **Document length**, at 16k / 32k: ~950-token requests run 8,962 / 8,939 tok/s; ~3k-token, 8,520 / 8,669;
+  ~7k-token, 7,763 / 7,856. Attention grows from 2% to 9% of the step.
+- **Packing** (`sysone bulk simulate`, B1 corpus): padding 0.05-0.2% for every bulk window/ladder at 32k steps.
+  Nothing left to gain.
+
+**Bulk end to end, nvfp4** (`sysone bulk --engine nvfp4`, the B1 corpus: 2,000 documents, 6.30M packed tokens,
+20,078 decisions):
+- 752.5 s run; **2.66 docs/s, 26.7 decisions/s, 8,377 packed tok/s**.
+- Padding 0.20%, GPU busy 99.99%, all 2,000 ok.
+- That is 1.65x B1's bf16 run (1.606 docs/s, 5,062 tok/s).
+- It is below the 16k bench (8,962) because this corpus's long documents cost more attention per token.
+
+**hwprobe (GB10):**
+- Device-to-device copy: 229.5 GB/s.
+- bf16 cuBLAS GEMMs (heuristic): 87-100 TFLOP/s at 16k-32k, best 108.6 (gdn.in_proj_qkv at 1k).
+- The engine's pinned bf16 projections reach 86-92 TFLOP/s, so bf16 headroom is about 10%, and only from the
+  kernel choice.
+
+**Ranked next steps** (ms per 16k forward; all bit-identical or gated as before; no change to which weights are FP4):
+1. **Hand-written fused FP4 gate/up + SwiGLU GEMM (cuda-oxide):** ~95-140 ms (5-7.5%). Large effort.
+   - Design per C1 §7: TMA-fed 3-stage pipeline, 128x256 tiles, block-scaled `mma.sync`, F1's epilogue.
+2. **GDN scan latency** (registers, occupancy, the prefix/suffix split): maybe 60-100 ms. Uncertain, medium effort.
+3. **Pin faster bf16 algorithms for N = 4096 / 8192 / 2048** (cuBLAS picks sm80 `Kernel2`): ~15-30 ms. Small effort.
+   - Same method as L1/C1: enumerate the split-K-free candidates, pick a fixed preferred one, check batch invariance.
+4. **Long-document attention:** up to ~5% only on corpora of long documents.
+5. **Fusions of the remaining memory-bound kernels** (conv1d into the scan input, norms into neighbours): tens of
+   ms each, kernel by kernel.
+
+Expected ceiling with 1-3 done: ~1,600-1,650 ms, which is 10-10.5k packed tok/s on GB10.
