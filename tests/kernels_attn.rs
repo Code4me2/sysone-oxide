@@ -580,3 +580,110 @@ fn seg_attn_tiles_match_default_bits() {
          set for every T to keep batch invariance"
     );
 }
+
+// ---------------------------------------------------------------------------------------------------------
+// L1: the trimmed last layer (k for every token, q and attention for the answer rows only)
+// ---------------------------------------------------------------------------------------------------------
+
+/// `k_norm_rope` equals the k half of `qk_norm_rope` bit for bit, and `qk_norm_rope` over gathered rows (with
+/// the gathered positions) equals the same rows of `qk_norm_rope` over every row.
+#[test]
+fn k_norm_rope_and_gathered_q_match_qk_norm_rope_bits() {
+    let stream = setup();
+    let mut rng = Rng(0x1234_5678_9abc_def1);
+    let mut b = DecisionBatch::default();
+    b.push_request(&[1; 300], &[(&[2; 40], 2), (&[3; 7], 2), (&[4; 1], 2)]).unwrap();
+    b.push_request(&[1; 5], &[(&[2; 3], 2)]).unwrap();
+    let mut pos = attn::positions(&b.segments);
+    pos.extend((0..96).map(|_| (rng.next() % 65536) as i32));
+    let t = pos.len();
+    assert_eq!(t % attn::ROPE_TOKENS, 0);
+    let mut qg = Vec::with_capacity(t * HQ * 2 * D);
+    for r in 0..t {
+        qg.extend(rng.bf16s(HQ * 2 * D, [0.05, 1.0, 30.0][r % 3]));
+    }
+    let kv = rng.bf16s(t * 2 * HK * D, 2.0);
+    let qw = rng.bf16s(D, 0.5);
+    let kw = rng.bf16s(D, 0.5);
+    let inv = attn::rope_inv_freq();
+    let (qw_d, kw_d, inv_d) = (upload(qw, &[D], &stream), upload(kw, &[D], &stream), upload(inv.to_vec(), &[32], &stream));
+    let run = |qg: &[bf16], kv: &[bf16], pos: &[i32]| {
+        let n = pos.len();
+        let qg_d = upload(qg.to_vec(), &[n, HQ, 2 * D], &stream);
+        let kv_d = upload(kv.to_vec(), &[n, 2 * HK, D], &stream);
+        let pos_d = upload(pos.to_vec(), &[n], &stream);
+        let mut q = api::zeros::<bf16>(&[n, HQ, D]).sync_on(&stream).unwrap();
+        let mut k = api::zeros::<bf16>(&[n, HK, D]).sync_on(&stream).unwrap();
+        attn::qk_norm_rope(&mut q, &mut k, &qg_d, &kv_d, &pos_d, &qw_d, &kw_d, &inv_d, RMS_EPS)
+            .unwrap()
+            .sync_on(&stream)
+            .unwrap();
+        let mut k2 = api::zeros::<bf16>(&[n, HK, D]).sync_on(&stream).unwrap();
+        attn::k_norm_rope(&mut k2, &kv_d, &pos_d, &kw_d, &inv_d, RMS_EPS).unwrap().sync_on(&stream).unwrap();
+        (q.to_host_vec().sync_on(&stream).unwrap(), k.to_host_vec().sync_on(&stream).unwrap(),
+         k2.to_host_vec().sync_on(&stream).unwrap())
+    };
+    let (q_all, k_all, k_only) = run(&qg, &kv, &pos);
+    assert_eq!(k_all, k_only, "k_norm_rope differs from qk_norm_rope's k");
+    // Gathered rows: the answer rows, then a scattered selection (even count).
+    let mut rows: Vec<usize> = b.answer_rows.iter().map(|&r| r as usize).collect();
+    rows.extend((0..30).map(|i| (i * 37 + 11) % t));
+    rows.truncate(rows.len() / 2 * 2);
+    let gather = |v: &[bf16], w: usize| rows.iter().flat_map(|&r| v[r * w..(r + 1) * w].to_vec()).collect::<Vec<_>>();
+    let (qg_r, kv_r) = (gather(&qg, HQ * 2 * D), gather(&kv, 2 * HK * D));
+    let pos_r: Vec<i32> = rows.iter().map(|&r| pos[r]).collect();
+    let (q_r, k_r, _) = run(&qg_r, &kv_r, &pos_r);
+    assert_eq!(q_r, gather(&q_all, HQ * D), "qk_norm_rope over gathered rows differs (q)");
+    assert_eq!(k_r, gather(&k_all, HK * D), "qk_norm_rope over gathered rows differs (k)");
+    println!("k_norm_rope: {t} rows bit-identical to qk_norm_rope's k; qk_norm_rope over {} gathered rows \
+              bit-identical to the same rows of the full call (tolerance: exact)", rows.len());
+}
+
+/// `seg_attn` with [`AttnPlan::answers`] over gathered q / gate rows (keys and values of every token) gives, bit
+/// for bit, the answer rows of the full `seg_attn`; padding items (q_len 0) write nothing.
+#[test]
+fn seg_attn_answers_match_full_rows() {
+    let stream = setup();
+    let reqs = requests();
+    let all: Vec<(&Req, Vec<usize>)> = reqs.iter().map(|r| (r, (0..r.suffixes.len()).collect())).collect();
+    let p = pack(&all);
+    for tiles in [AttnTiles::default(), AttnTiles::for_tokens(1024)] {
+        let dev = device_inputs(&p, &stream);
+        let full = run_attn(&dev, &AttnPlan::new(&p.batch.segments, tiles.bm), tiles, bf16::NAN, &stream);
+        let rows: Vec<usize> = p.batch.answer_rows.iter().map(|&r| r as usize).collect();
+        let q_n = rows.len() + 3; // 3 padding rows
+        let host_q = dev.q.to_host_vec().sync_on(&stream).unwrap();
+        let host_qg = dev.qg.to_host_vec().sync_on(&stream).unwrap();
+        let gather = |v: &[bf16], w: usize| {
+            let mut g: Vec<bf16> = rows.iter().flat_map(|&r| v[r * w..(r + 1) * w].to_vec()).collect();
+            g.resize(q_n * w, bf16::from_f32(1.0));
+            g
+        };
+        let q_a = upload(gather(&host_q, HQ * D), &[q_n, HQ, D], &stream);
+        let qg_a = upload(gather(&host_qg, HQ * 2 * D), &[q_n, HQ, 2 * D], &stream);
+        let sentinel = bf16::from_f32(-123.0);
+        let out = upload(vec![sentinel; q_n * HQ * D], &[q_n, HQ, D], &stream);
+        let mut plan = AttnPlan::answers(&p.batch.segments);
+        assert_eq!(plan.num_items(), rows.len());
+        plan.pad_to(q_n);
+        let work = upload(plan.work.clone(), &[plan.work.len()], &stream);
+        let args = SegAttnArgs {
+            out: out.device_pointer(),
+            q: q_a.device_pointer(),
+            k: dev.k.device_pointer(),
+            kv: dev.kv.device_pointer(),
+            qg: qg_a.device_pointer(),
+            work: work.device_pointer(),
+            num_items: plan.num_items(),
+        };
+        unsafe { attn::seg_attn(args, tiles) }.sync_on(&stream).unwrap();
+        let got = out.to_host_vec().sync_on(&stream).unwrap();
+        for (i, &r) in rows.iter().enumerate() {
+            assert_eq!(got[i * HQ * D..(i + 1) * HQ * D], full[r * HQ * D..(r + 1) * HQ * D],
+                       "answer {i} (row {r}) differs from the full seg_attn (bm={})", tiles.bm);
+        }
+        assert!(got[rows.len() * HQ * D..].iter().all(|v| *v == sentinel), "padding rows were written");
+        println!("seg_attn answers (bm={} d_split={}): {} answer rows bit-identical to the full call, padding \
+                  untouched (tolerance: exact)", tiles.bm, tiles.d_split, rows.len());
+    }
+}

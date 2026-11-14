@@ -54,6 +54,33 @@ pub struct Forward {
     /// `(name, value)` per tap: `layer{i}` and `norm`, each `[T, hidden]` bf16.
     pub taps: Vec<(String, ValueId)>,
     pub n_slots: usize,
+    /// The last layer was trimmed to the answer rows ([`ForwardOptions::trim_last_layer`]).
+    pub trimmed: bool,
+}
+
+/// How [`build_opts`] writes the forward.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ForwardOptions {
+    /// NVFP4 checkpoints: quantize activations in the epilogue of the preceding norm / SiLU·mul.
+    pub nvfp4_fused: bool,
+    /// L1: compute the last layer's queries, attention, `o_proj`, post-norm and MLP, and the final norm, only for
+    /// the answer rows ([`trimmed_last_layer`]); keys and values stay computed for every token. Applies only when
+    /// the last layer is full attention and no debug tap needs the last layer's rows (`Taps::norm` or the last
+    /// layer in `Taps::layers`); otherwise the forward is built untrimmed ([`Forward::trimmed`] says which).
+    pub trim_last_layer: bool,
+}
+
+impl Default for ForwardOptions {
+    fn default() -> Self {
+        Self { nvfp4_fused: true, trim_last_layer: true }
+    }
+}
+
+/// Whether the last layer of `cfg` can be trimmed to the answer rows with these taps.
+pub fn can_trim_last_layer(cfg: &ModelConfig, taps: &Taps) -> bool {
+    let t = &cfg.text_config;
+    let last = t.num_hidden_layers - 1;
+    t.layer_types.get(last) == Some(&LayerType::FullAttention) && !taps.norm && !taps.layers.contains(&last)
 }
 
 fn cols(v: ValueId, start: usize, len: usize) -> TensorRef {
@@ -80,15 +107,24 @@ pub fn check_dims(cfg: &ModelConfig) -> Result<()> {
 }
 
 /// Build the forward for `cfg` over `weights` (which decides bf16 vs NVFP4 per projection) with `n_slots`
-/// readout rows; NVFP4 quantization fused into the preceding norm / SiLU·mul.
+/// readout rows; NVFP4 quantization fused into the preceding norm / SiLU·mul, last layer trimmed when possible
+/// ([`ForwardOptions::default`]).
 pub fn build(cfg: &ModelConfig, weights: &dyn WeightStore, n_slots: usize, taps: &Taps) -> Result<Forward> {
-    build_with(cfg, weights, n_slots, taps, true)
+    build_opts(cfg, weights, n_slots, taps, ForwardOptions::default())
 }
 
-/// [`build`], choosing whether NVFP4 activation quantization is fused into the preceding op (`nvfp4_fused`) or
-/// runs as a standalone `quantize_nvfp4` on the materialised bf16 activation.
+/// The untrimmed forward, choosing whether NVFP4 activation quantization is fused into the preceding op
+/// (`nvfp4_fused`) or runs as a standalone `quantize_nvfp4` on the materialised bf16 activation.
 pub fn build_with(cfg: &ModelConfig, weights: &dyn WeightStore, n_slots: usize, taps: &Taps, nvfp4_fused: bool)
     -> Result<Forward> {
+    build_opts(cfg, weights, n_slots, taps, ForwardOptions { nvfp4_fused, trim_last_layer: false })
+}
+
+/// The forward as `opts` says.
+pub fn build_opts(cfg: &ModelConfig, weights: &dyn WeightStore, n_slots: usize, taps: &Taps, opts: ForwardOptions)
+    -> Result<Forward> {
+    let nvfp4_fused = opts.nvfp4_fused;
+    let trim = opts.trim_last_layer && can_trim_last_layer(cfg, taps);
     check_dims(cfg)?;
     let t = &cfg.text_config;
     let h = t.hidden_size;
@@ -145,6 +181,12 @@ pub fn build_with(cfg: &ModelConfig, weights: &dyn WeightStore, n_slots: usize, 
             }
         }
         let lw = |s| WeightRef::Layer(i, s);
+        if trim && i == t.num_hidden_layers - 1 {
+            let dims = TrimDims { h, inter, q_dim, kv_dim };
+            let logits = trimmed_last_layer(&mut g, weights, i, dims, x, hn, n_slots, nvfp4_fused)?;
+            g.validate()?;
+            return Ok(Forward { graph: g, logits, taps: out_taps, n_slots, trimmed: true });
+        }
         let mixer = tok(&mut g, h);
         match ty {
             LayerType::LinearAttention => {
@@ -250,5 +292,114 @@ pub fn build_with(cfg: &ModelConfig, weights: &dyn WeightStore, n_slots: usize, 
     g.push(GraphOp::Gemm { x: hs.into(), w: WeightRef::SlotHead, out: logits });
     g.outputs.push(logits);
     g.validate()?;
-    Ok(Forward { graph: g, logits, taps: out_taps, n_slots })
+    Ok(Forward { graph: g, logits, taps: out_taps, n_slots, trimmed: false })
+}
+
+#[derive(Clone, Copy)]
+struct TrimDims {
+    h: usize,
+    inter: usize,
+    q_dim: usize,
+    kv_dim: usize,
+}
+
+/// L1: the last layer (full attention, index `i`) and the readout over the answer rows only. `x` is the residual
+/// stream after the layer's input add (every token), `hn` its input norm. Every token's keys and values are still
+/// computed (the answer rows attend to them); everything else (queries, attention output, `o_proj`, the residual
+/// add, post-norm, MLP and final norm) is computed on the `[Q, ..]` gathered answer rows. Each op is row-local and
+/// the same op as in the untrimmed forward, so the answer rows get the same values as there, provided the GEMMs
+/// do not depend on the row count (bf16: [`crate::engine::gemm::GemmMode::Pinned`]; the NVFP4 GEMM's tiles are
+/// fixed at every T).
+///
+/// ```text
+/// kv    = hn · [Wk; Wv]ᵀ                 [T, 2048]   k = k_norm_rope(kv)        [T, 1024]
+/// hn_a  = hn[answer_rows]                [Q, 4096]   qg_a = hn_a · Wqᵀ          [Q, 8192]
+/// q_a   = qk_norm_rope(qg_a, kv[answer_rows]) at the answer positions
+/// o_a   = seg_attn(q_a | k, kv | gate qg_a) · Woᵀ      one work item per answer row
+/// x_a   = x[answer_rows]; h2_a = add_zc_rmsnorm(x_a += o_a, ln2); m_a = MLP(h2_a)   (bf16 or NVFP4, as per layer)
+/// hs    = add_zc_rmsnorm(x_a += m_a, final_norm); logits = hs · W_slotᵀ
+/// ```
+///
+/// The MLP ops repeat the per-layer MLP of [`build_opts`] on `Dim::Answers` values (kept separate from the loop so
+/// the per-layer code is untouched).
+#[allow(clippy::too_many_arguments)]
+fn trimmed_last_layer(g: &mut StepGraph, weights: &dyn WeightStore, i: usize, d: TrimDims, x: ValueId, hn: ValueId,
+                      n_slots: usize, nvfp4_fused: bool) -> Result<ValueId> {
+    let bf = GraphDType::BF16;
+    let TrimDims { h, inter, q_dim, kv_dim } = d;
+    let tok = |g: &mut StepGraph, n: usize| g.value(bf, vec![Dim::Tokens, Dim::Fixed(n)]);
+    let ans = |g: &mut StepGraph, n: usize| g.value(bf, vec![Dim::Answers, Dim::Fixed(n)]);
+    let act = |g: &mut StepGraph, k: usize| {
+        (g.value(GraphDType::U8, vec![Dim::Answers, Dim::Fixed(k / 2)]),
+         g.value(GraphDType::F8E4M3, vec![Dim::Answers, Dim::Fixed(k / 16)]))
+    };
+    let lw = |s| WeightRef::Layer(i, s);
+
+    // Keys and values for every token.
+    let kv = tok(g, 2 * kv_dim);
+    g.push(GraphOp::Gemm { x: hn.into(), w: lw(LayerWeight::AttnKv), out: kv });
+    let k = tok(g, kv_dim);
+    g.push(GraphOp::KNormRope { layer: i, kv: kv.into(), k });
+    // Queries, attention and o_proj for the answer rows.
+    let hn_a = ans(g, h);
+    g.push(GraphOp::GatherRows { src: hn.into(), out: hn_a });
+    let qg_a = ans(g, 2 * q_dim);
+    g.push(GraphOp::Gemm { x: hn_a.into(), w: lw(LayerWeight::AttnQ), out: qg_a });
+    let kv_a = ans(g, 2 * kv_dim);
+    g.push(GraphOp::GatherRows { src: kv.into(), out: kv_a });
+    let (q_a, k_a) = (ans(g, q_dim), ans(g, kv_dim));
+    g.push(GraphOp::QkNormRopeAnswers { layer: i, qg: qg_a.into(), kv: kv_a.into(), q: q_a, k: k_a });
+    let ao_a = ans(g, q_dim);
+    g.push(GraphOp::SegAttnAnswers { layer: i, q: q_a.into(), k: k.into(), kv: kv.into(), qg: qg_a.into(), out: ao_a });
+    let mixer = ans(g, h);
+    g.push(GraphOp::Gemm { x: ao_a.into(), w: lw(LayerWeight::AttnO), out: mixer });
+    let x_a = ans(g, h);
+    g.push(GraphOp::GatherRows { src: x.into(), out: x_a });
+
+    // The MLP on the answer rows: the per-layer MLP of build_opts on Answers-row values.
+    let (wgu, wdn) = (lw(LayerWeight::MlpGateUp), lw(LayerWeight::MlpDown));
+    let (gu_q, dn_q) = (weights.linear(wgu)?.is_nvfp4(), weights.linear(wdn)?.is_nvfp4());
+    let x2 = ans(g, h);
+    let gu = ans(g, 2 * inter);
+    if gu_q && nvfp4_fused {
+        let (q, s) = act(g, h);
+        g.push(GraphOp::AddZcRmsNormNvfp4 { residual: x_a, x: mixer.into(), norm: lw(LayerWeight::PostNorm), w: wgu, q,
+                                            s, residual_out: x2 });
+        g.push(GraphOp::GemmNvfp4 { q: q.into(), s: s.into(), w: wgu, out: gu });
+    } else {
+        let h2 = ans(g, h);
+        g.push(GraphOp::AddZcRmsNorm { residual: x_a, x: mixer.into(), w: lw(LayerWeight::PostNorm), out: h2,
+                                       residual_out: x2 });
+        if gu_q {
+            let (q, s) = act(g, h);
+            g.push(GraphOp::QuantizeNvfp4 { x: h2.into(), w: wgu, q, s });
+            g.push(GraphOp::GemmNvfp4 { q: q.into(), s: s.into(), w: wgu, out: gu });
+        } else {
+            g.push(GraphOp::Gemm { x: h2.into(), w: wgu, out: gu });
+        }
+    }
+    let mo = ans(g, h);
+    if dn_q && nvfp4_fused {
+        let (q, s) = act(g, inter);
+        g.push(GraphOp::SiluMulNvfp4 { gu: gu.into(), w: wdn, q, s });
+        g.push(GraphOp::GemmNvfp4 { q: q.into(), s: s.into(), w: wdn, out: mo });
+    } else {
+        let m = ans(g, inter);
+        g.push(GraphOp::SiluMul { gu: gu.into(), out: m });
+        if dn_q {
+            let (q, s) = act(g, inter);
+            g.push(GraphOp::QuantizeNvfp4 { x: m.into(), w: wdn, q, s });
+            g.push(GraphOp::GemmNvfp4 { q: q.into(), s: s.into(), w: wdn, out: mo });
+        } else {
+            g.push(GraphOp::Gemm { x: m.into(), w: wdn, out: mo });
+        }
+    }
+
+    // Final norm and readout on the answer rows.
+    let (hs, x_final) = (ans(g, h), ans(g, h));
+    g.push(GraphOp::AddZcRmsNorm { residual: x2, x: mo.into(), w: WeightRef::FinalNorm, out: hs, residual_out: x_final });
+    let logits = g.value(GraphDType::F32, vec![Dim::Answers, Dim::Fixed(n_slots)]);
+    g.push(GraphOp::Gemm { x: hs.into(), w: WeightRef::SlotHead, out: logits });
+    g.outputs.push(logits);
+    Ok(logits)
 }

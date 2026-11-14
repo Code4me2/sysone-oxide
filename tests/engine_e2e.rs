@@ -23,7 +23,7 @@
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
-use sysone::contract::{DecisionBatch, DecisionEngine, SlotLogits};
+use sysone::contract::{DecisionBatch, DecisionEngine, MAX_SLOTS, SlotLogits};
 use sysone::engine::goldens::{self, GoldenResult, Planned};
 use sysone::engine::config::WeightFormat;
 use sysone::engine::gpu::{EngineOptions, GpuEngine, gdn_backend_from_env, weight_format_from_env};
@@ -314,4 +314,68 @@ fn nvfp4_fused_equals_unfused() {
     println!("fused vs standalone quantize: {same}/{total} steps bit-identical ({} batches, eager and replay)",
              batches.len());
     assert_eq!(same, total, "the fused NVFP4 quantization changed the logits");
+}
+
+/// L1: the last layer trimmed to the answer rows against the untrimmed forward, on every corpus request up to 4k
+/// tokens alone and on packed batches of up to 4k and 16k tokens (eager and replayed). With pinned GEMMs (the
+/// default) the logits must be bit-identical. With cuBLAS's per-call heuristic the trimmed GEMMs have fewer rows
+/// and may run another kernel: reported, not asserted.
+#[test]
+fn trimmed_last_layer_equals_untrimmed() {
+    use sysone::engine::gemm::GemmMode;
+    let mut guard = env().lock().unwrap_or_else(|e| e.into_inner());
+    let env = &mut *guard;
+    let fe = Frontend::load(&model_dir(), Limits::default()).unwrap();
+    let small: Vec<&Planned> = env.plans.iter().filter(|p| p.plan.total <= 4096).collect();
+    let mut batches: Vec<DecisionBatch> = small.iter().map(|p| goldens::batch_of(&[&p.plan]).unwrap().0).collect();
+    for budget in [4096usize, 16384] {
+        let (mut packed, mut tokens) = (Vec::new(), 0);
+        for p in &env.plans {
+            if tokens + p.plan.total <= budget {
+                tokens += p.plan.total;
+                packed.push(&p.plan);
+            }
+        }
+        batches.push(goldens::batch_of(&packed).unwrap().0);
+    }
+    let run = |e: &mut GpuEngine| -> Vec<SlotLogits> {
+        // Each batch twice: eager (+ capture) on its bucket's first use, then a replay.
+        batches.iter().flat_map(|b| [e.run(b).unwrap(), e.run(b).unwrap()]).collect()
+    };
+    let load = |gemm: GemmMode, trim: bool| {
+        let opts = EngineOptions { gemm, trim_last_layer: trim, ..engine_opts(16384, true) };
+        let e = GpuEngine::load(&model_dir(), &fe.slot_ids, opts).unwrap();
+        assert_eq!(e.fwd.trimmed, trim);
+        e
+    };
+    let compare = |a: &[SlotLogits], b: &[SlotLogits]| {
+        let (mut same, mut rows, mut same_rows, mut worst) = (0usize, 0usize, 0usize, 0.0f64);
+        for (x, y) in a.iter().zip(b) {
+            same += (x.data == y.data) as usize;
+            for r in 0..x.rows {
+                rows += 1;
+                let (xr, yr) = (&x.data[r * MAX_SLOTS..(r + 1) * MAX_SLOTS], &y.data[r * MAX_SLOTS..(r + 1) * MAX_SLOTS]);
+                same_rows += (xr == yr) as usize;
+                for (u, v) in xr.iter().zip(yr) {
+                    worst = worst.max((u - v).abs() as f64);
+                }
+            }
+        }
+        (same, a.len(), same_rows, rows, worst)
+    };
+    assert!(env.engine.fwd.trimmed && env.engine.opts.gemm == GemmMode::Pinned, "the default engine is trimmed and pinned");
+    let pinned_trim = run(&mut env.engine);
+    let pinned_full = run(&mut load(GemmMode::Pinned, false));
+    let (s, n, sr, r, w) = compare(&pinned_trim, &pinned_full);
+    println!("pinned GEMMs: trimmed vs untrimmed last layer: {s}/{n} steps, {sr}/{r} answer rows bit-identical \
+              (max |dlogit| {w:.3e}; {} batches, eager and replay)", batches.len());
+    let heur_trim = run(&mut load(GemmMode::Heuristic, true));
+    let heur_full = run(&mut load(GemmMode::Heuristic, false));
+    let (hs, hn, hsr, hr, hw) = compare(&heur_trim, &heur_full);
+    println!("heuristic GEMMs (reported): trimmed vs untrimmed last layer: {hs}/{hn} steps, {hsr}/{hr} answer rows \
+              bit-identical (max |dlogit| {hw:.3e})");
+    let (ps, pn, psr, pr, pw) = compare(&pinned_full, &heur_full);
+    println!("untrimmed, pinned vs heuristic GEMMs (reported): {ps}/{pn} steps, {psr}/{pr} answer rows bit-identical \
+              (max |dlogit| {pw:.3e})");
+    assert_eq!(s, n, "with pinned GEMMs the trimmed last layer changed the logits");
 }

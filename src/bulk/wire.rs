@@ -39,6 +39,9 @@ pub struct Hello {
     pub max_answers: usize,
     pub max_segments: usize,
     pub max_prefixes: usize,
+    /// `StepLimits::tokens_per_answer` (answer-row capacity per bucket).
+    #[serde(default = "one")]
+    pub tokens_per_answer: usize,
     /// `(bucket tokens, tok/s)` for packing decisions (the platform profile's forward points, or a default).
     pub throughput: Vec<(usize, f64)>,
     /// `DecisionEngine::info` pairs.
@@ -53,8 +56,13 @@ impl Hello {
             max_answers: self.max_answers,
             max_segments: self.max_segments,
             max_prefixes: self.max_prefixes,
+            tokens_per_answer: self.tokens_per_answer,
         }
     }
+}
+
+fn one() -> usize {
+    1
 }
 
 /// A finished step as the worker reports it.
@@ -329,6 +337,7 @@ mod tests {
             max_answers: 9,
             max_segments: 10,
             max_prefixes: 3,
+            tokens_per_answer: 8,
             throughput: vec![(256, 1.5)],
             info: vec![("engine".into(), "mock".into())],
             load_seconds: 0.25,

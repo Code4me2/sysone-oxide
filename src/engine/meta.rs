@@ -16,7 +16,8 @@
 //!   [`PAD_PARENT`]);
 //! - `seg_state [segments] i32`: prefix-state scratch slot of a segment's prefix (its own ordinal for a prefix,
 //!   the parent's for a suffix, -1 for padding);
-//! - `answer_rows [answers] u32` (padding repeats row 0), `answer_slots [answers] u32` (0 for padding).
+//! - `answer_rows [answers] u32` (padding repeats row 0), `answer_slots [answers] u32` (0 for padding);
+//! - `answer_pos [answers] u32`: the RoPE position of each answer row (0 for padding; L1, the trimmed last layer).
 
 use crate::contract::{DecisionBatch, Segment};
 use crate::engine::graph::tensor::{DevBuf, DevTensor, GraphDType};
@@ -27,6 +28,8 @@ use std::sync::Arc;
 /// `parent` of the dummy segment that holds a bucket's padding tokens. Kernels skip it.
 pub const PAD_PARENT: i32 = -2;
 pub const HEADER_LEN: usize = 8;
+/// Arrays in the metadata block (header included).
+pub const META_ARRAYS: usize = 9;
 
 /// Capacities of one bucket's metadata.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -37,7 +40,7 @@ pub struct MetaShape {
 }
 
 impl MetaShape {
-    fn layout(&self) -> [(usize, usize); 8] {
+    fn layout(&self) -> [(usize, usize); META_ARRAYS] {
         // (offset, bytes) of each array in one contiguous block, 256-byte aligned.
         let sizes = [
             HEADER_LEN * 4,
@@ -48,8 +51,9 @@ impl MetaShape {
             self.segments * 4,
             self.answers * 4,
             self.answers * 4,
+            self.answers * 4,
         ];
-        let mut out = [(0, 0); 8];
+        let mut out = [(0, 0); META_ARRAYS];
         let mut off = 0;
         for (i, s) in sizes.iter().enumerate() {
             out[i] = (off, *s);
@@ -60,7 +64,7 @@ impl MetaShape {
 
     pub fn total_bytes(&self) -> usize {
         let l = self.layout();
-        l[7].0 + l[7].1
+        l[META_ARRAYS - 1].0 + l[META_ARRAYS - 1].1
     }
 }
 
@@ -78,6 +82,8 @@ pub struct DeviceMeta {
     pub seg_state: DevTensor,
     pub answer_rows: DevTensor,
     pub answer_slots: DevTensor,
+    /// `[answers]` u32: RoPE position of each answer row (0 for padding).
+    pub answer_pos: DevTensor,
 }
 
 impl DeviceMeta {
@@ -95,6 +101,7 @@ impl DeviceMeta {
             seg_state: v(5, GraphDType::I32, vec![shape.segments])?,
             answer_rows: v(6, GraphDType::U32, vec![shape.answers])?,
             answer_slots: v(7, GraphDType::U32, vec![shape.answers])?,
+            answer_pos: v(8, GraphDType::U32, vec![shape.answers])?,
         })
     }
 
@@ -203,13 +210,17 @@ impl MetaUploader {
         } else {
             u32::MAX
         };
-        for (r, (&row, &slots)) in batch.answer_rows.iter().zip(&batch.answer_slots).enumerate() {
+        // Answer row i is the last token of the i-th suffix segment (DecisionBatch::validate).
+        let ans_pos = batch.segments.iter().filter(|s| !s.is_prefix()).map(|s| s.pos0 + s.len - 1);
+        for (r, ((&row, &slots), pos)) in batch.answer_rows.iter().zip(&batch.answer_slots).zip(ans_pos).enumerate() {
             put_u32(6, r, row);
             put_u32(7, r, slots as u32);
+            put_u32(8, r, pos);
         }
         for r in q..shape.answers {
             put_u32(6, r, 0);
             put_u32(7, r, 0);
+            put_u32(8, r, 0);
         }
         let header = [t as u32, s as u32, q as u32, prefixes, bucket_tokens as u32, pad_seg, 0, 0];
         for (k, v) in header.into_iter().enumerate() {
@@ -241,6 +252,7 @@ impl MetaUploader {
             (c.segments + (c.bucket_tokens > c.tokens) as usize) * 4,
             shape.answers * 4,
             shape.answers * 4,
+            shape.answers * 4,
         ];
         stream.context().bind_to_thread()?;
         let host = s.bytes.as_ptr();
@@ -264,7 +276,7 @@ impl MetaUploader {
     }
 
     /// Offsets of the arrays in the packed layout.
-    pub fn layout(&self) -> [(usize, usize); 8] {
+    pub fn layout(&self) -> [(usize, usize); META_ARRAYS] {
         self.dev.shape.layout()
     }
 }
@@ -288,6 +300,6 @@ mod tests {
             assert!(w[0].0 + w[0].1 <= w[1].0);
             assert_eq!(w[1].0 % 256, 0);
         }
-        assert_eq!(s.total_bytes(), l[7].0 + 17 * 4);
+        assert_eq!(s.total_bytes(), l[META_ARRAYS - 1].0 + 17 * 4);
     }
 }

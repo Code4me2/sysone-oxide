@@ -132,7 +132,8 @@ impl DecisionEngine for SimEngine {
     }
 
     fn step_limits(&self) -> StepLimits {
-        StepLimits { buckets: self.buckets.clone(), max_answers: 2048, max_segments: 2048, max_prefixes: 256 }
+        StepLimits { buckets: self.buckets.clone(), max_answers: 2048, max_segments: 2048, max_prefixes: 256,
+                     tokens_per_answer: 1 }
     }
 
     fn last_bucket_tokens(&self) -> Option<usize> {
@@ -175,6 +176,7 @@ fn hello(e: &dyn DecisionEngine, device: String, arch: String, mem: u64, tput: T
         max_answers: l.max_answers,
         max_segments: l.max_segments,
         max_prefixes: l.max_prefixes,
+        tokens_per_answer: l.tokens_per_answer,
         throughput: tput.0,
         info: e.info().into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
         load_seconds: t0.elapsed().as_secs_f64(),

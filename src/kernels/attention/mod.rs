@@ -251,6 +251,95 @@ pub mod qk_norm_rope_module {
         let ky: Tile<bf16, { [TT, HK, D] }> = ky.reshape(const_shape![TT, HK, D]);
         k_out.store(ky);
     }
+
+    /// The k half of [`qk_norm_rope`] alone (L1: the trimmed last layer needs k for every token but q only for
+    /// the answer rows). The same operations on the same tile shapes as the k part there.
+    #[cutile::entry()]
+    pub fn k_norm_rope<const TT: i32, const HK: i32, const RK: i32, const D: i32, const R2: i32, const NC: i32>(
+        k_out: &mut Tensor<bf16, { [TT, HK, D] }>,
+        kv: &Tensor<bf16, { [-1, -1, D] }>,
+        pos: &Tensor<i32, { [-1] }>,
+        k_w: &Tensor<bf16, { [D] }>,
+        inv_freq: &Tensor<f32, { [R2] }>,
+        eps: f32,
+    ) {
+        let pid: (i32, i32, i32) = get_tile_block_id();
+        let tb: i32 = pid.0;
+
+        let tp: Tile<i32, { [TT] }> = pos.partition(const_shape![TT]).load([tb]);
+        let pf: Tile<f32, { [TT] }> = convert_tile(tp);
+        let invf: Tile<f32, { [R2] }> = inv_freq.partition(const_shape![R2]).load([0i32]);
+        let ang: Tile<f32, { [TT, R2] }> = pf.reshape(const_shape![TT, 1]).broadcast(const_shape![TT, R2])
+            * invf.reshape(const_shape![1, R2]).broadcast(const_shape![TT, R2]);
+        let cb: Tile<bf16, { [TT, R2] }> = convert_tile(cos(ang));
+        let sb: Tile<bf16, { [TT, R2] }> = convert_tile(sin(ang));
+        let cos_t: Tile<f32, { [TT, R2] }> = convert_tile(cb);
+        let sin_t: Tile<f32, { [TT, R2] }> = convert_tile(sb);
+
+        let kw: Tile<bf16, { [D] }> = k_w.partition(const_shape![D]).load([0i32]);
+        let kw: Tile<f32, { [D] }> = convert_tile(kw);
+        let kopw: Tile<f32, { [1, D] }> = constant(1.0f32, const_shape![1, D]) + kw.reshape(const_shape![1, D]);
+        let kw_part: Partition<bf16, { [R2] }> = k_w.partition(const_shape![R2]);
+        let kw_lo: Tile<f32, { [R2] }> = convert_tile(kw_part.load([0i32]));
+        let kw_hi: Tile<f32, { [R2] }> = convert_tile(kw_part.load([1i32]));
+        let kopw_lo: Tile<f32, { [1, R2] }> = constant(1.0f32, const_shape![1, R2]) + kw_lo.reshape(const_shape![1, R2]);
+        let kopw_hi: Tile<f32, { [1, R2] }> = constant(1.0f32, const_shape![1, R2]) + kw_hi.reshape(const_shape![1, R2]);
+        let kx: Tile<bf16, { [TT, HK, D] }> = kv.partition(const_shape![TT, HK, D]).load([tb, 0i32, 0i32]);
+        let kx: Tile<f32, { [TT, HK, D] }> = convert_tile(kx);
+        let k_lo_part: Partition<bf16, { [TT, HK, R2] }> = kv.partition(const_shape![TT, HK, R2]);
+        let kx_lo: Tile<bf16, { [TT, HK, R2] }> = k_lo_part.load([tb, 0i32, 0i32]);
+        let kx_hi: Tile<bf16, { [TT, HK, R2] }> = k_lo_part.load([tb, 0i32, 1i32]);
+        let kx_lo: Tile<f32, { [TT, HK, R2] }> = convert_tile(kx_lo);
+        let kx_hi: Tile<f32, { [TT, HK, R2] }> = convert_tile(kx_hi);
+        let kcos: Tile<f32, { [RK, R2] }> = cos_t
+            .reshape(const_shape![TT, 1, R2])
+            .broadcast(const_shape![TT, HK, R2])
+            .reshape(const_shape![RK, R2]);
+        let ksin: Tile<f32, { [RK, R2] }> = sin_t
+            .reshape(const_shape![TT, 1, R2])
+            .broadcast(const_shape![TT, HK, R2])
+            .reshape(const_shape![RK, R2]);
+        let ky: Tile<bf16, { [RK, D] }> = norm_rope(
+            kx.reshape(const_shape![RK, D]),
+            kx_lo.reshape(const_shape![RK, R2]),
+            kx_hi.reshape(const_shape![RK, R2]),
+            kopw,
+            kopw_lo,
+            kopw_hi,
+            kcos,
+            ksin,
+            eps,
+            const_shape![RK, NC, R2],
+        );
+        let ky: Tile<bf16, { [TT, HK, D] }> = ky.reshape(const_shape![TT, HK, D]);
+        k_out.store(ky);
+    }
+}
+
+/// `k = rope(k_norm(kv[:, :4, :]))` at per-token `pos`: the k half of [`qk_norm_rope`], bit-identical to it
+/// (tests/kernels_attn.rs).
+pub fn k_norm_rope<'a>(
+    k: &'a mut Tensor<bf16>,
+    kv: &'a Tensor<bf16>,
+    pos: &'a Tensor<i32>,
+    k_w: &'a Tensor<bf16>,
+    inv_freq: &'a Tensor<f32>,
+    eps: f32,
+) -> Result<impl GraphNode + 'a> {
+    let t = kv.shape()[0];
+    let (hk, d) = (NUM_KV_HEADS as i32, HEAD_DIM as i32);
+    ensure!(kv.shape() == [t, 2 * hk, d].as_slice(), "kv is {:?}, expected [T, 8, 256]", kv.shape());
+    ensure!(k.shape() == [t, hk, d].as_slice(), "k is {:?}, expected [T, 4, 256]", k.shape());
+    ensure!(pos.shape() == [t].as_slice(), "pos is {:?}, expected [{t}]", pos.shape());
+    ensure!(k_w.shape() == [d].as_slice(), "k norm weight must be [256]");
+    ensure!(inv_freq.shape() == [ROTARY_DIM as i32 / 2].as_slice(), "inv_freq must be [32]");
+    let r2 = ROTARY_DIM / 2;
+    let tt = ROPE_TOKENS;
+    Ok(qk_norm_rope_module::k_norm_rope(k.partition([tt, NUM_KV_HEADS, HEAD_DIM]), kv, pos, k_w, inv_freq, eps)
+        .compile_options(cutile::tile_kernel::CompileOptions::default().num_worker_warps_per_cta(ROPE_WARPS))
+        .generics(
+            [tt, NUM_KV_HEADS, tt * NUM_KV_HEADS, HEAD_DIM, r2, HEAD_DIM / r2].iter().map(|v| v.to_string()).collect(),
+        ))
 }
 
 /// `q = rope(q_norm(qg[:, :, :256]))`, `k = rope(k_norm(kv[:, :4, :]))` at per-token `pos` (`[T]` i32).
@@ -359,6 +448,21 @@ impl AttnPlan {
             }
         }
         // Stable: equal-cost items keep stream order.
+        items.sort_by_key(|w| std::cmp::Reverse(w[3] + w[5]));
+        AttnPlan { work: items.into_iter().flatten().collect() }
+    }
+
+    /// The schedule of the answer rows only (L1, the trimmed last layer): one item per suffix segment, whose
+    /// single query row is that suffix's answer row (its last token). `q0` is the row in the gathered `[Q, ..]`
+    /// q / gate / output (the i-th suffix in segment order is answer row i, as `DecisionBatch` orders them); the
+    /// key ranges are those of the full schedule (parent prefix, then the whole suffix), in packed-token rows.
+    pub fn answers(segments: &[Segment]) -> Self {
+        let mut items: Vec<[i32; WORK_FIELDS]> = Vec::new();
+        for s in segments.iter().filter(|s| !s.is_prefix()) {
+            let p = segments[s.parent as usize];
+            let q = items.len() as u32;
+            items.push([q, 1, p.start, p.len, s.start, s.len, 0, 0].map(|v| v as i32));
+        }
         items.sort_by_key(|w| std::cmp::Reverse(w[3] + w[5]));
         AttnPlan { work: items.into_iter().flatten().collect() }
     }
@@ -765,5 +869,26 @@ mod tests {
         let mut b = DecisionBatch::default();
         b.push_request(&[1, 2, 3], &[(&[4, 5], 2), (&[6], 2)]).unwrap();
         assert_eq!(positions(&b.segments), [0, 1, 2, 3, 4, 3]);
+    }
+
+    #[test]
+    fn answers_plan_has_one_item_per_answer_row() {
+        let mut b = DecisionBatch::default();
+        b.push_request(&[1; 40], &[(&[2; 5], 2), (&[3; 30], 2), (&[4; 1], 2)]).unwrap();
+        b.push_request(&[5; 3], &[(&[6; 17], 2)]).unwrap();
+        let plan = AttnPlan::answers(&b.segments);
+        assert_eq!(plan.num_items(), b.num_branches());
+        let mut seen = vec![0; b.num_branches()];
+        for w in plan.work.chunks(WORK_FIELDS) {
+            let [q0, n, a0, alen, b0, blen, ..] = *w else { unreachable!() };
+            assert_eq!(n, 1);
+            seen[q0 as usize] += 1;
+            // Answer q0 is the last token of the q0-th suffix: its keys are that suffix's prefix and the suffix.
+            let suf = b.segments.iter().filter(|s| !s.is_prefix()).nth(q0 as usize).unwrap();
+            assert_eq!(b.answer_rows[q0 as usize], suf.end() - 1);
+            let pre = &b.segments[suf.parent as usize];
+            assert_eq!((a0, alen, b0, blen), (pre.start as i32, pre.len as i32, suf.start as i32, suf.len as i32));
+        }
+        assert!(seen.iter().all(|&c| c == 1));
     }
 }
