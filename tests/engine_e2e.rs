@@ -532,3 +532,48 @@ fn f1_launches_equal_n1_launches() {
              format().name(), batches.len());
     assert_eq!(same, total, "F1's launches changed the logits");
 }
+
+/// C1 (docs/C1.md): the nvfp4 engine with the MLP down GEMM on cuBLASLt (`Fp4Gemm::CuBlasLt`, pinned algorithm,
+/// tiled scales) against the same engine with the cuTile GEMM, on every corpus request up to 16k tokens alone and on
+/// one packed 16k batch, eager and replayed. Reports how many steps are bit-identical; it is a comparison, not a
+/// gate (the gates are this file's other tests run with `SYSONE_FP4_GEMM=cublaslt`). The bf16 engine has no FP4
+/// GEMM: nothing to compare.
+#[test]
+fn c1_fp4_gemm_cublaslt_vs_cutile() {
+    use sysone::engine::gemm::Fp4Gemm;
+    if format() != WeightFormat::Nvfp4 {
+        println!("{} engine: no FP4 GEMM, nothing to compare", format().name());
+        return;
+    }
+    let mut guard = env().lock().unwrap_or_else(|e| e.into_inner());
+    let env = &mut *guard;
+    let fe = Frontend::load(&model_dir(), Limits::default()).unwrap();
+    let load = |g: Fp4Gemm| {
+        GpuEngine::load(&model_dir(), &fe.slot_ids, EngineOptions { fp4_gemm: Some(g), ..engine_opts(16384, true) }).unwrap()
+    };
+    let (mut tile, mut lt) = (load(Fp4Gemm::CuTile), load(Fp4Gemm::CuBlasLt));
+    let small: Vec<&Planned> = env.plans.iter().filter(|p| p.plan.total <= 16384).collect();
+    let mut batches: Vec<DecisionBatch> = small.iter().map(|p| goldens::batch_of(&[&p.plan]).unwrap().0).collect();
+    let (mut packed, mut tokens) = (Vec::new(), 0);
+    for p in &small {
+        if tokens + p.plan.total > 16384 {
+            break;
+        }
+        tokens += p.plan.total;
+        packed.push(&p.plan);
+    }
+    batches.push(goldens::batch_of(&packed).unwrap().0);
+    let (mut same, mut total, mut max_dlogit) = (0usize, 0usize, 0f32);
+    for b in &batches {
+        for _ in 0..2 {
+            let (x, y) = (tile.run(b).unwrap(), lt.run(b).unwrap());
+            total += 1;
+            same += (x.data == y.data) as usize;
+            for (a, c) in x.data.iter().zip(&y.data) {
+                max_dlogit = max_dlogit.max((a - c).abs());
+            }
+        }
+    }
+    println!("nvfp4 engine, FP4 down GEMM cuBLASLt vs cuTile: {same}/{total} steps bit-identical ({} batches incl. one \
+              packed {tokens}-token batch, eager and replay), max |dlogit| {max_dlogit:.3e}", batches.len());
+}

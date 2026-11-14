@@ -9,6 +9,7 @@
 #   NAME=sysone_bf16_simt GDN_BACKEND=simt bash reference/eval/run_sysone.sh     # GDN backend (tile|simt|auto)
 #   NAME=sysone_nvfp4 ENGINE=nvfp4 bash reference/eval/run_sysone.sh             # nvfp4 engine (N1); the model
 #        defaults to the NVFP4 checkpoint and the limits to its profile (16,384 per branch, 65,536 per request)
+#   NAME=sysone_nvfp4_c1 ENGINE=nvfp4 FP4_GEMM=cublaslt bash reference/eval/run_sysone.sh   # down GEMM on cuBLASLt (C1)
 # Then: python3 -I reference/eval/score.py --run-file tests/golden/dev/eval/candidates/sysone_bf16.json --tier bf16
 #       (nvfp4: --tier nvfp4)
 set -euo pipefail
@@ -32,6 +33,8 @@ GDN_BACKEND=${GDN_BACKEND:-auto}
 # are EngineOptions::buckets_up_to(max(token_budget, max_request_tokens)) = 256, 512, ..., 65536, CUDA graphs on.
 SERVER_ARGS=(--engine "$ENGINE" --model "$MODEL" --listen "127.0.0.1:$PORT" --token-budget 16384 --max-wait-us 2000
              --max-request-tokens 65536 --max-branch-tokens "$MAX_BRANCH" --max-prefixes 256 --gdn-backend "$GDN_BACKEND")
+# FP4_GEMM=cutile|cublaslt (nvfp4 engine, C1): passed as --fp4-gemm, so it is recorded with the other server flags.
+if [ -n "${FP4_GEMM:-}" ]; then SERVER_ARGS+=(--fp4-gemm "$FP4_GEMM"); fi
 
 if [ "${1:-}" = "__chunk" ]; then  # runs under the GPU lock
   t0=$(date +%s.%N)

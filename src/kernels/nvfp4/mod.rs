@@ -472,6 +472,62 @@ pub mod kernels {
             tile_id = tile_id + num_blocks;
         }
     }
+
+    /// C1: row-major e4m3 block scales `s [R, G]` (G a multiple of 4) → cuBLASLt's tiled block-scale layout
+    /// ([`super::lt_scale_offset`]), `out` viewed as `[ceil(R/128), (G/4)·512]`: block `(rb, cb)` holds rows
+    /// `128·rb..` and scale columns `4·cb..`, row `r` column `c` at byte `(r % 32)·16 + (r / 32)·4 + c` of the block.
+    /// A partial last row block reads zeros past `R` (padding rows of the layout; cuBLASLt never uses their
+    /// products for the `R` real rows). Grid `(ceil(R/128), G/4)`. Pure data movement: no value changes.
+    #[cutile::entry()]
+    pub fn scales_to_lt(out: &mut Tensor<f8e4m3fn, { [1, 512] }>, s: &Tensor<f8e4m3fn, { [-1, -1] }>) {
+        let pid = get_tile_block_id();
+        let part = s.partition(const_shape![128, 4]);
+        let t: Tile<f8e4m3fn, { [128, 4] }> = part.load([pid.0, pid.1]);
+        let t3: Tile<f8e4m3fn, { [4, 32, 4] }> = t.reshape(const_shape![4, 32, 4]);
+        let perm: Array<{ [1, 0, 2] }> = const_array![1, 0, 2];
+        let p: Tile<f8e4m3fn, { [32, 4, 4] }> = permute(t3, perm);
+        out.store(p.reshape(const_shape![1, 512]));
+    }
+}
+
+/// C1: byte offset of block scale `(row, col)` in cuBLASLt's tiled layout for `VEC16_UE4M3` scales of a
+/// `[rows, cols]` scale matrix (`cols` = K/16; cuBLAS documentation, "1D block scaling factors layout"): 128x4
+/// blocks of 512 bytes, column blocks fastest, `(r % 32)·16 + (r % 128 / 32)·4 + c % 4` inside a block.
+pub fn lt_scale_offset(row: usize, col: usize, cols: usize) -> usize {
+    let (rb, cb, r, c) = (row / 128, col / 4, row % 128, col % 4);
+    (rb * cols.div_ceil(4) + cb) * 512 + (r % 32) * 16 + (r / 32) * 4 + c
+}
+
+/// Bytes of a `[rows, cols]` scale matrix in cuBLASLt's tiled layout (rows padded to 128, columns to 4).
+pub fn lt_scale_bytes(rows: usize, cols: usize) -> usize {
+    rows.div_ceil(128) * 128 * cols.div_ceil(4) * 4
+}
+
+/// Host re-layout of row-major scales `[rows, cols]` into cuBLASLt's tiled layout (padding zero).
+pub fn to_lt_scales(s: &[u8], rows: usize, cols: usize) -> Vec<u8> {
+    let mut out = vec![0u8; lt_scale_bytes(rows, cols)];
+    for r in 0..rows {
+        for c in 0..cols {
+            out[lt_scale_offset(r, c, cols)] = s[r * cols + c];
+        }
+    }
+    out
+}
+
+/// [`kernels::scales_to_lt`] as a device operation: `s [R, G]` → `out` (exactly [`lt_scale_bytes`]`(R, G)` bytes,
+/// any shape; every byte is written).
+pub fn scales_to_lt_op(s: Arc<Tensor<f8e4m3fn>>, out: Tensor<f8e4m3fn>) -> Result<impl DeviceOp<Output = Tensor<f8e4m3fn>>> {
+    let sh = s.shape();
+    ensure!(sh.len() == 2, "scales_to_lt: s must be rank 2, got {sh:?}");
+    let (r, g) = (sh[0] as usize, sh[1] as usize);
+    ensure!(r > 0 && g.is_multiple_of(4), "scales_to_lt: s is [{r}, {g}]; G must be a multiple of 4");
+    let need = lt_scale_bytes(r, g);
+    // Any shape of `need` elements (a flat `[need]`, or the `[R/128, G/4·512]` this op returns, so its output can be
+    // passed back in).
+    let numel: i64 = out.shape().iter().map(|&d| d as i64).product();
+    ensure!(numel == need as i64, "scales_to_lt: out is {:?}, expected {need} elements", out.shape());
+    let o = out.reshape(&[r.div_ceil(128), g / 4 * 512])?.partition([1, 512]);
+    Ok(kernels::scales_to_lt(o, s).map(move |(o, _)| o.unpartition()))
 }
 
 /// Which GEMM entry point to launch.

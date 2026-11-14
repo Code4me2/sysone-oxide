@@ -291,6 +291,16 @@ on the kernel's K tiling, so a row's result does not depend on the number of row
 (`tests/engine_gemm.rs::pinned_gemm_rows_do_not_depend_on_the_batch`). Same numerics otherwise (fp32 compute and
 scale, one output rounding). Costs and the resulting batch invariance: [L1.md](L1.md).
 
+**NVFP4 down projection on cuBLASLt (C1).** `EngineOptions::fp4_gemm` (`--fp4-gemm cutile|cublaslt`,
+`$SYSONE_FP4_GEMM`; default `Fp4Gemm::default_for_arch`: cuBLASLt on sm_121, cuTile elsewhere). With cuBLASLt,
+`GraphOp::GemmNvfp4` on a projection that has `Linear::Nvfp4::lt_scales` (the MLP down projections, built at load
+by `ModelWeights::add_lt_scales_down`) runs `Kernels::nvfp4_scales_to_lt` (the activation scales into cuBLASLt's
+tiled 128x4 block-scale layout, in a fixed scratch owned by `Blas`) and then `Blas::gemm_nvfp4_lt`: e2m1 A/B with
+`VEC16_UE4M3` scales, fp32 compute, scalar alpha `1/(igs·wgs)`, bf16 out, one split-K-free algorithm per weight
+shape at every T (the `FP4_PREFERRED` entry for the device if the heuristic at 16,384 rows offers it, else its
+first candidate). Bit-identical to the cuTile GEMM and batch-invariant on GB10; the gate/up GEMM (SiLU·mul fused)
+stays cuTile. Details and numbers: [C1.md](C1.md).
+
 ## 4. Module map
 
 `src/lib.rs` declares the modules; `src/main.rs` is the server binary. Each subsection lists responsibility, key
