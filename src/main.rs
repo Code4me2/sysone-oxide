@@ -124,9 +124,9 @@ struct Args {
     /// epilogue (bit-identical; for benchmarks and diagnostics).
     #[arg(long)]
     nvfp4_separate_silu: bool,
-    /// nvfp4 engine: kernel of the MLP down projection's FP4 GEMM: `cutile` (default) or `cublaslt` (cuBLASLt's
-    /// block-scaled FP4 GEMM, one pinned algorithm per weight shape, batch-invariant; docs/C1.md). Default:
-    /// $SYSONE_FP4_GEMM, else cutile.
+    /// nvfp4 engine: kernel of the MLP down projection's FP4 GEMM: `cutile` or `cublaslt` (cuBLASLt's block-scaled
+    /// FP4 GEMM, one pinned algorithm per weight shape, batch-invariant; docs/C1.md). Default: $SYSONE_FP4_GEMM,
+    /// else cublaslt on sm_121 (GB10) and cutile elsewhere.
     #[arg(long)]
     fp4_gemm: Option<String>,
     /// `debias` when a request has none (default: $QEV_DEBIAS as qev reads it, else 1).

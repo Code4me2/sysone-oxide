@@ -85,8 +85,9 @@ pub struct EngineOptions {
     pub tokens_per_answer: usize,
     /// C1: the kernel of the NVFP4 MLP down projection's GEMM. [`Fp4Gemm::CuTile`] (W3c's `gemm_nvfp4_raw`) or
     /// [`Fp4Gemm::CuBlasLt`] (cuBLASLt's block-scaled FP4 GEMM, one pinned algorithm per weight shape, plus a
-    /// re-layout of the activation scales; docs/C1.md). `None`: `$SYSONE_FP4_GEMM` if set, else cuTile. The
-    /// gate/up GEMM is cuTile either way. Ignored by the bf16 engine.
+    /// re-layout of the activation scales; docs/C1.md; bit-identical on GB10). `None`: `$SYSONE_FP4_GEMM` if set,
+    /// else [`Fp4Gemm::default_for_arch`] (cuBLASLt on sm_121, cuTile elsewhere). The gate/up GEMM is cuTile either
+    /// way. Ignored by the bf16 engine.
     pub fp4_gemm: Option<Fp4Gemm>,
 }
 
@@ -248,9 +249,11 @@ impl GpuEngine {
             // Row blocks of half the GEMM's BN: one weight tile = the gate and up rows of BN/2 product columns.
             weights.interleave_gate_up_nvfp4(&stream, crate::kernels::nvfp4::GemmTiles::DEFAULT.bn / 2)?;
         }
-        let fp4_gemm = match opts.fp4_gemm {
-            Some(g) => g,
-            None => fp4_gemm_from_env()?.unwrap_or_default(),
+        let (cc_major, cc_minor) = ctx.compute_capability()?;
+        let (fp4_gemm, fp4_why) = match (opts.fp4_gemm, fp4_gemm_from_env()?) {
+            (Some(g), _) => (g, "requested"),
+            (None, Some(g)) => (g, "$SYSONE_FP4_GEMM"),
+            (None, None) => (Fp4Gemm::default_for_arch(cc_major as u32, cc_minor as u32), "default for this architecture"),
         };
         let fp4_lt = format == WeightFormat::Nvfp4 && fp4_gemm == Fp4Gemm::CuBlasLt;
         if fp4_lt {
@@ -340,8 +343,8 @@ impl GpuEngine {
                   if e.opts.gemm == GemmMode::Pinned { "batch-invariant" } else { "not batch-invariant" },
                   if e.fwd.trimmed { "trimmed to the answer rows" } else { "untrimmed" }, largest.answers);
         if e.format == WeightFormat::Nvfp4 {
-            eprintln!("sysone engine: FP4 down GEMM {}{}", fp4_gemm.name(),
-                      if fp4_lt { " (one pinned algorithm per weight shape, no split-K; batch-invariant)" } else { "" });
+            eprintln!("sysone engine: FP4 down GEMM {} ({fp4_why}){}", fp4_gemm.name(),
+                      if fp4_lt { "; one pinned algorithm per weight shape, no split-K: batch-invariant" } else { "" });
         }
         if e.opts.warmup {
             let t = Instant::now();

@@ -203,8 +203,21 @@ GB10 tuned them; nothing has run on sm_120 yet. Needs the NVFP4 checkpoint on th
    Nsight Compute on the top kernels at 16k with the sections and raw metrics listed there (on sm_120 `dram__*`
    metrics exist: add `dram__throughput.avg.pct_of_peak_sustained_elapsed`). Keep reports and traces local; commit
    only the script summaries.
+5. cuBLASLt's NVFP4 GEMM (C1, docs/C1.md; added later, no checkpoint needed for a-c): per card
+   a. `scripts/gpu.sh --gpu N ./target/release/bench_fp4_cublaslt --probe`: does cuBLASLt return FP4 candidates
+      (e2m1, `VEC16_UE4M3` scales) for the three shapes on sm_120? Paste the output (statuses if not).
+   b. `bench_fp4_cublaslt --check`: ulps vs the exact product and vs cuTile, batch invariance (GB10: 0 ulp from
+      cuTile, every row bit-identical across T and positions). `kernels_nvfp4_c1` now runs in `run_tests.sh`.
+   c. `bench_fp4_cublaslt --tokens 1024,4096,16384,32768`: the per-algorithm table and the four whole-MLP lines
+      per T (cuTile, all cuBLASLt, hybrid, pinned). On discrete cards `silu_mul_nvfp4` is cheap, so "all
+      cuBLASLt" may beat the hybrid there; report which wins and the fastest split-K-free down algorithm's
+      `algo / tile / custom` ids (the engine's `FP4_PREFERRED` table has no sm_120 entry yet; the GB10 side adds one).
+   d. With the checkpoint: `SYSONE_FP4_GEMM=cublaslt` + `--nvfp4` run of `engine_e2e_nvfp4` (expect
+      `c1_fp4_gemm_cublaslt_vs_cutile` all steps bit-identical) and `bench_forward --fp4-gemm cublaslt` vs default.
 
 Acceptance:
+- Item 5: probe output, check summary (ulps, invariance counts), the whole-MLP table per card, and with the
+  checkpoint the e2e result and forward ms for both `--fp4-gemm` values.
 - `kernels_nvfp4_f1` passes on all three GPUs (0 mismatches everywhere), or the failing case is reported with its
   printed mismatch counts. With the checkpoint: `engine_e2e_nvfp4` 5/5 incl. `f1_launches_equal_n1_launches`
   (84/84 steps bit-identical), and bf16 `engine_e2e` 5/5.

@@ -67,7 +67,7 @@ struct Args {
     #[arg(long)]
     n1_tuning: bool,
     /// NVFP4 checkpoints: kernel of the down projection's FP4 GEMM, `cutile` or `cublaslt` (C1). Default:
-    /// `$SYSONE_FP4_GEMM`, else cutile.
+    /// `$SYSONE_FP4_GEMM`, else the engine's per-architecture default (cublaslt on sm_121).
     #[arg(long)]
     fp4_gemm: Option<String>,
 }

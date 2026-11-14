@@ -77,10 +77,9 @@ impl std::str::FromStr for GemmMode {
 /// Which kernel runs the NVFP4 engine's plain (non-fused) FP4 GEMMs, i.e. the MLP down projection (C1). The
 /// gate/up GEMM with SiLU·mul + quantize in its epilogue (F1) stays a cuTile kernel either way: cuBLASLt has no
 /// such epilogue, and its gate/up GEMM plus a separate `silu_mul_nvfp4` is slower (docs/C1.md).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Fp4Gemm {
-    /// cuTile `gemm_nvfp4_raw` (W3c, the engine default).
-    #[default]
+    /// cuTile `gemm_nvfp4_raw` (W3c; the default except on sm_121).
     CuTile,
     /// cuBLASLt's block-scaled FP4 GEMM with one pinned algorithm per weight shape, after a re-layout of the
     /// activation scales into cuBLASLt's tiled layout.
@@ -88,6 +87,13 @@ pub enum Fp4Gemm {
 }
 
 impl Fp4Gemm {
+    /// The default for a device of compute capability `major.minor`: cuBLASLt where it was measured faster with
+    /// every gate passing and bit-identical logits (sm_121, GB10; docs/C1.md), cuTile elsewhere until measured
+    /// (sm_120: docs/x86/TASKS.md T8 item 5).
+    pub fn default_for_arch(major: u32, minor: u32) -> Self {
+        if (major, minor) == (12, 1) { Self::CuBlasLt } else { Self::CuTile }
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Self::CuTile => "cutile",
@@ -108,7 +114,8 @@ impl std::str::FromStr for Fp4Gemm {
 }
 
 /// Environment variable the engine reads the FP4 GEMM from when [`crate::engine::gpu::EngineOptions::fp4_gemm`]
-/// is `None` (`cutile`, `cublaslt`; unset: cutile). Lets the engine tests and benchmarks run either kernel.
+/// is `None` (`cutile`, `cublaslt`; unset: [`Fp4Gemm::default_for_arch`]). Lets the engine tests and benchmarks run
+/// either kernel.
 pub const FP4_GEMM_ENV: &str = "SYSONE_FP4_GEMM";
 
 /// The FP4 GEMM in `$SYSONE_FP4_GEMM` (unset: `None`).
@@ -126,7 +133,9 @@ pub fn fp4_gemm_from_env() -> Result<Option<Fp4Gemm>> {
 /// best is algorithm 67 with a 128x256 tile (id 23), custom option 23, 377-383 TFLOP/s at 16k-32k rows against
 /// 346-350 for the heuristic's first candidate (128x128). A fixed table keeps the choice deterministic (no timing at
 /// load), so every run and every bucket uses the same kernel.
-const FP4_PREFERRED: &[((u32, u32), usize, usize, (u32, u32, u32))] = &[((12, 1), 4096, 12288, (67, 23, 23))];
+/// `((major, minor), N, K, (algorithm id, tile id, custom option))`.
+type Fp4Preferred = ((u32, u32), usize, usize, (u32, u32, u32));
+const FP4_PREFERRED: &[Fp4Preferred] = &[((12, 1), 4096, 12288, (67, 23, 23))];
 
 /// The pinned FP4 algorithm of one weight shape `(N, K)` and its B / D layouts per row count.
 struct Fp4Plan {
@@ -287,6 +296,9 @@ impl Fp4State {
         picked
     }
 }
+
+/// `((N, K), (algorithm id, tile id, stages id, custom option))` of a pinned FP4 algorithm ([`Blas::fp4_algos`]).
+pub type Fp4AlgoReport = ((usize, usize), (u32, u32, u32, u32));
 
 /// One cuBLAS handle bound to one cuda-core stream (and, in [`GemmMode::Pinned`], one cuBLASLt handle; with
 /// [`Blas::enable_fp4_lt`], another for the FP4 GEMM).
@@ -554,7 +566,7 @@ impl Blas {
     }
 
     /// Pinned FP4 algorithms so far: `((N, K), (algorithm id, tile id, stages id, custom option))` (reports).
-    pub fn fp4_algos(&self) -> Vec<((usize, usize), (u32, u32, u32, u32))> {
+    pub fn fp4_algos(&self) -> Vec<Fp4AlgoReport> {
         let Some(f) = &self.fp4 else { return Vec::new() };
         let f = f.lock().unwrap_or_else(|e| e.into_inner());
         let mut v: Vec<_> = f.plans.iter().map(|(k, p)| (*k, p.ids)).collect();
@@ -749,5 +761,24 @@ impl Drop for Blas {
         let _ = self.stream.context().bind_to_thread();
         let h = self.handle.get_mut().unwrap_or_else(|e| e.into_inner()).0;
         let _ = unsafe { cublas_result::destroy_handle(h) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fp4_gemm_names_and_arch_defaults() {
+        for g in [Fp4Gemm::CuTile, Fp4Gemm::CuBlasLt] {
+            assert_eq!(g.name().parse::<Fp4Gemm>().unwrap(), g);
+        }
+        assert!("cublas".parse::<Fp4Gemm>().is_err());
+        assert_eq!(Fp4Gemm::default_for_arch(12, 1), Fp4Gemm::CuBlasLt);
+        for (ma, mi) in [(12, 0), (10, 0), (9, 0)] {
+            assert_eq!(Fp4Gemm::default_for_arch(ma, mi), Fp4Gemm::CuTile);
+        }
+        // Every preferred entry names a split-K-free choice by (algorithm, tile, custom option).
+        assert!(FP4_PREFERRED.iter().all(|e| e.1 > 0 && e.2 % 16 == 0));
     }
 }

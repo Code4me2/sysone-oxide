@@ -29,6 +29,12 @@
    "sha256": "0f8871fdee4aa5b31df9272057aaa119b22c378ff3f79c51083bf45981a9291a"
   }
  },
+ "sysone_nvfp4_c1": {
+  "golden/dev/eval/candidates/sysone_nvfp4_c1/part-000.json": {
+   "bytes": 1319535,
+   "sha256": "d854a081970fe3cdd7db592b88e2d8f1c70475c446c4e03b00d79d4b9872b2db"
+  }
+ },
  "sysone_nvfp4_f1": {
   "golden/dev/eval/candidates/sysone_nvfp4_f1/part-000.json": {
    "bytes": 1319687,

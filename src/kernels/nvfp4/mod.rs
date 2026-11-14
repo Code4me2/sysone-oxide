@@ -514,15 +514,18 @@ pub fn to_lt_scales(s: &[u8], rows: usize, cols: usize) -> Vec<u8> {
     out
 }
 
-/// [`kernels::scales_to_lt`] as a device operation: `s [R, G]` → `out` (at least [`lt_scale_bytes`]`(R, G)` bytes
-/// as a flat `[n]` tensor; only that prefix is written).
+/// [`kernels::scales_to_lt`] as a device operation: `s [R, G]` → `out` (exactly [`lt_scale_bytes`]`(R, G)` bytes,
+/// any shape; every byte is written).
 pub fn scales_to_lt_op(s: Arc<Tensor<f8e4m3fn>>, out: Tensor<f8e4m3fn>) -> Result<impl DeviceOp<Output = Tensor<f8e4m3fn>>> {
     let sh = s.shape();
     ensure!(sh.len() == 2, "scales_to_lt: s must be rank 2, got {sh:?}");
     let (r, g) = (sh[0] as usize, sh[1] as usize);
     ensure!(r > 0 && g.is_multiple_of(4), "scales_to_lt: s is [{r}, {g}]; G must be a multiple of 4");
     let need = lt_scale_bytes(r, g);
-    ensure!(out.shape() == [need as i32], "scales_to_lt: out is {:?}, expected [{need}]", out.shape());
+    // Any shape of `need` elements (a flat `[need]`, or the `[R/128, G/4·512]` this op returns, so its output can be
+    // passed back in).
+    let numel: i64 = out.shape().iter().map(|&d| d as i64).product();
+    ensure!(numel == need as i64, "scales_to_lt: out is {:?}, expected {need} elements", out.shape());
     let o = out.reshape(&[r.div_ceil(128), g / 4 * 512])?.partition([1, 512]);
     Ok(kernels::scales_to_lt(o, s).map(move |(o, _)| o.unpartition()))
 }

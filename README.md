@@ -31,6 +31,9 @@ Phase 2a is done ([docs/PHASE2A.md](docs/PHASE2A.md) has the numbers):
   cuBLASLt algorithm per weight shape (`--gemm pinned`, default), so every branch's logits are bit-identical alone,
   packed or in any bucket, in both engines; the last layer computes its queries, attention, MLP and the final norm
   only for the answer rows (bit-identical to the untrimmed forward). 16k forward 1.5-1.9% faster than before.
+- cuBLASLt's NVFP4 GEMM (C1, [docs/C1.md](docs/C1.md)): 1.35-1.5x the cuTile FP4 GEMM's TFLOP/s and bit-identical to
+  it; the nvfp4 engine's MLP down projection runs on it by default on sm_121 (`--fp4-gemm cublaslt`; cuTile
+  elsewhere). The fused gate/up + SiLU·mul GEMM stays cuTile. 16k nvfp4 forward 3.1% faster (8,708 packed tok/s).
 - Bulk tagging (B1, [docs/BULK.md](docs/BULK.md)): `sysone bulk` answers a JSONL file of requests with the server's
   answers, packed for throughput (full steps from a window of requests) over one engine per GPU, resumable. A
   question set over many documents (`--questions Q.json --docs D.jsonl|DIR`, Q1) is validated and rendered once.
@@ -144,6 +147,7 @@ See [docs/ARCHITECTURE.md §6](docs/ARCHITECTURE.md#6-correctness-and-testing) f
 | [docs/L1.md](docs/L1.md) | Pinned cuBLASLt GEMMs (batch invariance) and last-layer trimming: design, bit-identity, gates, speed |
 | [docs/PROFILE.md](docs/PROFILE.md) | Where the forward's time goes on GB10 (Nsight Systems / Compute method and commands, PDL estimate, ranked opportunities) |
 | [docs/F1.md](docs/F1.md) | F1: the fused gate/up + SiLU·mul FP4 GEMM and kernel tuning, byte-identity proof, speed before/after |
+| [docs/C1.md](docs/C1.md) | C1: cuBLASLt's NVFP4 GEMM vs cuTile (support, every algorithm, ulps, batch invariance), the down projection on cuBLASLt, whether a hand-written FP4 GEMM is worth it |
 | [reference/README.md](reference/README.md) | The reference harness and golden formats |
 | [reference/eval/README.md](reference/eval/README.md) | The labeled eval set and the statistical gate |
 | `cargo doc --no-deps --open` | Per-module API docs |
