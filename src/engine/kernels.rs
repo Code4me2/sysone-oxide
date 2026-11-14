@@ -321,6 +321,14 @@ impl Kernels for TileKernels {
         }
     }
 
+    fn nvfp4_scales_to_lt(&self, cx: &Launch, s: &DevTensor, out: &DevTensor) -> Result<()> {
+        ensure!(s.is_contiguous() && out.is_contiguous(), "nvfp4_scales_to_lt needs contiguous operands");
+        unsafe {
+            let (st, ot) = (Arc::new(s.tile::<f8e4m3fn>()?), out.tile::<f8e4m3fn>()?);
+            nvfp4::scales_to_lt_op(st, ot)?.execute(cx.exec).map(|_| ()).map_err(launch_err("nvfp4_scales_to_lt"))
+        }
+    }
+
     fn gemm_nvfp4_swiglu(&self, cx: &Launch, q: &DevTensor, s: &DevTensor, w: &Linear, a_gs_down: f32,
                          q_out: &DevTensor, s_out: &DevTensor) -> Result<()> {
         let Linear::Nvfp4 { packed, scales, parts, a_gs, gate_up_block, .. } = w else {

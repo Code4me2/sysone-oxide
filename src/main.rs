@@ -124,6 +124,11 @@ struct Args {
     /// epilogue (bit-identical; for benchmarks and diagnostics).
     #[arg(long)]
     nvfp4_separate_silu: bool,
+    /// nvfp4 engine: kernel of the MLP down projection's FP4 GEMM: `cutile` (default) or `cublaslt` (cuBLASLt's
+    /// block-scaled FP4 GEMM, one pinned algorithm per weight shape, batch-invariant; docs/C1.md). Default:
+    /// $SYSONE_FP4_GEMM, else cutile.
+    #[arg(long)]
+    fp4_gemm: Option<String>,
     /// `debias` when a request has none (default: $QEV_DEBIAS as qev reads it, else 1).
     #[arg(long, allow_negative_numbers = true)]
     debias: Option<i64>,
@@ -227,6 +232,7 @@ fn main() -> Result<()> {
                 gemm: args.gemm.parse()?,
                 trim_last_layer: !args.no_trim_last_layer,
                 nvfp4_swiglu: !args.nvfp4_separate_silu,
+                fp4_gemm: args.fp4_gemm.as_deref().map(str::parse).transpose()?,
                 ..Default::default()
             };
             let (model, slot_ids) = (args.model.clone(), frontend.slot_ids.clone());

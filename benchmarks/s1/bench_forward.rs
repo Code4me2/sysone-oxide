@@ -66,6 +66,10 @@ struct Args {
     /// Launch shapes as N1 had them (no occupancy hints on the norms and SiLU·mul; F1 A/B runs).
     #[arg(long)]
     n1_tuning: bool,
+    /// NVFP4 checkpoints: kernel of the down projection's FP4 GEMM, `cutile` or `cublaslt` (C1). Default:
+    /// `$SYSONE_FP4_GEMM`, else cutile.
+    #[arg(long)]
+    fp4_gemm: Option<String>,
 }
 
 const VOCAB: [&str; 16] = [
@@ -128,6 +132,7 @@ fn main() -> Result<()> {
     let opts = EngineOptions { buckets: a.tokens.clone(), warmup: false, gdn_backend, nvfp4_fused: !a.nvfp4_unfused,
                                gemm: a.gemm.parse()?, trim_last_layer: !a.no_trim,
                                tokens_per_answer: a.tokens_per_answer, nvfp4_swiglu: !a.nvfp4_separate_silu,
+                               fp4_gemm: a.fp4_gemm.as_deref().map(str::parse).transpose()?,
                                ..Default::default() };
     let mut e = GpuEngine::load(&a.model, &fe.slot_ids, opts)?;
     if a.n1_tuning {
@@ -183,6 +188,7 @@ fn main() -> Result<()> {
             "engine": e.format.name(), "nvfp4_fused": !a.nvfp4_unfused, "gemm": e.opts.gemm.name(),
             "trimmed": e.fwd.trimmed, "tokens_per_answer": e.opts.tokens_per_answer, "bucket_answers": bucket.answers,
             "nvfp4_swiglu": !a.nvfp4_separate_silu, "n1_tuning": a.n1_tuning,
+            "fp4_gemm": e.opts.fp4_gemm.map(|g| g.name()),
             "gdn_backend": e.gdn_backend().name(), "tokens": t, "bucket": bucket.tokens, "requests": n_req, "branches": b.num_branches(),
             "replay_ms_median": rm, "eager_ms_median": em, "replay_ms": replay, "eager_ms": eager,
         });

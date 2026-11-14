@@ -715,6 +715,11 @@ pub trait Kernels: Sync {
     fn gemm_nvfp4(&self, cx: &Launch, q: &DevTensor, s: &DevTensor, w: &Linear, out: &DevTensor) -> Result<()> {
         missing("gemm_nvfp4")
     }
+    /// C1: re-lay out activation block scales `s [R, K/16]` into cuBLASLt's tiled layout in `out` (flat
+    /// `[lt_scale_bytes(R, K/16)]`), for the cuBLASLt FP4 GEMM.
+    fn nvfp4_scales_to_lt(&self, cx: &Launch, s: &DevTensor, out: &DevTensor) -> Result<()> {
+        missing("nvfp4_scales_to_lt")
+    }
     /// The fused gate/up GEMM + SiLU·mul + quantize (`GraphOp::GemmNvfp4SwiGlu`); `a_gs_down` is the down
     /// projection's `input_global_scale`.
     #[allow(clippy::too_many_arguments)]
@@ -877,7 +882,23 @@ impl<'a> Executor<'a> {
             AddZcRmsNormNvfp4 { x, norm, w: wr, q, s, residual_out, .. } => {
                 k.add_zc_rmsnorm_nvfp4(cx, &v(residual_out)?, &r(x)?, w(norm)?, self.a_gs(wr)?, &v(q)?, &v(s)?)
             }
-            GemmNvfp4 { q, s, w: wr, out } => k.gemm_nvfp4(cx, &r(q)?, &r(s)?, self.weights.linear(wr)?, &v(out)?),
+            GemmNvfp4 { q, s, w: wr, out } => match self.weights.linear(wr)? {
+                // C1 (`--fp4-gemm cublaslt`): projections given tiled scales at load run on cuBLASLt, after the
+                // activation scales are re-laid out into the same layout.
+                Linear::Nvfp4 { packed, parts, a_gs, lt_scales: Some(w_lt), gate_up_block: None, .. }
+                    if self.blas.fp4_lt() =>
+                {
+                    let (qv, sv) = (r(q)?, r(s)?);
+                    ensure!(sv.shape.len() == 2, "gemm_nvfp4 scales {sv:?}");
+                    let scratch = self.blas.fp4_scratch(sv.shape[0], sv.shape[1])?;
+                    k.nvfp4_scales_to_lt(cx, &sv, &scratch)?;
+                    ensure!(parts.len() == 1, "the cuBLASLt FP4 GEMM takes one projection (one alpha), got {parts:?}");
+                    let wgs = parts[0].w_gs.context("NVFP4 part without weight_global_scale")?;
+                    let alpha = crate::kernels::nvfp4::RawAlpha::for_parts(*a_gs, &[(parts[0].rows, wgs)])?.lo;
+                    self.blas.gemm_nvfp4_lt(cx.stream, &qv, &scratch, packed, w_lt, alpha, &v(out)?)
+                }
+                lin => k.gemm_nvfp4(cx, &r(q)?, &r(s)?, lin, &v(out)?),
+            },
             GemmNvfp4SwiGlu { q, s, w: wr, w_down, q_out, s_out } => k.gemm_nvfp4_swiglu(
                 cx, &r(q)?, &r(s)?, self.weights.linear(wr)?, self.a_gs(w_down)?, &v(q_out)?, &v(s_out)?),
             SiluMul { gu, out } => k.silu_mul(cx, &r(gu)?, &v(out)?),

@@ -59,6 +59,11 @@ pub enum Linear {
         /// `j·b..` then up rows `j·b..`. Only the fused gate/up GEMM may read such a weight. `None`: checkpoint
         /// row order (`parts` in order).
         gate_up_block: Option<usize>,
+        /// C1 (`--fp4-gemm cublaslt`): `scales` again in cuBLASLt's tiled block-scale layout
+        /// (`kernels::nvfp4::lt_scale_offset`, flat `[lt_scale_bytes(N, K/16)]` f8e4m3), built once at load by
+        /// [`ModelWeights::add_lt_scales_down`]. `Some`: the GEMM of this projection runs on cuBLASLt. The same
+        /// bytes as `scales`, only moved.
+        lt_scales: Option<DevTensor>,
     },
 }
 
@@ -91,7 +96,9 @@ impl Linear {
     pub fn bytes(&self) -> usize {
         match self {
             Self::Bf16 { w, .. } => w.bytes(),
-            Self::Nvfp4 { packed, scales, .. } => packed.bytes() + scales.bytes(),
+            Self::Nvfp4 { packed, scales, lt_scales, .. } => {
+                packed.bytes() + scales.bytes() + lt_scales.as_ref().map_or(0, |t| t.bytes())
+            }
         }
     }
 }
@@ -288,7 +295,8 @@ impl<'a> Builder<'a> {
             row0 += r;
             self.nvfp4 += 1;
         }
-        Ok(Linear::Nvfp4 { packed, scales, parts, a_gs: a_gs.unwrap(), in_features: k, gate_up_block: None })
+        Ok(Linear::Nvfp4 { packed, scales, parts, a_gs: a_gs.unwrap(), in_features: k, gate_up_block: None,
+                            lt_scales: None })
     }
 }
 
@@ -406,6 +414,31 @@ impl ModelWeights {
             n += 1;
         }
         Ok(n)
+    }
+
+    /// C1: give every NVFP4 MLP down projection a copy of its block scales in cuBLASLt's tiled layout
+    /// (`Linear::Nvfp4::lt_scales`), so its GEMM runs on cuBLASLt (`GemmNvfp4` dispatches on it). A host round
+    /// trip of the scales (32 x 3 MiB on elephant-1); packed values and the row-major scales are untouched. Returns
+    /// the number of projections and the extra device bytes.
+    pub fn add_lt_scales_down(&mut self, stream: &Arc<Stream>) -> Result<(usize, usize)> {
+        let (mut n, mut bytes) = (0, 0);
+        for l in &mut self.layers {
+            let mlp = match l {
+                Layer::Gdn(g) => &mut g.mlp,
+                Layer::Attn(a) => &mut a.mlp,
+            };
+            let Linear::Nvfp4 { scales, lt_scales, gate_up_block, .. } = &mut mlp.down else { continue };
+            ensure!(gate_up_block.is_none() && lt_scales.is_none(), "down projection: lt scales already built");
+            ensure!(scales.is_contiguous() && scales.shape.len() == 2, "down scales {scales:?}");
+            let (rows, cols) = (scales.shape[0], scales.shape[1]);
+            let lt = crate::kernels::nvfp4::to_lt_scales(&scales.to_host_bytes(stream)?, rows, cols);
+            let t = DevTensor::alloc(stream.context(), GraphDType::F8E4M3, &[lt.len()])?;
+            t.copy_from_host(stream, &lt)?;
+            bytes += t.bytes();
+            *lt_scales = Some(t);
+            n += 1;
+        }
+        Ok((n, bytes))
     }
 
     /// Debug (numerics diagnostics only): re-express the model in a permuted hidden basis, `new[.., j] =

@@ -17,7 +17,7 @@
 use crate::contract::{DecisionBatch, DecisionEngine, MAX_SLOTS, SlotLogits, StepLimits};
 use crate::engine::config::{ModelConfig, WeightFormat};
 use crate::engine::forward::{self, Forward, ForwardOptions, Taps};
-use crate::engine::gemm::{Blas, GemmMode};
+use crate::engine::gemm::{Blas, Fp4Gemm, GemmMode, fp4_gemm_from_env};
 use crate::engine::graph::tensor::GraphDType;
 use crate::engine::graph::{Bucket, BucketGraphs, BucketPlan, Executor, Profiler, ValueId};
 use crate::engine::kernels::TileKernels;
@@ -83,6 +83,11 @@ pub struct EngineOptions {
     /// larger bucket. Every branch has at least the chat template's closing tokens as its suffix, so real batches
     /// stay far below one answer per 8 tokens. 1: `min(T, max_answers)` (the Phase 2a capacities).
     pub tokens_per_answer: usize,
+    /// C1: the kernel of the NVFP4 MLP down projection's GEMM. [`Fp4Gemm::CuTile`] (W3c's `gemm_nvfp4_raw`) or
+    /// [`Fp4Gemm::CuBlasLt`] (cuBLASLt's block-scaled FP4 GEMM, one pinned algorithm per weight shape, plus a
+    /// re-layout of the activation scales; docs/C1.md). `None`: `$SYSONE_FP4_GEMM` if set, else cuTile. The
+    /// gate/up GEMM is cuTile either way. Ignored by the bf16 engine.
+    pub fp4_gemm: Option<Fp4Gemm>,
 }
 
 /// Environment variable the engine tests and benchmarks read the expected weight format from (`bf16`, `nvfp4`;
@@ -147,6 +152,7 @@ impl Default for EngineOptions {
             gemm: GemmMode::Pinned,
             trim_last_layer: true,
             tokens_per_answer: 8,
+            fp4_gemm: None,
         }
     }
 }
@@ -242,6 +248,16 @@ impl GpuEngine {
             // Row blocks of half the GEMM's BN: one weight tile = the gate and up rows of BN/2 product columns.
             weights.interleave_gate_up_nvfp4(&stream, crate::kernels::nvfp4::GemmTiles::DEFAULT.bn / 2)?;
         }
+        let fp4_gemm = match opts.fp4_gemm {
+            Some(g) => g,
+            None => fp4_gemm_from_env()?.unwrap_or_default(),
+        };
+        let fp4_lt = format == WeightFormat::Nvfp4 && fp4_gemm == Fp4Gemm::CuBlasLt;
+        if fp4_lt {
+            let (n, bytes) = weights.add_lt_scales_down(&stream)?;
+            eprintln!("sysone engine: FP4 down GEMM on cuBLASLt: {n} down projections given tiled block scales \
+                       ({:.1} MiB)", bytes as f64 / (1u64 << 20) as f64);
+        }
         let fopts = ForwardOptions { nvfp4_fused: opts.nvfp4_fused, nvfp4_swiglu: swiglu, trim_last_layer: opts.trim_last_layer };
         let fwd = forward::build_opts(&cfg, &weights, slot_ids.len(), &opts.taps, fopts)?;
         if opts.trim_last_layer && !fwd.trimmed {
@@ -255,6 +271,7 @@ impl GpuEngine {
         };
         eprintln!("sysone engine: GDN backend {} ({why}) on {arch}", gdn_backend.name());
         let mut opts = opts;
+        opts.fp4_gemm = Some(fp4_gemm);
         if let Some(frac) = opts.memory_fraction {
             ctx.bind_to_thread()?;
             opts.buckets = fit_buckets(&fwd, &opts, gdn_backend, slot_ids.len(), frac)?;
@@ -272,7 +289,11 @@ impl GpuEngine {
         })?;
         // Pre-touched (zeroed) pinned readback buffer for the largest step's logits.
         let host_logits = PinnedHostBuffer::zeroed(&ctx, largest.answers * slot_ids.len())?;
-        let blas = Blas::with_mode(&stream, opts.gemm)?;
+        let mut blas = Blas::with_mode(&stream, opts.gemm)?;
+        if fp4_lt {
+            let inter = cfg.text_config.intermediate_size;
+            blas.enable_fp4_lt(largest.tokens, inter / crate::kernels::nvfp4::GROUP, (major as u32, minor as u32))?;
+        }
         let mut e = Self {
             cfg,
             opts,
@@ -318,6 +339,10 @@ impl GpuEngine {
                   e.opts.gemm.name(),
                   if e.opts.gemm == GemmMode::Pinned { "batch-invariant" } else { "not batch-invariant" },
                   if e.fwd.trimmed { "trimmed to the answer rows" } else { "untrimmed" }, largest.answers);
+        if e.format == WeightFormat::Nvfp4 {
+            eprintln!("sysone engine: FP4 down GEMM {}{}", fp4_gemm.name(),
+                      if fp4_lt { " (one pinned algorithm per weight shape, no split-K; batch-invariant)" } else { "" });
+        }
         if e.opts.warmup {
             let t = Instant::now();
             let mut b = DecisionBatch::default();
