@@ -17,10 +17,22 @@
    "sha256": "489173f74ee26b8cd7399d18bfc63d57d7a8b17c3b23325d89d5695fe6c0d1be"
   }
  },
+ "sysone_bf16_l1": {
+  "golden/dev/eval/candidates/sysone_bf16_l1/part-000.json": {
+   "bytes": 1314157,
+   "sha256": "f7ef1da2067974e08957b8beefa6ba57ed7e35b45e3fbdb9ceda7bff9fa47e01"
+  }
+ },
  "sysone_nvfp4": {
   "golden/dev/eval/candidates/sysone_nvfp4/part-000.json": {
    "bytes": 1319634,
    "sha256": "0f8871fdee4aa5b31df9272057aaa119b22c378ff3f79c51083bf45981a9291a"
+  }
+ },
+ "sysone_nvfp4_l1": {
+  "golden/dev/eval/candidates/sysone_nvfp4_l1/part-000.json": {
+   "bytes": 1319559,
+   "sha256": "accf6650b7d0702ffc0517d0e0fb4237b8e7792b76f5332cda4db401dc783d5d"
   }
  }
 }
