@@ -17,9 +17,11 @@
 //! | [`worker`] | Engines per GPU: worker processes (`sysone bulk worker`) or threads; per-device sizing |
 //! | [`wire`] | The coordinator ↔ worker-process pipe protocol |
 //! | [`synth`] | Synthetic requests (loadgen's) and corpora with a length mix |
-//! | [`cli`] | `sysone bulk [run] / gen / simulate / worker` |
+//! | [`compare`] | Two result files by id: statuses, fields, probability differences |
+//! | [`cli`] | `sysone bulk [run] / gen / simulate / compare / worker` |
 
 pub mod cli;
+pub mod compare;
 pub mod job;
 pub mod output;
 pub mod pack;

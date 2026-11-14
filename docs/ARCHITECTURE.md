@@ -3,7 +3,8 @@
 This document explains how the code is put together: what each module does, how one request moves through the
 system, what the main types and data layouts mean, which library runs each GPU op, and how correctness is checked.
 It describes the code as it is. For *why* it is built this way, read [DESIGN.md](DESIGN.md); for measured numbers,
-read the phase reports ([PHASE0.md](PHASE0.md), [PHASE1.md](PHASE1.md), [PHASE2A.md](PHASE2A.md), [G1.md](G1.md), [E2.md](E2.md)).
+read the phase reports ([PHASE0.md](PHASE0.md), [PHASE1.md](PHASE1.md), [PHASE2A.md](PHASE2A.md), [G1.md](G1.md), [E2.md](E2.md),
+[BULK.md](BULK.md)).
 
 Code references name files, types and functions (`src/engine/gpu.rs`, `GpuEngine::step`). Line numbers are avoided
 on purpose. `cargo doc --no-deps --open` renders the per-module docs that this file points into.
@@ -48,6 +49,7 @@ cuBLAS (through `cudarc`) for the bf16 GEMMs.
 | NVFP4 | Kernels exist and are tested (`src/kernels/nvfp4`), the loader reads NVFP4 checkpoints, but `forward::build` refuses NVFP4 projections: there is no NVFP4 forward yet. |
 | `allowed_token_mass` (`?debug=1`) | Computed by `MockEngine` only. `GpuEngine` does not override `DecisionEngine::run_with_mass`, so the field is absent with the GPU engine. |
 | Prefix cache across requests (DESIGN §8), images, `head` readout | Not implemented. |
+| Bulk tagging (B1) | `sysone bulk` (`src/bulk/`, docs/BULK.md): JSONL jobs in, results keyed by id out, through the server's own `prepare`/`finish`; window packing to full buckets; one worker process per GPU from one queue; resumable. |
 | GDN on cuda-oxide SIMT kernels (G1, E2) | Implemented (`kernels-simt/`, `src/kernels/gdn/simt.rs`, docs/G1.md) and wired into the engine (E2, docs/E2.md): `--gdn-backend auto\|tile\|simt`, `EngineOptions::gdn_backend`. Default on sm_121 (`auto`), where every engine gate and the eval gate pass with it; cuTile on every other architecture until validated there. |
 
 ## 2. Request lifecycle
@@ -136,6 +138,10 @@ Step by step, with the code that runs:
    `Answer`. `Frontend::response` and `Frontend::meta` build the body; `finish` adds `qev.timing` (`render_s`,
    `queue_s`, `forward_s`, `total_s`) and, with `debug`, `qev.diagnostics`.
 9. **Respond**: `respond` records metrics (`sched::metrics::Metrics`) and returns the response.
+
+The bulk path (`sysone bulk`, docs/BULK.md) reuses steps 2, 3 and 8 (`api::server::prepare` and `finish`, the same
+functions) and replaces the rest: no HTTP, a window of planned requests packed into full steps (`bulk::pack`), and
+one engine per GPU in a worker process (`bulk::worker`) fed from one queue (`bulk::run`).
 
 The process is wired together in `src/main.rs`: it parses the CLI, loads `ModelConfig` and the `Frontend`, builds an
 `EngineFactory` (mock or bf16; the factory runs on the GPU worker thread so the CUDA context belongs to it), starts
@@ -260,8 +266,10 @@ items, inputs/outputs and the gotchas worth knowing before changing the code.
 ### 4.1 `contract` (`src/contract.rs`)
 
 - **Does:** defines the batch/engine interface: `Segment`, `DecisionBatch`, `SlotLogits`, `MAX_SLOTS`,
-  the `DecisionEngine` trait (`max_tokens_per_step`, `run`, `run_with_mass`), `MassReadout`, `allowed_mass`,
-  `logsumexp_f32`, and `MockEngine`.
+  the `DecisionEngine` trait (`max_tokens_per_step`, `run`, `run_with_mass`, `info`, `step_limits`,
+  `last_bucket_tokens`), `StepLimits`, `MassReadout`, `allowed_mass`, `logsumexp_f32`, and `MockEngine`.
+  `step_limits` (buckets, answer/segment/prefix limits) lets `sysone bulk` pack steps that fit exactly;
+  `last_bucket_tokens` reports the padded size of the last run (`sysone_bucket_tokens_total`, bulk padding).
 - **Invariants:** see `DecisionBatch::validate` (§3.1). Every producer must hand over a valid batch; engines may
   assume it.
 - **`MockEngine`:** deterministic fake logits from a hash of each branch's own tokens, so results are
@@ -388,6 +396,31 @@ Gotchas (from code comments and the Phase 2a review):
 - `forward::build` bails on NVFP4 projections, and `TileKernels` does not implement the `Kernels` NVFP4 methods
   (their defaults return an error).
 - `GpuEngine`'s field order is its drop order: graphs and buffers must drop before the CUDA context.
+
+### 4.5a `bulk` (`src/bulk/`)
+
+`sysone bulk` (docs/BULK.md): a JSONL file of `/v1/systemone` jobs in, one result line per job id out.
+
+| File | Responsibility | Key items |
+|---|---|---|
+| `job.rs` | Input lines (`id`, `body`/`body_text`, `query`), result lines, id digests | `parse_line`, `Line`, `Job`, `result_line`, `id_key` |
+| `output.rs` | The results file: `flock`, resume (done ids), cutting a torn last line, `fdatasync` | `Output::{open, write, sync}`, `Resume` |
+| `pack.rs` | Choosing a step: first-fit decreasing from the window into the worker's largest bucket; bucket choice at the tail by a throughput curve; ladders; FIFO and bulk packing simulations | `choose`, `Size`, `Throughput`, `PackPolicy`, `ladder`, `simulate_fifo`, `simulate_bulk` |
+| `run.rs` | The coordinator: reader (credits bound the read-ahead), planner threads (`server::prepare`), dispatcher (reorder to input order, window, `choose`, steps to workers, requeue on worker exit), writer (`server::finish`, append); the summary | `run`, `RunOptions`, `Summary`, `WorkerSummary` |
+| `worker.rs` | Workers: engine build and sizing per device (`EngineSpec`), the worker process (`sysone bulk worker`) and thread loops, the coordinator's handle, the mock `SimEngine` | `EngineSpec`, `build`, `process_main`, `Handle::{thread, process}`, `Event`, `command` |
+| `wire.rs` | The coordinator ↔ worker pipe protocol (length-prefixed frames: HELLO, STEP, DONE, FAILED) | `Frame`, `Hello`, `Done`, `encode`, `decode` |
+| `compare.rs` | Two result files by id (statuses, fields, probability differences) | `main`, `walk`, `Diffs` |
+| `synth.rs`, `cli.rs` | Synthetic requests (loadgen's) and corpora; the `sysone bulk` subcommands | `body`, `CorpusSpec`; `main` |
+
+Gotchas:
+- Results must be *keyed by id*: steps reorder requests by size and mix them.
+- GPU workers are processes started through `scripts/gpu.sh --gpu N`, never engines on several devices in one
+  process: the engine uses the default device in several places (docs/BULK.md "Multi-GPU"). A GPU listed twice
+  (two engines on one GPU) needs the coordinator to run under gpu.sh already.
+- A step is chosen only from a full window or the exhausted input, which makes the step sequence deterministic;
+  do not add timing-based flushes without keeping a deterministic mode.
+- `EngineOptions::memory_fraction` (set by bulk workers) drops buckets whose arena, GDN scratch and readback do not
+  fit the memory free after the weights (`gpu::step_bytes`, `GdnScratch::engine_bytes`).
 
 ### 4.6 `kernels` (`src/kernels/`)
 
@@ -544,7 +577,8 @@ a CUDA context, unless `--allow-shared-gpu` is passed (the output is then marked
 | `bench_nvfp4` | NVFP4 quantize and FP4 GEMMs at the MLP shapes vs cuBLAS bf16 | `scripts/gpu.sh ./target/release/bench_nvfp4 --tokens 1024,4096,16384` |
 | `hwprobe` | Memory bandwidth, cuBLAS bf16 GEMM rates at the model's shapes, GEMM-only forward estimate; `--profile-out` writes a platform profile | `scripts/gpu.sh ./target/release/hwprobe --profile-out profiles/<name>.json` |
 | `tile_gemm_probe` | Plain cuTile bf16 and NVFP4 GEMM rates (Phase 0 floor) | `scripts/gpu.sh ./target/release/tile_gemm_probe` |
-| `loadgen` | Closed-loop HTTP load against a running server; one JSON line of rates, latency quantiles, timing parts and `/metrics` batch stats | `./target/release/loadgen --addr 127.0.0.1:8000 --concurrency 64 --state-tokens 1000 --questions 8 --duration-s 60` |
+| `loadgen` | Closed-loop HTTP load against a running server; one JSON line of rates, latency quantiles, timing parts and `/metrics` batch stats (busy fraction over the scrape window, step padding). `--corpus FILE` sends every job of a bulk job file once (`--responses FILE` keeps the answers as bulk result lines) | `./target/release/loadgen --addr 127.0.0.1:8000 --concurrency 64 --state-tokens 1000 --questions 8 --duration-s 60` |
+| `sysone bulk` (`src/bulk/`) | Bulk tagging throughput: docs/s, decisions/s, packed tok/s, padding, per-GPU busy fraction and share in its summary; `bulk simulate` compares packings on CPU; `bulk compare` compares result files | `./target/release/sysone bulk --model M --input corpus.jsonl --output out.jsonl` (docs/BULK.md) |
 | `cpu_ref_check` (`src/engine/cpu_ref/check_main.rs`) | CPU reference vs the qev fp32 run recorded by `reference/hf_check/run_qev.py` | `cargo run --release --bin cpu_ref_check -- --model <dir> --recorded reference/hf_check/out/qev_fp32.json` |
 
 Scripts:
@@ -552,7 +586,7 @@ Scripts:
 | Script | Does |
 |---|---|
 | `scripts/gpu.sh [--gpu N] CMD...` | Runs `CMD` holding the selected GPU's lock (`flock`; `/tmp/sysone-gpu.lock` on a single-GPU host, `/tmp/sysone-gpu<N>.lock` per GPU otherwise; `SYSONE_GPU_LOCK` overrides), with `SYSONE_GPU_LOCKED=1`, `CUDA_DEVICE_ORDER=PCI_BUS_ID` and `CUDA_VISIBLE_DEVICES` set to the selection. `require_idle_gpu` only looks at the process's own GPU (CUDA device 0, matched to nvidia-smi by PCI address). |
-| `scripts/x86/*` | Runners and the pre-push leak check for the x86 host: [docs/x86/AGENT.md](x86/AGENT.md). |
+| `scripts/x86/*` | Runners (`run_tests.sh`, `run_bench.sh`, `run_bulk.sh`) and the pre-push leak check for the x86 host: [docs/x86/AGENT.md](x86/AGENT.md). |
 | `scripts/doctor.sh [--simt]` | Checks build and run prerequisites (CUDA toolkit and tileiras, driver, clang headers, rustup, `../cuda-rust`, Docker, HF auth, ...) and prints the fix for each missing one. `--simt` also checks the cuda-oxide toolchain. |
 | `reference/*.py`, `reference/eval/*` | Golden and eval-set generation; see their READMEs. GPU runs go through `scripts/gpu.sh`. |
 
@@ -646,9 +680,10 @@ Things that look inconsistent or unclear in the current tree. They are recorded 
 
 1. **Default bucket lists differ.** `graph::BucketPlan::DEFAULT_TOKENS` stops at 32768, `EngineOptions::default()`
    at 65536, and the server uses `EngineOptions::buckets_up_to(max_step)`. Which one is meant to be the default?
-2. **Platform profile is not read.** The `platform.rs` docs say the engine and scheduler read the profile to size
-   token budgets and buckets, but only `hwprobe` (writes it) and `require_idle_gpu` are used; budgets and buckets
-   come from CLI flags.
+2. **Platform profile is barely read.** The `platform.rs` docs say the engine and scheduler read the profile to size
+   token budgets and buckets. The server does not: its budgets and buckets come from CLI flags. `sysone bulk`
+   workers read it (`--profile`) only for the packer's throughput curve; their buckets come from the device's free
+   memory (`EngineOptions::memory_fraction`), because the measured forward is flat per token from ~1k up.
 3. **Images.** DESIGN §1 says requests containing images get a 422. The schema has no image field and ignores extra
    keys, so an image key would be dropped silently. Is the 422 still intended?
 4. **GDN path in the engine.** Answered by E2 (docs/E2.md): the engine runs the SIMT backend's launches

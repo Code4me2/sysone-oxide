@@ -17,6 +17,7 @@ pub fn run(mut engine: Box<dyn DecisionEngine>, rx: Receiver<Packed>, metrics: A
     for Packed { batch, jobs, wants_mass } in rx {
         let n_jobs = jobs.len();
         let start = Instant::now();
+        metrics.record_step_start(start);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             if wants_mass {
                 engine.run_with_mass(&batch)

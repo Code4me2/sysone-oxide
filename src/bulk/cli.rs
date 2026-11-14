@@ -29,7 +29,12 @@ pub enum WorkerMode {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "sysone bulk", about = "Tag a JSONL file of /v1/systemone requests at full throughput (docs/BULK.md)")]
+#[command(
+    name = "sysone bulk",
+    about = "Tag a JSONL file of /v1/systemone requests at full throughput (docs/BULK.md)",
+    after_help = "Other subcommands: `sysone bulk gen --help` (synthetic corpus), `sysone bulk simulate --help` (packing \
+                  on CPU), `sysone bulk compare A.jsonl B.jsonl` (two result files by id)."
+)]
 pub struct RunArgs {
     /// Model directory (config.json, model.safetensors, tokenizer.json, chat_template.jinja).
     #[arg(long)]
@@ -490,6 +495,10 @@ pub fn main(argv: &[String]) -> Result<i32> {
             Ok(0)
         }
         Some("gen") => gen_main(&argv[1..]),
+        Some("compare") => match argv.get(1..) {
+            Some([a, b]) => super::compare::main(Path::new(a), Path::new(b)),
+            _ => bail!("usage: sysone bulk compare A.jsonl B.jsonl"),
+        },
         Some("simulate") => simulate_main(&argv[1..]),
         Some("run") => run_main(&argv[1..]),
         _ => run_main(argv),

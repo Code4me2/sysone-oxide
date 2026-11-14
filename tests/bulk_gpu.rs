@@ -26,6 +26,8 @@ use std::process::Command;
 use std::sync::Arc;
 
 use sysone::api::client::Client;
+use sysone::api::schema::SystemOneRequest;
+use sysone::bulk::compare::{Diffs, walk};
 use sysone::api::server::{self, AppState, ServerInfo};
 use sysone::contract::DecisionEngine;
 use sysone::engine::goldens;
@@ -45,7 +47,6 @@ fn model_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/home/velvet/Desktop/hf_models/elephant-1"))
 }
 
-const MAX_STEP: &str = "65536";
 
 fn parse(b: &[u8]) -> Json {
     pyjson::parse(b).unwrap_or_else(|e| panic!("not JSON ({e:?}): {}", String::from_utf8_lossy(b)))
@@ -80,14 +81,14 @@ fn results(path: &Path) -> BTreeMap<String, (u16, Json)> {
     m
 }
 
-fn bulk(dir: &Path, name: &str, input: &Path, extra: &[&str]) -> (BTreeMap<String, (u16, Json)>, Json) {
+fn bulk(dir: &Path, name: &str, input: &Path, max_step: usize, extra: &[&str]) -> (BTreeMap<String, (u16, Json)>, Json) {
     let out = dir.join(format!("{name}.jsonl"));
     let _ = std::fs::remove_file(&out);
     let o = Command::new(env!("CARGO_BIN_EXE_sysone"))
         .arg("bulk")
         .arg("--model")
         .arg(model_dir())
-        .args(["--max-step-tokens", MAX_STEP, "--progress-s", "0", "--input"])
+        .args(["--max-step-tokens", &max_step.to_string(), "--progress-s", "0", "--input"])
         .arg(input)
         .arg("--output")
         .arg(&out)
@@ -101,15 +102,6 @@ fn bulk(dir: &Path, name: &str, input: &Path, extra: &[&str]) -> (BTreeMap<Strin
     (results(&out), summary)
 }
 
-#[derive(Default)]
-struct Diffs {
-    dp: Vec<f64>,
-    dlogit: Vec<f64>,
-    derived: Vec<f64>,
-    errors: Vec<String>,
-    flips: Vec<(String, f64)>,
-}
-
 fn num(j: &Json) -> Option<f64> {
     match j {
         Json::Float(x) => Some(*x),
@@ -118,62 +110,9 @@ fn num(j: &Json) -> Option<f64> {
     }
 }
 
-fn top1_margin(probs: Option<&Json>) -> f64 {
-    let mut p: Vec<f64> = probs.and_then(|j| j.as_object()).map(|o| o.iter().filter_map(|(_, v)| num(v)).collect()).unwrap_or_default();
-    p.sort_by(|a, b| b.total_cmp(a));
-    p.first().copied().unwrap_or(0.0) - p.get(1).copied().unwrap_or(0.0)
-}
-
-fn walk(path: &str, ours: &Json, theirs: &Json, margin: f64, d: &mut Diffs) {
-    let in_answers = path.starts_with("answers.");
-    match (ours, theirs) {
-        (Json::Object(a), Json::Object(b)) => {
-            let ka: Vec<&str> = a.iter().map(|(k, _)| k.as_str()).collect();
-            let kb: Vec<&str> = b.iter().map(|(k, _)| k.as_str()).collect();
-            if ka != kb {
-                d.errors.push(format!("{path}: keys {ka:?} vs {kb:?}"));
-                return;
-            }
-            let m = if theirs.get("probabilities").is_some() { top1_margin(theirs.get("probabilities")) } else { margin };
-            for k in ka {
-                let p = if path.is_empty() { k.to_string() } else { format!("{path}.{k}") };
-                walk(&p, ours.get(k).unwrap(), theirs.get(k).unwrap(), m, d);
-            }
-        }
-        (Json::Array(a), Json::Array(b)) if a.len() == b.len() => {
-            for (i, (x, y)) in a.iter().zip(b).enumerate() {
-                walk(&format!("{path}[{i}]"), x, y, margin, d);
-            }
-        }
-        (x, y) if matches!(x, Json::Float(_)) || matches!(y, Json::Float(_)) => {
-            let (Some(a), Some(b)) = (num(x), num(y)) else {
-                d.errors.push(format!("{path}: {x:?} vs {y:?}"));
-                return;
-            };
-            let diff = (a - b).abs();
-            if path.contains(".slot_logits") {
-                d.dlogit.push(diff);
-            } else if in_answers && (path.contains(".probabilities.") || path.ends_with(".noul")) {
-                d.dp.push(diff);
-            } else if in_answers {
-                d.derived.push(diff);
-            } else if diff != 0.0 {
-                d.errors.push(format!("{path}: {x:?} vs {y:?}"));
-            }
-        }
-        (Json::Str(x), Json::Str(y)) if in_answers && path.ends_with(".choice") && x != y => {
-            d.flips.push((format!("{path}: {x} vs {y}"), margin));
-        }
-        (x, y) => {
-            if x != y {
-                d.errors.push(format!("{path}: {:.200} vs {:.200}", x.dumps_compact().unwrap(), y.dumps_compact().unwrap()));
-            }
-        }
-    }
-}
-
-/// The corpus as (id, query, body) and a job file.
-fn corpus(dir: &Path) -> (PathBuf, Vec<(String, String, String)>) {
+/// The corpus as (id, query, body) and a job file, without the requests over `max_step` tokens (which neither
+/// the server nor bulk can run at that step size).
+fn corpus(dir: &Path, fe: &Frontend, max_step: usize) -> (PathBuf, Vec<(String, String, String)>) {
     let mut jobs = Vec::new();
     for (k, c) in goldens::model_corpus(&repo()).unwrap().into_iter().enumerate() {
         let q = if k % 4 == 0 { format!("debug=1&debias={}", c.debias) } else { format!("debias={}", c.debias) };
@@ -192,6 +131,14 @@ fn corpus(dir: &Path) -> (PathBuf, Vec<(String, String, String)>) {
         let (w, q) = sysone::bulk::synth::doc_shape(&spec, i);
         jobs.push((format!("doc-{i:03}"), String::new(), sysone::bulk::synth::body(i, w, q)));
     }
+    jobs.retain(|(id, q, body)| {
+        let debias = q.rsplit("debias=").next().and_then(|d| d.parse().ok()).unwrap_or(1);
+        let total = SystemOneRequest::from_body(body.as_bytes()).ok().and_then(|r| fe.plan(&r, debias).ok()).map_or(0, |p| p.total);
+        if total > max_step {
+            println!("{id}: {total} tokens, over the {max_step}-token step on this GPU; left out");
+        }
+        total <= max_step
+    });
     let text: String = jobs
         .iter()
         .map(|(id, q, b)| {
@@ -216,19 +163,34 @@ async fn bulk_on_the_gpu_matches_the_server() {
     );
     let dir = std::env::temp_dir().join(format!("sysone-bulk-gpu-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let (input, jobs) = corpus(&dir);
+    // Sized to the card: 65,536-token steps where memory allows (GB10, RTX PRO 6000), else 16,384 (RTX 5090);
+    // two engines on the GPU only with room for both.
+    let total = {
+        let ctx = cuda_core::Context::new(0).unwrap();
+        ctx.bind_to_thread().unwrap();
+        sysone::engine::gpu::device_memory().unwrap().1
+    };
+    let gib = total as f64 / (1u64 << 30) as f64;
+    let max_step = if gib >= 64.0 { 65536 } else { 16384 };
+    let two_engines = gib >= 80.0;
+    println!("device memory {gib:.0} GiB: steps up to {max_step} tokens; two engines: {two_engines}");
+    let fe = Arc::new(Frontend::load(&model_dir(), Limits::default()).unwrap());
+    let (input, jobs) = corpus(&dir, &fe, max_step);
     let t = Tolerances::load_default().unwrap();
 
-    let (alone, _) = tokio::task::block_in_place(|| bulk(&dir, "alone", &input, &["--window", "1"]));
-    let (packed, s_packed) = tokio::task::block_in_place(|| bulk(&dir, "packed", &input, &["--window", "64", "--trace", dir.join("packed.trace").to_str().unwrap()]));
-    let (again, _) = tokio::task::block_in_place(|| bulk(&dir, "again", &input, &["--window", "64"]));
-    let (two, s_two) = tokio::task::block_in_place(|| bulk(&dir, "two-engines", &input, &["--window", "64", "--gpus", "0,0"]));
+    let (alone, _) = tokio::task::block_in_place(|| bulk(&dir, "alone", &input, max_step, &["--window", "1"]));
+    let (packed, s_packed) = tokio::task::block_in_place(|| bulk(&dir, "packed", &input, max_step, &["--window", "64"]));
+    let (again, _) = tokio::task::block_in_place(|| bulk(&dir, "again", &input, max_step, &["--window", "64"]));
+    // The GPU gpu.sh selected (its lock is held; the nested gpu.sh of each worker reuses it).
+    let gpu = std::env::var("CUDA_VISIBLE_DEVICES").ok().filter(|g| !g.is_empty() && !g.contains(',')).unwrap_or_else(|| "0".into());
+    let twice = format!("{gpu},{gpu}");
+    let two = two_engines
+        .then(|| tokio::task::block_in_place(|| bulk(&dir, "two-engines", &input, max_step, &["--window", "64", "--gpus", &twice])));
 
-    // The server (same buckets: powers of two up to MAX_STEP), one request at a time.
-    let fe = Arc::new(Frontend::load(&model_dir(), Limits::default()).unwrap());
+    // The server (same buckets: powers of two up to max_step), one request at a time.
     let slot_ids = fe.slot_ids.clone();
     let factory: EngineFactory = Box::new(move || {
-        let opts = EngineOptions { buckets: EngineOptions::buckets_up_to(MAX_STEP.parse().unwrap()), ..Default::default() };
+        let opts = EngineOptions { buckets: EngineOptions::buckets_up_to(max_step), ..Default::default() };
         Ok(Box::new(GpuEngine::load(&model_dir(), &slot_ids, opts)?) as Box<dyn DecisionEngine>)
     });
     let state = AppState::start(fe, ServerInfo::new("elephant-1", "qwen3_5"), SchedConfig::default(), factory, 4).unwrap();
@@ -280,12 +242,12 @@ async fn bulk_on_the_gpu_matches_the_server() {
     for (id, (s, body)) in &served {
         let (bs, bb) = &packed[id];
         if bs != s {
-            d.errors.push(format!("{id}: status {bs} vs {s}"));
+            d.other.push(format!("{id}: status {bs} vs {s}"));
             continue;
         }
-        let before = d.errors.len();
+        let before = d.other.len();
         walk("", bb, body, 1.0, &mut d);
-        for e in d.errors.iter_mut().skip(before) {
+        for e in d.other.iter_mut().skip(before) {
             *e = format!("{id}: {e}");
         }
     }
@@ -311,11 +273,11 @@ async fn bulk_on_the_gpu_matches_the_server() {
             failed.push(format!("packed: {f} with margin {m:.4}"));
         }
     }
-    for e in d.errors.iter().take(10) {
+    for e in d.other.iter().take(10) {
         println!("    MISMATCH {e}");
     }
-    if !d.errors.is_empty() {
-        failed.push(format!("packed: {} mismatches", d.errors.len()));
+    if !d.other.is_empty() {
+        failed.push(format!("packed: {} mismatches", d.other.len()));
     }
 
     // 3 and 4: the same packing gives the same bytes, on one engine or two.
@@ -325,14 +287,19 @@ async fn bulk_on_the_gpu_matches_the_server() {
     if !same(&packed, &again) {
         failed.push("determinism: a second packed run differs".into());
     }
-    let ws = s_two.get("workers").unwrap().as_array().unwrap();
-    let steps: Vec<f64> = ws.iter().map(|w| num(w.get("steps").unwrap()).unwrap()).collect();
-    println!("two engines on one GPU: steps per worker {steps:?}");
-    if ws.len() != 2 || steps.iter().any(|&s| s == 0.0) {
-        failed.push(format!("two engines: steps per worker {steps:?}"));
-    }
-    if !same(&packed, &two) {
-        failed.push("two engines on one GPU: results differ from one engine's".into());
+    match &two {
+        Some((two, s_two)) => {
+            let ws = s_two.get("workers").unwrap().as_array().unwrap();
+            let steps: Vec<f64> = ws.iter().map(|w| num(w.get("steps").unwrap()).unwrap()).collect();
+            println!("two engines on one GPU: steps per worker {steps:?}");
+            if ws.len() != 2 || steps.iter().any(|&s| s == 0.0) {
+                failed.push(format!("two engines: steps per worker {steps:?}"));
+            }
+            if !same(&packed, two) {
+                failed.push("two engines on one GPU: results differ from one engine's".into());
+            }
+        }
+        None => println!("two engines on one GPU: NOT RUN ({gib:.0} GiB: no room for two engines)"),
     }
     let _ = std::fs::remove_dir_all(&dir);
     assert!(failed.is_empty(), "bulk GPU failures:\n  {}", failed.join("\n  "));
