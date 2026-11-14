@@ -23,6 +23,8 @@ Phase 2a is done ([docs/PHASE2A.md](docs/PHASE2A.md) has the numbers):
   (NVFP4: 16,384 tokens per branch). F1 ([docs/F1.md](docs/F1.md), profile in [docs/PROFILE.md](docs/PROFILE.md))
   fused SiLU·mul + quantize into the gate/up FP4 GEMM and retuned the memory-bound kernels, byte-identical to N1:
   the nvfp4 forward is 1.10x faster again (16k: 8,177 tok/s against 7,448 for N1 in the same session; 1.65x bf16).
+  S2 ([docs/S2.md](docs/S2.md)): the GDN gated norm at DRAM bandwidth and the residual add in the FP4 down GEMM's
+  epilogue, bit-identical to main: nvfp4 forward 2.5-3.8% faster at 16k (8,529-8,650 packed tok/s), bf16 1-2%.
 - `allowed_token_mass` (`?debug=1`) is not computed by the GPU engine. No prefix cache, no images.
 - A faster GatedDeltaNet scan on cuda-oxide SIMT kernels (G1, [docs/G1.md](docs/G1.md)) runs in the engine and passes
   every accuracy gate (E2, [docs/E2.md](docs/E2.md)); it is the default on sm_121 (`--gdn-backend auto`), cuTile
@@ -144,6 +146,7 @@ See [docs/ARCHITECTURE.md §6](docs/ARCHITECTURE.md#6-correctness-and-testing) f
 | [docs/L1.md](docs/L1.md) | Pinned cuBLASLt GEMMs (batch invariance) and last-layer trimming: design, bit-identity, gates, speed |
 | [docs/PROFILE.md](docs/PROFILE.md) | Where the forward's time goes on GB10 (Nsight Systems / Compute method and commands, PDL estimate, ranked opportunities) |
 | [docs/F1.md](docs/F1.md) | F1: the fused gate/up + SiLU·mul FP4 GEMM and kernel tuning, byte-identity proof, speed before/after |
+| [docs/S2.md](docs/S2.md) | S2: `gated_rmsnorm` tile shape, residual add in the FP4 down GEMM epilogue; bit-identity proof, speed before/after |
 | [reference/README.md](reference/README.md) | The reference harness and golden formats |
 | [reference/eval/README.md](reference/eval/README.md) | The labeled eval set and the statistical gate |
 | `cargo doc --no-deps --open` | Per-module API docs |

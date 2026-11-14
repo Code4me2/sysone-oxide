@@ -24,6 +24,9 @@
 //!   q2, s2 = silu_mul_nvfp4(gu)                      SiLU·mul + quantize (down's input_global_scale)
 //!   m      = gemm_nvfp4(q2, s2, Wdown)
 //! ```
+//! F1 fuses the SiLU·mul + quantize into the gate/up GEMM (`GemmNvfp4SwiGlu`), and S2 the residual add after the
+//! down GEMM into its epilogue (`GemmNvfp4Residual`: `x += m` in place; the next input norm, or the final norm, is
+//! then `ZcRmsNormRes`). Both are byte-identical to the separate ops (tests/kernels_nvfp4_f1.rs, tests/kernels_s2.rs).
 //! Unfused ([`build_with`] with `nvfp4_fused = false`) the bf16 norm and SiLU·mul outputs are materialised and a
 //! standalone `quantize_nvfp4` runs before each GEMM; both forms are bit-identical (tests/kernels_nvfp4_fused.rs).
 //! Every other projection stays bf16 (cuBLAS); an NVFP4 projection outside the MLP is refused.
