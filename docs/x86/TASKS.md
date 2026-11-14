@@ -140,3 +140,39 @@ Goal: the authoritative golden tier (DESIGN §9.1): the reference (qev + serve.p
 
 Do not start this from TASKS.md: it needs the reference sources and a data-transfer plan agreed in its issue (which
 files, how large, where they go). The issue will give the exact steps.
+
+## T7: bulk throughput on all three GPUs
+
+Goal: the user's real workload, bulk tagging, on the whole box: `sysone bulk` (docs/BULK.md) on each card alone and
+on all three cards at once from one shared queue, against the HTTP server driven by `loadgen` on the same corpus.
+
+1. Tests first: `scripts/x86/run_tests.sh --model $M` now includes `bulk` (CPU, with the script tests' fake
+   nvidia-smi: resume, packing determinism, load balancing, gpu.sh locks) and `bulk_gpu` per GPU (bulk vs the
+   server on that GPU; it sizes itself to the card: 16,384-token steps and no two-engine part below 64 / 80 GiB).
+2. Smoke: `scripts/x86/run_bulk.sh --model $M --mode both --server --quick` (200 documents; not for reporting).
+3. The run: `scripts/x86/run_bulk.sh --model $M --mode both --server`. It writes the corpus (2,000 synthetic
+   documents, states 300..8,000 tokens, 4..16 questions; local, under `target/x86-bulk/`), the packing simulation
+   (`host/<date>/bulk-corpus/`), then per GPU, one at a time: `sysone bulk` on that GPU, the server on that GPU with
+   `loadgen --corpus` at concurrency 256, and `sysone bulk compare` of the two result files
+   (`<card-slug>/<date>/gpu<N>-bulk/`); then `sysone bulk` on all GPUs at once (`host/<date>/bulk-all/`) and its
+   comparison with each single-GPU run.
+4. Step size on one RTX PRO 6000 (single GPU, after step 3): the bulk run with `--max-step-tokens 16384` and with
+   `65536` (`scripts/gpu.sh --gpu N ./target/release/sysone bulk --model $M --input target/x86-bulk/corpus-2000.jsonl
+   --output target/x86-bulk/step-<T>.jsonl --gpus N --require-idle --max-step-tokens <T>`); report the summary lines.
+
+Acceptance:
+- Every bulk run writes 2,000 results with status 200, and its summary has `failed` 0, `unrunnable` 0, `bad_lines` 0
+  and `aborted` null; every worker reports the buckets it chose (the 5090's top bucket comes from its memory).
+- `compare-server-vs-bulk.txt` per GPU and `compare-gpu<N>-vs-all.txt`: `only_a` = `only_b` = 0,
+  `status_mismatches` = 0, `other_mismatches` = 0, `dp_max` <= 0.01822 (`[batch_invariance].dp_max`: the two sides
+  pack the requests differently), any `choice_flips` only with `margin_b` <= 0.02. Report the numbers, never rerun
+  until they pass.
+- PR table per GPU: bulk docs/s, decisions/s, packed tok/s, padding fraction, busy fraction, top bucket, load s;
+  server (loadgen.json): requests/s, decisions/s, input tok/s, `server_padding_frac`, `server_engine_busy_frac`,
+  p50/p99 latency; the ratio bulk / server in packed tok/s.
+- All-GPU table: total docs/s and packed tok/s, per GPU token share, steps and busy fraction; the sum of the three
+  single-GPU packed tok/s and the all-GPU total as a fraction of it (scaling); whether the 5090 took a share in line
+  with its single-GPU speed.
+- Step-size table (item 4): packed tok/s and padding at 16,384 / 32,768 (step 3) / 65,536 on the RTX PRO 6000.
+- Anything that failed (OOM, a worker that stopped, a lock wait) is reported with the GPU and the summary's `error`
+  field, in your own words.

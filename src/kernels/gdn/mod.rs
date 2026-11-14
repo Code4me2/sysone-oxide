@@ -347,6 +347,21 @@ impl GdnScratch {
         Self::alloc(tokens, slots, 1, qkp_rows, 1, stream)
     }
 
+    /// Device bytes [`for_engine`](Self::for_engine) allocates, without allocating (engine memory sizing).
+    pub fn engine_bytes(backend: GdnBackend, tokens: usize, slots: usize) -> usize {
+        let qkp_rows = match backend {
+            GdnBackend::Tile => tokens,
+            GdnBackend::Simt => 1,
+        };
+        let f32s = 2 * qkp_rows * KEY_DIM            // q, k
+            + 2 * tokens * NUM_V_HEADS                    // g, beta
+            + 4 * VALUE_DIM                               // w, u, qd, kd (one row each)
+            + qkp_rows * NUM_V_HEADS * CHUNK              // p
+            + tokens * NUM_V_HEADS * CHUNK                // tinv
+            + slots.max(1) * NUM_V_HEADS * HEAD_DIM * HEAD_DIM; // state
+        f32s * 4 + (CONV_DIM + VALUE_DIM) * 2
+    }
+
     /// Device bytes of every buffer.
     pub fn bytes(&self) -> usize {
         let f32s = [&self.q, &self.k, &self.g, &self.beta, &self.w, &self.u, &self.qd, &self.kd, &self.p, &self.tinv, &self.state];

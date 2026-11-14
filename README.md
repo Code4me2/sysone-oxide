@@ -25,6 +25,8 @@ Phase 2a is done ([docs/PHASE2A.md](docs/PHASE2A.md) has the numbers):
 - A faster GatedDeltaNet scan on cuda-oxide SIMT kernels (G1, [docs/G1.md](docs/G1.md)) runs in the engine and passes
   every accuracy gate (E2, [docs/E2.md](docs/E2.md)); it is the default on sm_121 (`--gdn-backend auto`), cuTile
   elsewhere. The forward is 18-22% faster with it.
+- Bulk tagging (B1, [docs/BULK.md](docs/BULK.md)): `sysone bulk` answers a JSONL file of requests with the server's
+  answers, packed for throughput (full steps from a window of requests) over one engine per GPU, resumable.
 
 ## Prerequisites
 
@@ -63,8 +65,13 @@ scripts/gpu.sh cargo test --release --all-targets
 # Serve with the deterministic mock engine (real frontend and scheduler, fake logits; no GPU needed).
 ./target/release/sysone --model /path/to/elephant-1 --engine mock
 
-# Load test a running server.
+# Load test a running server (or send every job of a bulk job file once: --corpus FILE).
 ./target/release/loadgen --addr 127.0.0.1:8000 --concurrency 64 --state-tokens 1000 --questions 8 --duration-s 60
+
+# Bulk tagging: a JSONL of {"id", "body"} jobs in, one result line per id out, on every GPU (one worker process per
+# GPU, each under its gpu.sh lock); rerun the same command to resume. docs/BULK.md.
+./target/release/sysone bulk gen --docs 2000 --output corpus.jsonl
+./target/release/sysone bulk --model /path/to/elephant-1 --input corpus.jsonl --output results.jsonl
 
 # Benchmarks refuse to start while another process uses their GPU. On a multi-GPU host pick the GPU with
 # scripts/gpu.sh --gpu N (one lock per GPU); the x86 runners in scripts/x86/ do this per card (docs/x86/AGENT.md).
@@ -94,12 +101,13 @@ See [docs/ARCHITECTURE.md §6](docs/ARCHITECTURE.md#6-correctness-and-testing) f
 | `src/api/` | HTTP server (axum), request/response schema with qev-identical errors |
 | `src/frontend/` | Rendering, chat template, tokenization, prefix split, branch planning, answer assembly (CPU) |
 | `src/sched/` | Admission queue, token-budget batcher, GPU worker thread, CPU pool, metrics |
+| `src/bulk/` | `sysone bulk`: job/result files, packing, coordinator, per-GPU worker processes, pipe protocol |
 | `src/contract.rs` | `DecisionBatch` (the packed tree) and the `DecisionEngine` trait |
 | `src/engine/` | GPU engine: loader, weights, StepGraph forward, T-bucket CUDA graphs, cuBLAS GEMMs; CPU reference (`cpu_ref/`) |
 | `src/kernels/` | cuTile kernels: norms, pointwise, attention, GatedDeltaNet, readout, NVFP4; loader of the SIMT kernels (`simt.rs`) |
 | `kernels-simt/` | cuda-oxide SIMT kernels of the GDN delta rule (own toolchain, Rust 1.99.1) and their checked-in PTX; `kernels-simt/build.sh <arch>` rebuilds it (needs cargo-oxide; the main build does not) |
 | `src/tolerances.rs`, `tests/tolerances.toml` | Test thresholds derived from measured reference noise |
-| `src/main.rs` | The `sysone` server binary |
+| `src/main.rs` | The `sysone` server binary (and `sysone bulk ...`) |
 | `tests/` | Integration tests and goldens (`tests/golden/dev/`) |
 | `benchmarks/s1/` | Benchmark and probe binaries, load generator |
 | `reference/` | Python harness that runs the reference (qev + serve.patch) to produce goldens and the eval set |
@@ -119,6 +127,7 @@ See [docs/ARCHITECTURE.md §6](docs/ARCHITECTURE.md#6-correctness-and-testing) f
 | [docs/x86/AGENT.md](docs/x86/AGENT.md), [docs/x86/TASKS.md](docs/x86/TASKS.md) | The x86 host (2x RTX PRO 6000 + RTX 5090, sm_120): operating manual for the agent there (setup, GPU discipline, data hygiene, GitHub protocol) and its task list |
 | [docs/PHASE0.md](docs/PHASE0.md), [docs/PHASE1.md](docs/PHASE1.md), [docs/PHASE2A.md](docs/PHASE2A.md) | Phase reports and measurements |
 | [docs/G1.md](docs/G1.md) | The GDN delta rule in cuda-oxide: results, design, accuracy, the SIMT kernel build and artifact policy |
+| [docs/BULK.md](docs/BULK.md) | Bulk tagging: `sysone bulk` usage, packing for throughput, multi-GPU design, numbers |
 | [docs/E2.md](docs/E2.md) | The SIMT GDN backend in the engine: selection, every gate on both backends, forward speed |
 | [docs/N1.md](docs/N1.md) | The nvfp4 engine: fused quantization, checkpoint profiles, NVFP4 gates, forward speed |
 | [reference/README.md](reference/README.md) | The reference harness and golden formats |

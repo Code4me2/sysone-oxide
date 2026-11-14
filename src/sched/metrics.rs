@@ -61,7 +61,14 @@ struct Inner {
     branches_total: u64,
     batches_total: u64,
     batch_tokens_total: u64,
+    /// Bucket (padded) tokens of the steps whose engine reports them (`DecisionEngine::last_bucket_tokens`).
+    bucket_tokens_total: u64,
+    /// Packed tokens of those same steps, so padding = 1 - this / `bucket_tokens_total`.
+    bucket_batch_tokens_total: u64,
     engine_busy_seconds: f64,
+    /// Start of the step running now: `/metrics` counts its time so far, so the busy counter never jumps by a
+    /// whole step at its end (a scrape window then never sees more busy time than wall time).
+    running_since: Option<Instant>,
     batch_tokens: Histogram,
     batch_requests: Histogram,
     step_seconds: Histogram,
@@ -109,7 +116,10 @@ impl Metrics {
                 branches_total: 0,
                 batches_total: 0,
                 batch_tokens_total: 0,
+                bucket_tokens_total: 0,
+                bucket_batch_tokens_total: 0,
                 engine_busy_seconds: 0.0,
+                running_since: None,
                 batch_tokens: Histogram::new(&TOKEN_BUCKETS),
                 batch_requests: Histogram::new(&COUNT_BUCKETS),
                 step_seconds: Histogram::new(&SECONDS_BUCKETS),
@@ -152,16 +162,33 @@ impl Metrics {
         Self::trim(&mut m, now);
     }
 
+    /// An engine step starts now (ended by [`record_batch`](Self::record_batch)).
+    pub fn record_step_start(&self, at: Instant) {
+        self.inner.lock().unwrap().running_since = Some(at);
+    }
+
     /// One engine step.
     pub fn record_batch(&self, tokens: usize, requests: usize, branches: usize, step: Duration) {
         let mut m = self.inner.lock().unwrap();
         m.batches_total += 1;
         m.batch_tokens_total += tokens as u64;
         m.branches_total += branches as u64;
-        m.engine_busy_seconds += step.as_secs_f64();
+        // The part of the step already counted while it ran (see `record_step_start`) is not counted again.
+        match m.running_since.take() {
+            Some(t) => m.engine_busy_seconds += t.elapsed().as_secs_f64(),
+            None => m.engine_busy_seconds += step.as_secs_f64(),
+        }
         m.batch_tokens.observe(tokens as f64);
         m.batch_requests.observe(requests as f64);
         m.step_seconds.observe(step.as_secs_f64());
+    }
+
+    /// The bucket capacity a step of `tokens` packed tokens ran in (the engine computed `bucket - tokens` rows of
+    /// padding).
+    pub fn record_bucket(&self, tokens: usize, bucket_tokens: usize) {
+        let mut m = self.inner.lock().unwrap();
+        m.bucket_tokens_total += bucket_tokens as u64;
+        m.bucket_batch_tokens_total += tokens as u64;
     }
 
     /// Time a request spent between admission and the start of its engine step.
@@ -234,7 +261,12 @@ impl Metrics {
         counter(&mut out, "sysone_branches_total", "Branches (answer rows) scored.", m.branches_total as f64);
         counter(&mut out, "sysone_batches_total", "Engine steps.", m.batches_total as f64);
         counter(&mut out, "sysone_batch_tokens_total", "Tokens packed into engine steps.", m.batch_tokens_total as f64);
-        counter(&mut out, "sysone_engine_busy_seconds_total", "Seconds the engine spent in steps.", m.engine_busy_seconds);
+        counter(&mut out, "sysone_bucket_tokens_total", "Bucket (padded) tokens of engine steps that report them.",
+                m.bucket_tokens_total as f64);
+        counter(&mut out, "sysone_bucket_batch_tokens_total", "Packed tokens of the steps counted in sysone_bucket_tokens_total.",
+                m.bucket_batch_tokens_total as f64);
+        let busy = m.engine_busy_seconds + m.running_since.map_or(0.0, |t| t.elapsed().as_secs_f64());
+        counter(&mut out, "sysone_engine_busy_seconds_total", "Seconds the engine spent in steps (the running one so far).", busy);
         counter(&mut out, "sysone_rejected_total", "Requests refused with 503 (overload).", m.rejected_full as f64);
         let _ = writeln!(out, "# HELP sysone_overload_total Requests refused with 503, by the resource that was full.");
         let _ = writeln!(out, "# TYPE sysone_overload_total counter");
@@ -295,6 +327,32 @@ mod tests {
         assert_eq!(quantile(&v, 0.99), 99.0);
         assert_eq!(quantile(&v[..1], 0.99), 1.0);
         assert!(quantile(&[], 0.5).is_nan());
+    }
+
+    fn busy(m: &Metrics) -> f64 {
+        let t = m.render(0, 1, 1);
+        t.lines().find_map(|l| l.strip_prefix("sysone_engine_busy_seconds_total ")).unwrap().parse().unwrap()
+    }
+
+    /// The busy counter grows while a step runs, so busy time over a scrape window never exceeds the window
+    /// (loadgen's `server_engine_busy_frac` was > 1 when a whole step landed at its end).
+    #[test]
+    fn busy_time_counts_the_running_step() {
+        let m = Metrics::new();
+        let t0 = Instant::now();
+        m.record_step_start(t0);
+        std::thread::sleep(Duration::from_millis(30));
+        let (scrape, during) = (Instant::now(), busy(&m));
+        assert!(during >= 0.03 && during <= t0.elapsed().as_secs_f64(), "{during}");
+        std::thread::sleep(Duration::from_millis(20));
+        m.record_batch(10, 1, 1, t0.elapsed());
+        let after = busy(&m);
+        assert!(after - during <= scrape.elapsed().as_secs_f64() + 1e-9 && after >= 0.05, "{during} {after}");
+        // Without a step start (old callers), the step's duration is counted at its end.
+        m.record_batch(10, 1, 1, Duration::from_millis(100));
+        assert!((busy(&m) - after - 0.1).abs() < 1e-9);
+        m.record_bucket(10, 16);
+        assert!(m.render(0, 1, 1).contains("sysone_bucket_tokens_total 16\n"));
     }
 
     #[test]

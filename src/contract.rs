@@ -149,6 +149,45 @@ pub trait DecisionEngine: Send {
     fn info(&self) -> Vec<(&'static str, String)> {
         Vec::new()
     }
+
+    /// What one step can hold, for callers that pack batches to fit the engine exactly (`sysone bulk`). Default:
+    /// one bucket of [`max_tokens_per_step`](Self::max_tokens_per_step) tokens and no other limit.
+    fn step_limits(&self) -> StepLimits {
+        StepLimits::tokens_only(self.max_tokens_per_step())
+    }
+
+    /// Token capacity of the bucket(s) the last [`run`](Self::run) used (summed over the steps a split batch ran
+    /// in), so `capacity - batch tokens` is the padding it computed. None when the engine has no buckets.
+    fn last_bucket_tokens(&self) -> Option<usize> {
+        None
+    }
+}
+
+/// The capacities of an engine step ([`DecisionEngine::step_limits`]). A batch with at most `buckets.last()`
+/// tokens, `max_answers` answer rows, `max_segments` segments and `max_prefixes` prefixes runs as one step in the
+/// smallest bucket that holds its tokens.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StepLimits {
+    /// Token buckets, ascending (the engine pads a batch up to the smallest one that fits).
+    pub buckets: Vec<usize>,
+    pub max_answers: usize,
+    pub max_segments: usize,
+    pub max_prefixes: usize,
+}
+
+impl StepLimits {
+    pub fn tokens_only(max_tokens: usize) -> Self {
+        StepLimits { buckets: vec![max_tokens], max_answers: usize::MAX, max_segments: usize::MAX, max_prefixes: usize::MAX }
+    }
+
+    pub fn max_tokens(&self) -> usize {
+        self.buckets.last().copied().unwrap_or(0)
+    }
+
+    /// The smallest bucket holding `tokens`.
+    pub fn bucket_for(&self, tokens: usize) -> Option<usize> {
+        self.buckets.iter().copied().find(|&b| b >= tokens)
+    }
 }
 
 /// What [`DecisionEngine::run_with_mass`] returns.
