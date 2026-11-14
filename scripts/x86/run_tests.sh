@@ -18,7 +18,8 @@
 #   CPU           lib unit tests, render_golden_shape, scripts                  no GPU, no checkpoint
 #   CPU_MODEL     frontend_golden, frontend_assemble, server_e2e, bulk          no GPU; tokenizer + chat template
 #   GPU           kernels_norm, kernels_attn, kernels_gdn (tile + simt), kernels_simt, kernels_nvfp4 (all but the
-#                 layer-0 case), kernels_nvfp4_fused, engine_gemm, engine_graph, platform_gpu   per GPU; no checkpoint
+#                 layer-0 case), kernels_nvfp4_fused, kernels_nvfp4_f1, engine_gemm, engine_graph, platform_gpu
+#                 per GPU; no checkpoint
 #   GPU_MODEL     engine_loader (bf16; NVFP4 cases only with --nvfp4), engine_e2e, engine_server, bulk_gpu
 #                 per GPU; checkpoint (engine_e2e_nvfp4: SYSONE_ENGINE=nvfp4 engine_e2e, only with --nvfp4)
 #   EXTERNAL      engine_layers (hidden-state dumps under ../sysone-ref), kernels_nvfp4::gemm_layer0_vs_compressed_tensors_qdq
@@ -105,6 +106,7 @@ for g in "${gpu_list[@]}"; do
     t "$d" kernels_gdn "$g" --test kernels_gdn -- --test-threads=1
     t "$d" kernels_nvfp4 "$g" --test kernels_nvfp4 -- --skip gemm_layer0_vs_compressed_tensors_qdq
     t "$d" kernels_nvfp4_fused "$g" --test kernels_nvfp4_fused -- --nocapture --test-threads=1
+    t "$d" kernels_nvfp4_f1 "$g" --test kernels_nvfp4_f1 -- --nocapture --test-threads=1
     t "$d" engine_gemm "$g" --test engine_gemm
     t "$d" engine_graph "$g" --test engine_graph
     if [ -n "$model" ]; then

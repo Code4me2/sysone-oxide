@@ -54,6 +54,11 @@ pub enum Linear {
         /// The shared `input_global_scale` of every part.
         a_gs: f32,
         in_features: usize,
+        /// `Some(b)`: a gate/up projection whose rows were interleaved in blocks of `b` for the fused SiLU·mul
+        /// GEMM ([`ModelWeights::interleave_gate_up_nvfp4`]): output row block `j` of `2b` rows is gate rows
+        /// `j·b..` then up rows `j·b..`. Only the fused gate/up GEMM may read such a weight. `None`: checkpoint
+        /// row order (`parts` in order).
+        gate_up_block: Option<usize>,
     },
 }
 
@@ -283,7 +288,7 @@ impl<'a> Builder<'a> {
             row0 += r;
             self.nvfp4 += 1;
         }
-        Ok(Linear::Nvfp4 { packed, scales, parts, a_gs: a_gs.unwrap(), in_features: k })
+        Ok(Linear::Nvfp4 { packed, scales, parts, a_gs: a_gs.unwrap(), in_features: k, gate_up_block: None })
     }
 }
 
@@ -374,6 +379,33 @@ impl ModelWeights {
         let w = Self { embed, final_norm, layers, slot_head, lm_head };
         let report = LoadReport { stream: stats, device_bytes: w.bytes(), nvfp4_projections: nvfp4 };
         Ok((w, report))
+    }
+
+    /// F1: interleave the rows of every NVFP4 MLP gate/up projection (packed values and block scales alike) in
+    /// blocks of `block` rows (`crate::kernels::nvfp4::interleave_gate_up`), so one `[2·block, K]` weight tile
+    /// of the fused gate/up + SiLU·mul GEMM holds the gate and up rows of the same `block` product columns. A
+    /// permutation of rows: no value changes. Marks each projection with `gate_up_block = Some(block)`.
+    pub fn interleave_gate_up_nvfp4(&mut self, stream: &Stream, block: usize) -> Result<usize> {
+        let mut n = 0;
+        for l in &mut self.layers {
+            let mlp = match l {
+                Layer::Gdn(g) => &mut g.mlp,
+                Layer::Attn(a) => &mut a.mlp,
+            };
+            let Linear::Nvfp4 { packed, scales, parts, gate_up_block, .. } = &mut mlp.gate_up else { continue };
+            ensure!(gate_up_block.is_none(), "gate/up already interleaved");
+            ensure!(parts.len() == 2 && parts[0].rows == parts[1].rows, "gate/up parts {parts:?}");
+            let rows = packed.shape[0];
+            for t in [&*packed, &*scales] {
+                ensure!(t.is_contiguous() && t.shape.len() == 2 && t.shape[0] == rows, "interleave {t:?}");
+                let b = t.to_host_bytes(stream)?;
+                let o = crate::kernels::nvfp4::interleave_gate_up(&b, rows, b.len() / rows, block)?;
+                t.copy_from_host(stream, &o)?;
+            }
+            *gate_up_block = Some(block);
+            n += 1;
+        }
+        Ok(n)
     }
 
     /// Debug (numerics diagnostics only): re-express the model in a permuted hidden basis, `new[.., j] =

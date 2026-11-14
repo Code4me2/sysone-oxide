@@ -259,6 +259,10 @@ pub enum GraphOp {
                         residual_out: ValueId },
     /// Block-scaled FP4 GEMM, per-part epilogue `1 / (a_gs · w_gs)`, bf16 out.
     GemmNvfp4 { q: TensorRef, s: TensorRef, w: WeightRef, out: ValueId },
+    /// F1: the gate/up FP4 GEMM (`w`, rows interleaved for it at load) with SiLU·mul and the NVFP4 quantization
+    /// of the product under `w_down`'s input scale in its epilogue: `q_out [T, I/2]`, `s_out [T, I/16]`. Equal
+    /// byte for byte to `GemmNvfp4` (bf16 `[T, 2I]`) followed by `SiluMulNvfp4`; the bf16 gate/up output never exists.
+    GemmNvfp4SwiGlu { q: TensorRef, s: TensorRef, w: WeightRef, w_down: WeightRef, q_out: ValueId, s_out: ValueId },
     /// `out [T, I] = silu(gu[:, :I]) · gu[:, I:]`.
     SiluMul { gu: TensorRef, out: ValueId },
     /// `SiluMul` with fused NVFP4 quantization under `w`'s input scale.
@@ -300,6 +304,7 @@ impl GraphOp {
             | GatherRows { out, .. } | GdnChunkScan { out, .. } | Copy { out, .. } => vec![*out],
             AddZcRmsNorm { out, residual_out, .. } => vec![*out, *residual_out],
             QuantizeNvfp4 { q, s, .. } | ZcRmsNormNvfp4 { q, s, .. } | SiluMulNvfp4 { q, s, .. } => vec![*q, *s],
+            GemmNvfp4SwiGlu { q_out, s_out, .. } => vec![*q_out, *s_out],
             AddZcRmsNormNvfp4 { q, s, residual_out, .. } => vec![*q, *s, *residual_out],
             QkNormRope { q, k, .. } => vec![*q, *k],
             GdnPrep { .. } | View { .. } => vec![],
@@ -315,7 +320,7 @@ impl GraphOp {
             ZcRmsNorm { x, .. } | Gemm { x, .. } | QuantizeNvfp4 { x, .. } | ZcRmsNormNvfp4 { x, .. }
             | TreeConv1dSilu { x, .. } => vec![v(x)],
             AddZcRmsNorm { residual, x, .. } | AddZcRmsNormNvfp4 { residual, x, .. } => vec![*residual, v(x)],
-            GemmNvfp4 { q, s, .. } => vec![v(q), v(s)],
+            GemmNvfp4 { q, s, .. } | GemmNvfp4SwiGlu { q, s, .. } => vec![v(q), v(s)],
             SiluMul { gu, .. } | SiluMulNvfp4 { gu, .. } => vec![v(gu)],
             GdnPrep { conv, a, b, .. } => vec![v(conv), v(a), v(b)],
             GdnChunkScan { conv, .. } => vec![v(conv)],
@@ -347,6 +352,7 @@ impl GraphOp {
             ZcRmsNormNvfp4 { .. } => "zc_rmsnorm_nvfp4",
             AddZcRmsNormNvfp4 { .. } => "add_zc_rmsnorm_nvfp4",
             GemmNvfp4 { .. } => "gemm_nvfp4",
+            GemmNvfp4SwiGlu { .. } => "gemm_nvfp4_swiglu",
             SiluMul { .. } => "silu_mul",
             SiluMulNvfp4 { .. } => "silu_mul_nvfp4",
             TreeConv1dSilu { .. } => "tree_conv1d_silu",
@@ -372,6 +378,7 @@ impl GraphOp {
         match self {
             Gemm { w, .. } => format!("gemm.{}", proj(w)),
             GemmNvfp4 { w, .. } => format!("gemm_nvfp4.{}", proj(w)),
+            GemmNvfp4SwiGlu { w, .. } => format!("gemm_nvfp4.{}SiluMul", proj(w)),
             Embedding { .. } => "embedding".into(),
             ZcRmsNorm { .. } | AddZcRmsNorm { .. } => "norm.zc_rmsnorm".into(),
             QuantizeNvfp4 { .. } | ZcRmsNormNvfp4 { .. } | AddZcRmsNormNvfp4 { .. } | SiluMulNvfp4 { .. } => {
@@ -678,6 +685,13 @@ pub trait Kernels: Sync {
     fn gemm_nvfp4(&self, cx: &Launch, q: &DevTensor, s: &DevTensor, w: &Linear, out: &DevTensor) -> Result<()> {
         missing("gemm_nvfp4")
     }
+    /// The fused gate/up GEMM + SiLU·mul + quantize (`GraphOp::GemmNvfp4SwiGlu`); `a_gs_down` is the down
+    /// projection's `input_global_scale`.
+    #[allow(clippy::too_many_arguments)]
+    fn gemm_nvfp4_swiglu(&self, cx: &Launch, q: &DevTensor, s: &DevTensor, w: &Linear, a_gs_down: f32,
+                         q_out: &DevTensor, s_out: &DevTensor) -> Result<()> {
+        missing("gemm_nvfp4_swiglu")
+    }
     fn silu_mul(&self, cx: &Launch, gu: &DevTensor, out: &DevTensor) -> Result<()> {
         missing("silu_mul")
     }
@@ -822,6 +836,8 @@ impl<'a> Executor<'a> {
                 k.add_zc_rmsnorm_nvfp4(cx, &v(residual_out)?, &r(x)?, w(norm)?, self.a_gs(wr)?, &v(q)?, &v(s)?)
             }
             GemmNvfp4 { q, s, w: wr, out } => k.gemm_nvfp4(cx, &r(q)?, &r(s)?, self.weights.linear(wr)?, &v(out)?),
+            GemmNvfp4SwiGlu { q, s, w: wr, w_down, q_out, s_out } => k.gemm_nvfp4_swiglu(
+                cx, &r(q)?, &r(s)?, self.weights.linear(wr)?, self.a_gs(w_down)?, &v(q_out)?, &v(s_out)?),
             SiluMul { gu, out } => k.silu_mul(cx, &r(gu)?, &v(out)?),
             SiluMulNvfp4 { gu, w: wr, q, s } => k.silu_mul_nvfp4(cx, &r(gu)?, self.a_gs(wr)?, &v(q)?, &v(s)?),
             TreeConv1dSilu { layer, x, out } => {
@@ -963,6 +979,11 @@ impl BucketGraphs {
         ensure!(self.pools.contains_key(&b), "no plan for {b:?}");
         self.graphs.insert(b, graph);
         Ok(())
+    }
+
+    /// Forget every captured graph (the next step of each bucket runs eagerly and captures again).
+    pub fn clear_captured(&mut self) {
+        self.graphs.clear();
     }
 
     pub fn is_captured(&self, b: Bucket) -> bool {

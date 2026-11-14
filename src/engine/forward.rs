@@ -32,7 +32,8 @@ use crate::engine::config::{LayerType, ModelConfig};
 use crate::engine::graph::tensor::GraphDType;
 use crate::engine::graph::{Dim, GraphOp, LayerWeight, StepGraph, TensorRef, ValueId, WeightRef, WeightStore};
 use crate::kernels::{attention as attn, gdn};
-use anyhow::{Result, bail, ensure};
+use crate::engine::weights::Linear;
+use anyhow::{Context as _, Result, bail, ensure};
 
 /// Debug outputs of a forward: copies of the residual stream after chosen layers, and the final-norm output.
 #[derive(Clone, Debug, Default)]
@@ -85,10 +86,28 @@ pub fn build(cfg: &ModelConfig, weights: &dyn WeightStore, n_slots: usize, taps:
     build_with(cfg, weights, n_slots, taps, true)
 }
 
+/// How the NVFP4 MLP is laid out as graph ops (bf16 projections ignore it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Nvfp4Fusion {
+    /// Quantization fused into the preceding norm / SiLU·mul (N1); `false`: standalone `QuantizeNvfp4`.
+    pub quantize: bool,
+    /// SiLU·mul + quantize fused into the gate/up GEMM epilogue (F1, `GemmNvfp4SwiGlu`; needs `quantize` and
+    /// the gate/up weights interleaved for it, `Linear::Nvfp4::gate_up_block`).
+    pub swiglu: bool,
+}
+
 /// [`build`], choosing whether NVFP4 activation quantization is fused into the preceding op (`nvfp4_fused`) or
 /// runs as a standalone `quantize_nvfp4` on the materialised bf16 activation.
 pub fn build_with(cfg: &ModelConfig, weights: &dyn WeightStore, n_slots: usize, taps: &Taps, nvfp4_fused: bool)
     -> Result<Forward> {
+    build_fused(cfg, weights, n_slots, taps, Nvfp4Fusion { quantize: nvfp4_fused, swiglu: false })
+}
+
+/// [`build`] with an explicit [`Nvfp4Fusion`].
+pub fn build_fused(cfg: &ModelConfig, weights: &dyn WeightStore, n_slots: usize, taps: &Taps, fusion: Nvfp4Fusion)
+    -> Result<Forward> {
+    let nvfp4_fused = fusion.quantize;
+    ensure!(!fusion.swiglu || fusion.quantize, "the fused SiLU·mul GEMM needs the fused quantization");
     check_dims(cfg)?;
     let t = &cfg.text_config;
     let h = t.hidden_size;
@@ -180,8 +199,14 @@ pub fn build_with(cfg: &ModelConfig, weights: &dyn WeightStore, n_slots: usize, 
         }
         let (wgu, wdn) = (lw(LayerWeight::MlpGateUp), lw(LayerWeight::MlpDown));
         let (gu_q, dn_q) = (weights.linear(wgu)?.is_nvfp4(), weights.linear(wdn)?.is_nvfp4());
+        let gu_swiglu = fusion.swiglu && gu_q && dn_q;
+        let interleaved = matches!(weights.linear(wgu)?, Linear::Nvfp4 { gate_up_block: Some(_), .. });
+        ensure!(gu_swiglu == interleaved, "layer {i}: gate/up rows interleaved = {interleaved}, but the fused \
+                                          SiLU·mul GEMM is {}", if gu_swiglu { "on" } else { "off" });
         let x2 = tok(&mut g, h);
-        let gu = tok(&mut g, 2 * inter);
+        // The gate/up output: bf16 `[T, 2I]`, or (fused SiLU·mul GEMM) the quantized product for the down GEMM.
+        let mut gu = None;
+        let mut swiglu_out = None;
         if gu_q && nvfp4_fused {
             let (q, s) = act(&mut g, h);
             g.push(GraphOp::AddZcRmsNormNvfp4 {
@@ -193,18 +218,28 @@ pub fn build_with(cfg: &ModelConfig, weights: &dyn WeightStore, n_slots: usize, 
                 s,
                 residual_out: x2,
             });
-            g.push(GraphOp::GemmNvfp4 { q: q.into(), s: s.into(), w: wgu, out: gu });
+            if gu_swiglu {
+                let (q2, s2) = act(&mut g, inter);
+                g.push(GraphOp::GemmNvfp4SwiGlu { q: q.into(), s: s.into(), w: wgu, w_down: wdn, q_out: q2, s_out: s2 });
+                swiglu_out = Some((q2, s2));
+            } else {
+                let v = tok(&mut g, 2 * inter);
+                g.push(GraphOp::GemmNvfp4 { q: q.into(), s: s.into(), w: wgu, out: v });
+                gu = Some(v);
+            }
         } else {
             let h2 = tok(&mut g, h);
             g.push(GraphOp::AddZcRmsNorm { residual: x, x: mixer.into(), w: lw(LayerWeight::PostNorm), out: h2,
                                            residual_out: x2 });
+            let v = tok(&mut g, 2 * inter);
             if gu_q {
                 let (q, s) = act(&mut g, h);
                 g.push(GraphOp::QuantizeNvfp4 { x: h2.into(), w: wgu, q, s });
-                g.push(GraphOp::GemmNvfp4 { q: q.into(), s: s.into(), w: wgu, out: gu });
+                g.push(GraphOp::GemmNvfp4 { q: q.into(), s: s.into(), w: wgu, out: v });
             } else {
-                g.push(GraphOp::Gemm { x: h2.into(), w: wgu, out: gu });
+                g.push(GraphOp::Gemm { x: h2.into(), w: wgu, out: v });
             }
+            gu = Some(v);
         }
         x = x2;
         let sub = taps.sublayers && taps.layers.contains(&i);
@@ -213,19 +248,24 @@ pub fn build_with(cfg: &ModelConfig, weights: &dyn WeightStore, n_slots: usize, 
             tap(&mut g, format!("mid{i}"), x);
         }
         let mo = tok(&mut g, h);
-        if dn_q && nvfp4_fused {
-            let (q, s) = act(&mut g, inter);
-            g.push(GraphOp::SiluMulNvfp4 { gu: gu.into(), w: wdn, q, s });
-            g.push(GraphOp::GemmNvfp4 { q: q.into(), s: s.into(), w: wdn, out: mo });
+        if let Some((q2, s2)) = swiglu_out {
+            g.push(GraphOp::GemmNvfp4 { q: q2.into(), s: s2.into(), w: wdn, out: mo });
         } else {
-            let m = tok(&mut g, inter);
-            g.push(GraphOp::SiluMul { gu: gu.into(), out: m });
-            if dn_q {
+            let gu = gu.context("gate/up output")?;
+            if dn_q && nvfp4_fused {
                 let (q, s) = act(&mut g, inter);
-                g.push(GraphOp::QuantizeNvfp4 { x: m.into(), w: wdn, q, s });
+                g.push(GraphOp::SiluMulNvfp4 { gu: gu.into(), w: wdn, q, s });
                 g.push(GraphOp::GemmNvfp4 { q: q.into(), s: s.into(), w: wdn, out: mo });
             } else {
-                g.push(GraphOp::Gemm { x: m.into(), w: wdn, out: mo });
+                let m = tok(&mut g, inter);
+                g.push(GraphOp::SiluMul { gu: gu.into(), out: m });
+                if dn_q {
+                    let (q, s) = act(&mut g, inter);
+                    g.push(GraphOp::QuantizeNvfp4 { x: m.into(), w: wdn, q, s });
+                    g.push(GraphOp::GemmNvfp4 { q: q.into(), s: s.into(), w: wdn, out: mo });
+                } else {
+                    g.push(GraphOp::Gemm { x: m.into(), w: wdn, out: mo });
+                }
             }
         }
         if sub {

@@ -113,6 +113,10 @@ struct Args {
     /// preceding norm / SiLU·mul (bit-identical; for benchmarks and diagnostics).
     #[arg(long)]
     nvfp4_unfused: bool,
+    /// nvfp4 engine: run SiLU·mul + quantize as its own kernel after a bf16 gate/up GEMM instead of in the GEMM's
+    /// epilogue (bit-identical; for benchmarks and diagnostics).
+    #[arg(long)]
+    nvfp4_separate_silu: bool,
     /// `debias` when a request has none (default: $QEV_DEBIAS as qev reads it, else 1).
     #[arg(long, allow_negative_numbers = true)]
     debias: Option<i64>,
@@ -213,6 +217,7 @@ fn main() -> Result<()> {
                 gdn_backend: parse_gdn_backend(&args.gdn_backend)?,
                 weights,
                 nvfp4_fused: !args.nvfp4_unfused,
+                nvfp4_swiglu: !args.nvfp4_separate_silu,
                 ..Default::default()
             };
             let (model, slot_ids) = (args.model.clone(), frontend.slot_ids.clone());
