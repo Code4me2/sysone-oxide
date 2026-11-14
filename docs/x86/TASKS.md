@@ -148,7 +148,9 @@ on all three cards at once from one shared queue, against the HTTP server driven
 
 1. Tests first: `scripts/x86/run_tests.sh --model $M` now includes `bulk` (CPU, with the script tests' fake
    nvidia-smi: resume, packing determinism, load balancing, gpu.sh locks) and `bulk_gpu` per GPU (bulk vs the
-   server on that GPU; it sizes itself to the card: 16,384-token steps and no two-engine part below 64 / 80 GiB).
+   server on that GPU; it sizes itself to the card: 16,384-token steps and no two-engine part below 64 / 80 GiB),
+   and the question-set tests `bulk_qset` (CPU) and `bulk_qset_gpu` per GPU (question set vs the equivalent jobs,
+   byte for byte).
 2. Smoke: `scripts/x86/run_bulk.sh --model $M --mode both --server --quick` (200 documents; not for reporting).
 3. The run: `scripts/x86/run_bulk.sh --model $M --mode both --server`. It writes the corpus (2,000 synthetic
    documents, states 300..8,000 tokens, 4..16 questions; local, under `target/x86-bulk/`), the packing simulation
@@ -167,7 +169,8 @@ Acceptance:
   `status_mismatches` = 0, `other_mismatches` = 0, `dp_max` <= 0.01822 (`[batch_invariance].dp_max`: the two sides
   pack the requests differently), any `choice_flips` only with `margin_b` <= 0.02. Report the numbers, never rerun
   until they pass.
-- PR table per GPU: bulk docs/s, decisions/s, packed tok/s, padding fraction, busy fraction, top bucket, load s;
+- PR table per GPU: bulk docs/s, decisions/s, packed tok/s, padding fraction, busy fraction, top bucket, load s,
+  `plan_ms_per_job` and `planner_threads` (planner CPU per document on this host's CPU, docs/BULK.md Q1);
   server (loadgen.json): requests/s, decisions/s, input tok/s, `server_padding_frac`, `server_engine_busy_frac`,
   p50/p99 latency; the ratio bulk / server in packed tok/s.
 - All-GPU table: total docs/s and packed tok/s, per GPU token share, steps and busy fraction; the sum of the three

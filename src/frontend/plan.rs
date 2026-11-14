@@ -130,6 +130,9 @@ impl Plan {
     }
 }
 
+/// A branch's tokens after the head and their code-point offsets in `suffix_text + tail`.
+type SuffixTokens = (Vec<u32>, Vec<(usize, usize)>);
+
 /// The part of planning that depends only on the questions and `debias`: the rendered branches and the tokens of
 /// each `suffix_text + tail` ([`Frontend::prepare_questions`]).
 ///
@@ -143,7 +146,7 @@ pub struct PreparedQuestions {
     branches: Vec<Branch>,
     num_questions: usize,
     tail: String,
-    own: Vec<(Vec<u32>, Vec<(usize, usize)>)>,
+    own: Vec<SuffixTokens>,
 }
 
 impl PreparedQuestions {
@@ -279,7 +282,7 @@ impl Frontend {
         let block = state_block(state);
         let (head, tail) = self.template.frame(SYSTEM_PROMPT, &block, &branches[0].suffix_text)?;
         let head_ids = self.tokenizer.encode(&head)?;
-        let own: Vec<(Vec<u32>, Vec<(usize, usize)>)> = match cache {
+        let own: Vec<SuffixTokens> = match cache {
             Some(c) if c.tail == tail => c.own.clone(),
             _ => {
                 let mut own = Vec::with_capacity(branches.len());

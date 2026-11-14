@@ -26,7 +26,8 @@ Phase 2a is done ([docs/PHASE2A.md](docs/PHASE2A.md) has the numbers):
   every accuracy gate (E2, [docs/E2.md](docs/E2.md)); it is the default on sm_121 (`--gdn-backend auto`), cuTile
   elsewhere. The forward is 18-22% faster with it.
 - Bulk tagging (B1, [docs/BULK.md](docs/BULK.md)): `sysone bulk` answers a JSONL file of requests with the server's
-  answers, packed for throughput (full steps from a window of requests) over one engine per GPU, resumable.
+  answers, packed for throughput (full steps from a window of requests) over one engine per GPU, resumable. A
+  question set over many documents (`--questions Q.json --docs D.jsonl|DIR`, Q1) is validated and rendered once.
 
 ## Prerequisites
 
@@ -72,6 +73,10 @@ scripts/gpu.sh cargo test --release --all-targets
 # GPU, each under its gpu.sh lock); rerun the same command to resume. docs/BULK.md.
 ./target/release/sysone bulk gen --docs 2000 --output corpus.jsonl
 ./target/release/sysone bulk --model /path/to/elephant-1 --input corpus.jsonl --output results.jsonl
+# The same questions over many documents: questions.json is a request body without "state"
+# ({"questions": {...}}), docs.jsonl one {"id": ..., "state": ...} per line (or a directory of text files, id = file
+# name). Validated before any GPU work; results equal the equivalent full-body jobs; resumable the same way.
+./target/release/sysone bulk --model /path/to/elephant-1 --questions questions.json --docs docs.jsonl --output results.jsonl
 
 # Benchmarks refuse to start while another process uses their GPU. On a multi-GPU host pick the GPU with
 # scripts/gpu.sh --gpu N (one lock per GPU); the x86 runners in scripts/x86/ do this per card (docs/x86/AGENT.md).
