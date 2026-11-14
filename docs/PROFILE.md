@@ -188,3 +188,20 @@ first useful work: the launch gap plus the ramp-down tail of the previous kernel
 
 The plan F1 follows from this: #1 and #2 first (NVFP4, bit-identical, the two largest), #3 for the unfused-SiLU
 paths, then #4/#5 as the remaining profile allows.
+
+## Addendum (after F1's experiments, same day)
+
+Two of the readings above did not survive testing; F1.md has the numbers.
+
+- **The FP4 GEMM is not L2-bound after all.** A k-tile-major scale layout (`[K/128, rows, 8]`, so a tile's scales
+  for one k-step are one contiguous block) removed the scale-sector waste exactly as predicted (gate/up at 4k: L2
+  bytes 4.74 → 3.85 GB per launch, L2 throughput 78% → 53%), and the kernel did not get faster (3.31 vs 3.24 ms;
+  down 1.88 vs 1.74 ms; tensor pipe still 54-56%). The limiter is the kernel's own pipeline (one 12-warp tile
+  block per SM, waits on its staged loads: stall "wait" 21%, long scoreboard 17%), not L2 bandwidth. Opportunity
+  #2 is worth 0 ms in cuTile, and the layout change was not kept. cuTile compile hints on the plain GEMM (warps per
+  CTA 4 or 8, occupancy 1 or 2) are no faster either (at best +2%, within noise); 16 warps is rejected. More FP4
+  GEMM throughput needs a different kernel structure (#5).
+- **#1 paid more than estimated once its epilogue was overlapped.** Fusing SiLU·mul + quantize into the gate/up
+  GEMM only pays when the main loop stays the plain GEMM's (one accumulator over one 128-row weight tile, which
+  takes interleaving the gate and up rows at load) and two tile blocks share an SM (cuTile `occupancy` 2), so one
+  tile's epilogue runs under the other's MMAs: the fused launch then costs what the plain gate/up GEMM costs.

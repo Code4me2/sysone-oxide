@@ -176,3 +176,41 @@ Acceptance:
 - Step-size table (item 4): packed tok/s and padding at 16,384 / 32,768 (step 3) / 65,536 on the RTX PRO 6000.
 - Anything that failed (OOM, a worker that stopped, a lock wait) is reported with the GPU and the summary's `error`
   field, in your own words.
+
+## T8: profile and NVFP4 speed on sm_120 (F1)
+
+Goal: repeat F1's profile (docs/PROFILE.md) on each card and check that F1's NVFP4 changes (docs/F1.md: the fused
+gate/up + SiLU·mul + quantize FP4 GEMM, occupancy hints on the norms and SiLU·mul) are correct and pay on sm_120.
+GB10 tuned them; nothing has run on sm_120 yet. Needs the NVFP4 checkpoint on this machine for the engine parts
+(never fetch it otherwise); the kernel parts run without it.
+
+1. Tests: `scripts/x86/run_tests.sh --model $M` now runs `kernels_nvfp4_f1` per GPU (synthetic weights: the fused
+   GEMM, every tile shape and occupancy hint the engine uses, byte-identical to the unfused kernels). With the
+   checkpoint, `--nvfp4 <dir>` runs `engine_e2e_nvfp4`, which now includes `f1_launches_equal_n1_launches` (the
+   engine with F1's launches vs N1's, bit for bit, eager and replayed); the bf16 `engine_e2e` runs it too.
+2. Microbenchmarks per card (no checkpoint): `scripts/gpu.sh --gpu N ./target/release/bench_nvfp4_mlp --tokens
+   1024,4096,16384,32768 --norms --gemm-opts o1,o2,w4,w8 --swiglu 128x128g8,128x128g8/o2,128x128g8/o1,64x128g8`
+   and `bench_nvfp4 --sweep --no-quant --tokens 4096,16384` (tile choice per M; on GB10 128x128x128 grouped-M 8
+   won at every M).
+3. Forward per card: `bench_forward --model <nvfp4 dir> --tokens 1024,4096,16384,32768` three ways: default (F1),
+   `--nvfp4-separate-silu --n1-tuning` (N1's launches in the same build), and the bf16 checkpoint.
+4. Profile per card, as docs/PROFILE.md "Method" (exact commands there): Nsight Systems on bench_forward (try
+   `--trace=cuda --cuda-graph-trace=node` first: on a discrete GPU the hardware trace may give per-node replay
+   timing, which GB10 could not; fall back to `--trace=cuda-sw` and `scripts/profile/nsys_forward.py`), then
+   Nsight Compute on the top kernels at 16k with the sections and raw metrics listed there (on sm_120 `dram__*`
+   metrics exist: add `dram__throughput.avg.pct_of_peak_sustained_elapsed`). Keep reports and traces local; commit
+   only the script summaries.
+
+Acceptance:
+- `kernels_nvfp4_f1` passes on all three GPUs (0 mismatches everywhere), or the failing case is reported with its
+  printed mismatch counts. With the checkpoint: `engine_e2e_nvfp4` 5/5 incl. `f1_launches_equal_n1_launches`
+  (84/84 steps bit-identical), and bf16 `engine_e2e` 5/5.
+- PR table per card: bench_nvfp4_mlp (N1 gate/up + `silu_mul_nvfp4` vs fused GEMM with and without its occupancy
+  hint; norms by occupancy); bench_forward replay ms and packed tok/s at 1k/4k/16k/32k for F1, N1 launches and
+  bf16; whether each F1 choice (fused GEMM, `swiglu_occupancy` 2, norm occupancy 2, SiLU occupancy 3) is faster,
+  equal or slower than N1's on that card. A choice that is slower on sm_120 is reported, not changed (the GB10 side
+  makes the per-arch decision).
+- Profile summary per card (one table like PROFILE.md (a) and (b)): kernel time per class, replay bubbles, step
+  boundary, and for the FP4 GEMMs / fused GEMM / cuBLAS GEMMs / norms / scan: SM %, memory %, tensor-pipe %,
+  occupancy and the limiter. Whether PDL would recover ≥ 2% of the forward there (PROFILE.md (c)).
+- Nothing about the checkpoint beyond pass/fail, gate numbers and timings.
