@@ -379,3 +379,57 @@ fn trimmed_last_layer_equals_untrimmed() {
               (max |dlogit| {pw:.3e})");
     assert_eq!(s, n, "with pinned GEMMs the trimmed last layer changed the logits");
 }
+
+/// Diagnostic (ignored): where a trimmed step first departs from the untrimmed one. Compares the trimmed path's
+/// answer-row taps (`Taps::answer_rows`) with the untrimmed last-layer taps at the answer rows, per batch.
+#[test]
+#[ignore]
+fn trim_diagnostic() {
+    use sysone::engine::forward::Taps;
+    let mut guard = env().lock().unwrap_or_else(|e| e.into_inner());
+    let env = &mut *guard;
+    let fe = Frontend::load(&model_dir(), Limits::default()).unwrap();
+    let last = 31usize;
+    let mut t_opts = engine_opts(16384, true);
+    t_opts.taps = Taps { answer_rows: true, ..Default::default() };
+    let mut u_opts = engine_opts(16384, true);
+    u_opts.taps = Taps { layers: vec![last - 1, last], norm: true, sublayers: true, ..Default::default() };
+    let mut te = GpuEngine::load(&model_dir(), &fe.slot_ids, t_opts).unwrap();
+    let mut ue = GpuEngine::load(&model_dir(), &fe.slot_ids, u_opts).unwrap();
+    assert!(te.fwd.trimmed && !ue.fwd.trimmed);
+    let small: Vec<&Planned> = env.plans.iter().filter(|p| p.plan.total <= 4096).collect();
+    let mut shown = 0;
+    for p in small {
+        let b = goldens::batch_of(&[&p.plan]).unwrap().0;
+        let (x, y) = (te.run(&b).unwrap(), ue.run(&b).unwrap());
+        if x.data == y.data {
+            continue;
+        }
+        let q = b.num_branches();
+        let t = b.num_tokens();
+        let h = 4096;
+        let mut line = format!("{} T={t} Q={q} bucket {}:", p.case.id, te.last.bucket_tokens);
+        let (ka, kf) = (te.read_tap("k31_all", t).unwrap(), ue.read_tap("k31", t).unwrap());
+        let kbad = ka.chunks(1024).zip(kf.chunks(1024)).filter(|(x, y)| x != y).count();
+        line += &format!(" k31: {kbad}/{t} token rows differ;");
+        for (tn, un) in [("q31_a", "q31"), ("attn31_a", "attn31"), ("mix31_a", "mix31"), ("mid31_a", "mid31"), ("mlp31_a", "mlp31"),
+                         ("norm_a", "norm")] {
+            let a = te.read_tap(tn, q).unwrap();
+            let f = ue.read_tap(un, t).unwrap();
+            let mut bad = 0;
+            let mut maxd = 0f32;
+            for (i, &r) in b.answer_rows.iter().enumerate() {
+                let (ra, rf) = (&a[i * h..(i + 1) * h], &f[r as usize * h..(r as usize + 1) * h]);
+                let n = ra.iter().zip(rf).filter(|(u, v)| u != v).count();
+                bad += (n > 0) as usize;
+                maxd = ra.iter().zip(rf).fold(maxd, |m, (u, v)| m.max((u - v).abs()));
+            }
+            line += &format!(" {tn}: {bad}/{q} rows differ (max {maxd:.3e});");
+        }
+        println!("{line}");
+        shown += 1;
+        if shown >= 8 {
+            break;
+        }
+    }
+}

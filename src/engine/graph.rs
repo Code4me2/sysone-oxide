@@ -294,8 +294,10 @@ pub enum GraphOp {
     /// Segment attention (non-causal, ≤ 2 KV ranges, LSE merge), GQA, `· sigmoid(gate)` epilogue. v is read from
     /// `kv`, the gate from `qg`; `out [T, 4096]`.
     SegAttn { layer: usize, q: TensorRef, k: TensorRef, kv: TensorRef, qg: TensorRef, out: ValueId },
-    /// The k half of [`GraphOp::QkNormRope`] alone: `k [T, 4·256]` from `kv [T, 8·256]` (L1, trimmed last layer).
-    KNormRope { layer: usize, kv: TensorRef, k: ValueId },
+    /// Declares `out` without writing it (no launch): its contents are unspecified. L1's trimmed last layer runs
+    /// the unchanged `qk_norm_rope` over every token for its keys, with an unwritten query input whose outputs are
+    /// never read (a k-only kernel was not bit-identical to the k half of `qk_norm_rope`; docs/L1.md).
+    Uninit { out: ValueId },
     /// [`GraphOp::QkNormRope`] over the answer rows: `qg [Q, 16·512]`, `kv [Q, 8·256]` gathered at the answer
     /// rows, at the answer rows' positions; `q [Q, 16·256]`, `k [Q, 4·256]` (L1; `k` is not used).
     QkNormRopeAnswers { layer: usize, qg: TensorRef, kv: TensorRef, q: ValueId, k: ValueId },
@@ -320,7 +322,7 @@ impl GraphOp {
             | SegAttnAnswers { out, .. } | GatherRows { out, .. } | GdnChunkScan { out, .. } | Copy { out, .. } => {
                 vec![*out]
             }
-            KNormRope { k, .. } => vec![*k],
+            Uninit { out } => vec![*out],
             QkNormRopeAnswers { q, k, .. } => vec![*q, *k],
             AddZcRmsNorm { out, residual_out, .. } => vec![*out, *residual_out],
             QuantizeNvfp4 { q, s, .. } | ZcRmsNormNvfp4 { q, s, .. } | SiluMulNvfp4 { q, s, .. } => vec![*q, *s],
@@ -345,7 +347,7 @@ impl GraphOp {
             GdnChunkScan { conv, .. } => vec![v(conv)],
             GatedRmsNorm { o, z, .. } => vec![v(o), v(z)],
             QkNormRope { qg, kv, .. } | QkNormRopeAnswers { qg, kv, .. } => vec![v(qg), v(kv)],
-            KNormRope { kv, .. } => vec![v(kv)],
+            Uninit { .. } => vec![],
             SegAttn { q, k, kv, qg, .. } | SegAttnAnswers { q, k, kv, qg, .. } => vec![v(q), v(k), v(kv), v(qg)],
             GatherRows { src, .. } | Copy { src, .. } => vec![v(src)],
             View { input, .. } => vec![*input],
@@ -380,7 +382,7 @@ impl GraphOp {
             GatedRmsNorm { .. } => "gated_rmsnorm",
             QkNormRope { .. } => "qk_norm_rope",
             SegAttn { .. } => "seg_attn_gqa",
-            KNormRope { .. } => "k_norm_rope",
+            Uninit { .. } => "uninit",
             QkNormRopeAnswers { .. } => "qk_norm_rope_answers",
             SegAttnAnswers { .. } => "seg_attn_gqa_answers",
             GatherRows { .. } => "gather_rows",
@@ -410,11 +412,11 @@ impl GraphOp {
             GdnPrep { .. } => "gdn.prep".into(),
             GdnChunkScan { .. } => "gdn.scan".into(),
             GatedRmsNorm { .. } => "gdn.gated_rmsnorm".into(),
-            QkNormRope { .. } | KNormRope { .. } | QkNormRopeAnswers { .. } => "attn.qk_norm_rope".into(),
+            QkNormRope { .. } | QkNormRopeAnswers { .. } => "attn.qk_norm_rope".into(),
             SegAttn { .. } | SegAttnAnswers { .. } => "attn.seg_attn".into(),
             GatherRows { .. } => "readout.gather".into(),
             Copy { .. } => "debug.copy".into(),
-            View { .. } => "view".into(),
+            View { .. } | Uninit { .. } => "view".into(),
         }
     }
 }
@@ -739,10 +741,6 @@ pub trait Kernels: Sync {
                 out: &DevTensor) -> Result<()> {
         missing("seg_attn_gqa")
     }
-    /// The k half of `qk_norm_rope` (every token's positions).
-    fn k_norm_rope(&self, cx: &Launch, layer: usize, kv: &DevTensor, k_norm: &DevTensor, k: &DevTensor) -> Result<()> {
-        missing("k_norm_rope")
-    }
     /// `qk_norm_rope` over gathered answer rows, at the answer rows' positions (`cx.meta.answer_pos`).
     #[allow(clippy::too_many_arguments)]
     fn qk_norm_rope_answers(&self, cx: &Launch, layer: usize, qg: &DevTensor, kv: &DevTensor, q_norm: &DevTensor,
@@ -818,7 +816,7 @@ impl<'a> Executor<'a> {
             profiler: self.profiler,
         };
         for (i, op) in self.graph.ops.iter().enumerate() {
-            if matches!(op, GraphOp::View { .. }) {
+            if matches!(op, GraphOp::View { .. } | GraphOp::Uninit { .. }) {
                 continue;
             }
             cx.mark(&self.kernels.profile_label(op))?;
@@ -884,9 +882,7 @@ impl<'a> Executor<'a> {
             SegAttn { layer, q, k: kk, kv, qg, out } => {
                 k.seg_attn(cx, layer, &r(q)?, &r(kk)?, &r(kv)?, &r(qg)?, &v(out)?)
             }
-            KNormRope { layer, kv, k: kk } => {
-                k.k_norm_rope(cx, layer, &r(kv)?, lw(layer, LayerWeight::KNorm)?, &v(kk)?)
-            }
+            Uninit { .. } => Ok(()),
             QkNormRopeAnswers { layer, qg, kv, q, k: kk } => k.qk_norm_rope_answers(
                 cx, layer, &r(qg)?, &r(kv)?, lw(layer, LayerWeight::QNorm)?, lw(layer, LayerWeight::KNorm)?, &v(q)?,
                 &v(kk)?),

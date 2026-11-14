@@ -370,21 +370,6 @@ impl Kernels for TileKernels {
         self.qk_norm_rope_at(cx, &cx.meta.answer_pos, qg, kv, q_norm, k_norm, q, k)
     }
 
-    fn k_norm_rope(&self, cx: &Launch, _layer: usize, kv: &DevTensor, k_norm: &DevTensor, k: &DevTensor) -> Result<()> {
-        let t = kv.rows();
-        let (hk, d) = (attn::NUM_KV_HEADS, attn::HEAD_DIM);
-        let pos = rope_positions(&cx.meta.positions, t)?;
-        unsafe {
-            let kv = kv.reshape(&[t, 2 * hk, d])?.tile::<bf16>()?;
-            let mut ko = k.reshape(&[t, hk, d])?.tile::<bf16>()?;
-            let (pos, kw) = (pos.tile::<i32>()?, k_norm.tile::<bf16>()?);
-            let inv = self.inv_freq.tile::<f32>()?;
-            attn::k_norm_rope(&mut ko, &kv, &pos, &kw, &inv, self.eps)?
-                .execute(cx.exec)
-                .map(|_| ()).map_err(launch_err("k_norm_rope"))
-        }
-    }
-
     fn seg_attn_answers(&self, cx: &Launch, _layer: usize, q: &DevTensor, k: &DevTensor, kv: &DevTensor,
                         qg: &DevTensor, out: &DevTensor) -> Result<()> {
         let st = self.bucket(cx.bucket)?;

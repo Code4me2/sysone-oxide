@@ -44,6 +44,10 @@ pub struct Taps {
     /// Also keep, for every layer in `layers`, the mixer output (`mix{i}`, before the residual add), the residual
     /// stream after the mixer add (`mid{i}`) and the MLP output (`mlp{i}`, before its residual add).
     pub sublayers: bool,
+    /// Trimmed last layer only (L1): keep its answer-row values, `[Q, hidden]` bf16: `mix{last}_a` (attention
+    /// after `o_proj`), `mid{last}_a` (residual after the attention add), `mlp{last}_a` and `norm_a` (final norm).
+    /// They are the answer rows of the untrimmed `mix{last}` / `mid{last}` / `mlp{last}` / `norm` taps.
+    pub answer_rows: bool,
 }
 
 /// A built forward and the values a caller reads back.
@@ -157,7 +161,7 @@ pub fn build_opts(cfg: &ModelConfig, weights: &dyn WeightStore, n_slots: usize, 
     let tok = |g: &mut StepGraph, n: usize| g.value(bf, vec![Dim::Tokens, Dim::Fixed(n)]);
     let mut out_taps = Vec::new();
     let mut tap = |g: &mut StepGraph, name: String, src: ValueId| {
-        let v = g.value(bf, vec![Dim::Tokens, Dim::Fixed(h)]);
+        let v = g.value(bf, g.spec(src).shape.clone());
         g.push(GraphOp::Copy { src: src.into(), out: v });
         g.outputs.push(v);
         out_taps.push((name, v));
@@ -183,7 +187,8 @@ pub fn build_opts(cfg: &ModelConfig, weights: &dyn WeightStore, n_slots: usize, 
         let lw = |s| WeightRef::Layer(i, s);
         if trim && i == t.num_hidden_layers - 1 {
             let dims = TrimDims { h, inter, q_dim, kv_dim };
-            let logits = trimmed_last_layer(&mut g, weights, i, dims, x, hn, n_slots, nvfp4_fused)?;
+            let keep = if taps.answer_rows { Some(&mut out_taps) } else { None };
+            let logits = trimmed_last_layer(&mut g, weights, i, dims, x, hn, n_slots, nvfp4_fused, keep)?;
             g.validate()?;
             return Ok(Forward { graph: g, logits, taps: out_taps, n_slots, trimmed: true });
         }
@@ -217,6 +222,11 @@ pub fn build_opts(cfg: &ModelConfig, weights: &dyn WeightStore, n_slots: usize, 
                 g.push(GraphOp::QkNormRope { layer: i, qg: qg.into(), kv: kv.into(), q, k });
                 let ao = tok(&mut g, q_dim);
                 g.push(GraphOp::SegAttn { layer: i, q: q.into(), k: k.into(), kv: kv.into(), qg: qg.into(), out: ao });
+                if taps.sublayers && taps.layers.contains(&i) {
+                    tap(&mut g, format!("k{i}"), k);
+                    tap(&mut g, format!("q{i}"), q);
+                    tap(&mut g, format!("attn{i}"), ao);
+                }
                 g.push(GraphOp::Gemm { x: ao.into(), w: lw(LayerWeight::AttnO), out: mixer });
             }
         }
@@ -312,7 +322,7 @@ struct TrimDims {
 /// fixed at every T).
 ///
 /// ```text
-/// kv    = hn · [Wk; Wv]ᵀ                 [T, 2048]   k = k_norm_rope(kv)        [T, 1024]
+/// kv    = hn · [Wk; Wv]ᵀ                 [T, 2048]   _, k = qk_norm_rope(<unwritten>, kv)   [T, 1024]
 /// hn_a  = hn[answer_rows]                [Q, 4096]   qg_a = hn_a · Wqᵀ          [Q, 8192]
 /// q_a   = qk_norm_rope(qg_a, kv[answer_rows]) at the answer positions
 /// o_a   = seg_attn(q_a | k, kv | gate qg_a) · Woᵀ      one work item per answer row
@@ -324,8 +334,18 @@ struct TrimDims {
 /// the per-layer code is untouched).
 #[allow(clippy::too_many_arguments)]
 fn trimmed_last_layer(g: &mut StepGraph, weights: &dyn WeightStore, i: usize, d: TrimDims, x: ValueId, hn: ValueId,
-                      n_slots: usize, nvfp4_fused: bool) -> Result<ValueId> {
+                      n_slots: usize, nvfp4_fused: bool, mut keep: Option<&mut Vec<(String, ValueId)>>)
+    -> Result<ValueId> {
     let bf = GraphDType::BF16;
+    // Debug copies of answer-row values (Taps::answer_rows).
+    let mut tap = |g: &mut StepGraph, name: String, src: ValueId| {
+        if let Some(k) = keep.as_deref_mut() {
+            let v = g.value(bf, g.spec(src).shape.clone());
+            g.push(GraphOp::Copy { src: src.into(), out: v });
+            g.outputs.push(v);
+            k.push((name, v));
+        }
+    };
     let TrimDims { h, inter, q_dim, kv_dim } = d;
     let tok = |g: &mut StepGraph, n: usize| g.value(bf, vec![Dim::Tokens, Dim::Fixed(n)]);
     let ans = |g: &mut StepGraph, n: usize| g.value(bf, vec![Dim::Answers, Dim::Fixed(n)]);
@@ -338,8 +358,11 @@ fn trimmed_last_layer(g: &mut StepGraph, weights: &dyn WeightStore, i: usize, d:
     // Keys and values for every token.
     let kv = tok(g, 2 * kv_dim);
     g.push(GraphOp::Gemm { x: hn.into(), w: lw(LayerWeight::AttnKv), out: kv });
-    let k = tok(g, kv_dim);
-    g.push(GraphOp::KNormRope { layer: i, kv: kv.into(), k });
+    // k for every token from the unchanged qk_norm_rope; its query input is left unwritten (no Q GEMM over every
+    // token) and its query output is never read. Row-local, so the k rows are exactly the untrimmed ones.
+    let (qg_unused, q_unused, k) = (tok(g, 2 * q_dim), tok(g, q_dim), tok(g, kv_dim));
+    g.push(GraphOp::Uninit { out: qg_unused });
+    g.push(GraphOp::QkNormRope { layer: i, qg: qg_unused.into(), kv: kv.into(), q: q_unused, k });
     // Queries, attention and o_proj for the answer rows.
     let hn_a = ans(g, h);
     g.push(GraphOp::GatherRows { src: hn.into(), out: hn_a });
@@ -351,10 +374,16 @@ fn trimmed_last_layer(g: &mut StepGraph, weights: &dyn WeightStore, i: usize, d:
     g.push(GraphOp::QkNormRopeAnswers { layer: i, qg: qg_a.into(), kv: kv_a.into(), q: q_a, k: k_a });
     let ao_a = ans(g, q_dim);
     g.push(GraphOp::SegAttnAnswers { layer: i, q: q_a.into(), k: k.into(), kv: kv.into(), qg: qg_a.into(), out: ao_a });
+    {
+        tap(g, format!("k{i}_all"), k);
+        tap(g, format!("q{i}_a"), q_a);
+        tap(g, format!("attn{i}_a"), ao_a);
+    }
     let mixer = ans(g, h);
     g.push(GraphOp::Gemm { x: ao_a.into(), w: lw(LayerWeight::AttnO), out: mixer });
     let x_a = ans(g, h);
     g.push(GraphOp::GatherRows { src: x.into(), out: x_a });
+    tap(g, format!("mix{i}_a"), mixer);
 
     // The MLP on the answer rows: the per-layer MLP of build_opts on Answers-row values.
     let (wgu, wdn) = (lw(LayerWeight::MlpGateUp), lw(LayerWeight::MlpDown));
@@ -378,6 +407,7 @@ fn trimmed_last_layer(g: &mut StepGraph, weights: &dyn WeightStore, i: usize, d:
             g.push(GraphOp::Gemm { x: h2.into(), w: wgu, out: gu });
         }
     }
+    tap(g, format!("mid{i}_a"), x2);
     let mo = ans(g, h);
     if dn_q && nvfp4_fused {
         let (q, s) = act(g, inter);
@@ -395,9 +425,11 @@ fn trimmed_last_layer(g: &mut StepGraph, weights: &dyn WeightStore, i: usize, d:
         }
     }
 
+    tap(g, format!("mlp{i}_a"), mo);
     // Final norm and readout on the answer rows.
     let (hs, x_final) = (ans(g, h), ans(g, h));
     g.push(GraphOp::AddZcRmsNorm { residual: x2, x: mo.into(), w: WeightRef::FinalNorm, out: hs, residual_out: x_final });
+    tap(g, "norm_a".into(), hs);
     let logits = g.value(GraphDType::F32, vec![Dim::Answers, Dim::Fixed(n_slots)]);
     g.push(GraphOp::Gemm { x: hs.into(), w: WeightRef::SlotHead, out: logits });
     g.outputs.push(logits);

@@ -585,10 +585,10 @@ fn seg_attn_tiles_match_default_bits() {
 // L1: the trimmed last layer (k for every token, q and attention for the answer rows only)
 // ---------------------------------------------------------------------------------------------------------
 
-/// `k_norm_rope` equals the k half of `qk_norm_rope` bit for bit, and `qk_norm_rope` over gathered rows (with
+/// `qk_norm_rope`'s k does not depend on its query input, and `qk_norm_rope` over gathered rows (with
 /// the gathered positions) equals the same rows of `qk_norm_rope` over every row.
 #[test]
-fn k_norm_rope_and_gathered_q_match_qk_norm_rope_bits() {
+fn qk_norm_rope_k_ignores_q_and_gathered_rows_match_bits() {
     let stream = setup();
     let mut rng = Rng(0x1234_5678_9abc_def1);
     let mut b = DecisionBatch::default();
@@ -618,13 +618,13 @@ fn k_norm_rope_and_gathered_q_match_qk_norm_rope_bits() {
             .unwrap()
             .sync_on(&stream)
             .unwrap();
-        let mut k2 = api::zeros::<bf16>(&[n, HK, D]).sync_on(&stream).unwrap();
-        attn::k_norm_rope(&mut k2, &kv_d, &pos_d, &kw_d, &inv_d, RMS_EPS).unwrap().sync_on(&stream).unwrap();
-        (q.to_host_vec().sync_on(&stream).unwrap(), k.to_host_vec().sync_on(&stream).unwrap(),
-         k2.to_host_vec().sync_on(&stream).unwrap())
+        (q.to_host_vec().sync_on(&stream).unwrap(), k.to_host_vec().sync_on(&stream).unwrap(), ())
     };
-    let (q_all, k_all, k_only) = run(&qg, &kv, &pos);
-    assert_eq!(k_all, k_only, "k_norm_rope differs from qk_norm_rope's k");
+    let (q_all, k_all, _) = run(&qg, &kv, &pos);
+    // k does not depend on the query input (the trimmed last layer leaves it unwritten): NaN and huge queries.
+    let junk: Vec<bf16> = (0..qg.len()).map(|i| if i % 3 == 0 { bf16::NAN } else { bf16::from_f32(3.0e38) }).collect();
+    let (_, k_junk, _) = run(&junk, &kv, &pos);
+    assert_eq!(k_all, k_junk, "qk_norm_rope's k depends on its query input");
     // Gathered rows: the answer rows, then a scattered selection (even count).
     let mut rows: Vec<usize> = b.answer_rows.iter().map(|&r| r as usize).collect();
     rows.extend((0..30).map(|i| (i * 37 + 11) % t));
@@ -635,7 +635,7 @@ fn k_norm_rope_and_gathered_q_match_qk_norm_rope_bits() {
     let (q_r, k_r, _) = run(&qg_r, &kv_r, &pos_r);
     assert_eq!(q_r, gather(&q_all, HQ * D), "qk_norm_rope over gathered rows differs (q)");
     assert_eq!(k_r, gather(&k_all, HK * D), "qk_norm_rope over gathered rows differs (k)");
-    println!("k_norm_rope: {t} rows bit-identical to qk_norm_rope's k; qk_norm_rope over {} gathered rows \
+    println!("qk_norm_rope: k over {t} rows unchanged by NaN / huge queries; over {} gathered rows \
               bit-identical to the same rows of the full call (tolerance: exact)", rows.len());
 }
 
