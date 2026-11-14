@@ -180,12 +180,11 @@ pub struct StepLimits {
 
 /// Answer rows a bucket of `tokens` tokens holds when it allows one answer per `tokens_per_answer` tokens and at
 /// most `max_answers` (the GPU engine's [`BucketPlan`](crate::engine::graph::BucketPlan)): `min(T, max_answers)`
-/// for `tokens_per_answer == 1`, else `min(ceil(T / tokens_per_answer), max_answers)` rounded up to even.
+/// for `tokens_per_answer == 1`, else `min(ceil(T / tokens_per_answer), max_answers)`.
 pub fn bucket_answers(tokens: usize, max_answers: usize, tokens_per_answer: usize) -> usize {
     match tokens_per_answer {
         0 | 1 => tokens.min(max_answers).max(1),
-        // Even, for the 2-row tiles of qk_norm_rope over the answer rows (may exceed an odd max_answers by 1).
-        d => tokens.div_ceil(d).min(max_answers).max(1).next_multiple_of(2),
+        d => tokens.div_ceil(d).min(max_answers).max(1),
     }
 }
 

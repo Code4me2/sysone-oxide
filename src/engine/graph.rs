@@ -80,7 +80,7 @@ impl BucketPlan {
     }
 
     /// [`new`](Self::new), with at most one answer per `tokens_per_answer` tokens: a bucket of T tokens holds
-    /// `min(ceil(T / tokens_per_answer), max_answers)` answers rounded up to even. Values over the
+    /// `min(ceil(T / tokens_per_answer), max_answers)` answers. Values over the
     /// answer rows (the readout and, with L1's trimmed last layer, that layer's attention and MLP) are sized by
     /// this, so a smaller capacity is less padded work per step; a batch with more answers than its token count
     /// allows runs in a larger bucket. `1` gives `min(T, max_answers)`.
@@ -1143,9 +1143,9 @@ mod tests {
         // A batch with more answers than a bucket's density allows moves to a larger bucket.
         assert_eq!(p.pick(200, 32, 40).unwrap().tokens, 256);
         assert_eq!(p.pick(200, 33, 40).unwrap().tokens, 1024);
-        // Odd capacities round up to even (qk_norm_rope runs 2 rows per tile block).
+        // ceil(100 / 8).
         let p = BucketPlan::with_answer_density(&[100], 2048, 2048, 8).unwrap();
-        assert_eq!(p.buckets[0].answers, 14);
+        assert_eq!(p.buckets[0].answers, 13);
         // Density 1 is the Phase 2a capacity.
         let p = BucketPlan::with_answer_density(&[256], 64, 1 << 20, 1).unwrap();
         assert_eq!(p.buckets[0].answers, 64);

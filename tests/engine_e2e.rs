@@ -380,6 +380,63 @@ fn trimmed_last_layer_equals_untrimmed() {
     assert_eq!(s, n, "with pinned GEMMs the trimmed last layer changed the logits");
 }
 
+/// Diagnostic (ignored): where a request packed after another one first departs from the request alone. Per
+/// differing pair, the first layer (residual stream after it) and sub-layer (mixer, mid, MLP) whose rows of the
+/// request differ.
+#[test]
+#[ignore]
+fn packing_diagnostic() {
+    use sysone::engine::forward::Taps;
+    let mut guard = env().lock().unwrap_or_else(|e| e.into_inner());
+    let env = &mut *guard;
+    let fe = Frontend::load(&model_dir(), Limits::default()).unwrap();
+    let mut opts = engine_opts(8192, true);
+    opts.taps = Taps { layers: (0..32).collect(), sublayers: true, ..Default::default() };
+    let mut e = GpuEngine::load(&model_dir(), &fe.slot_ids, opts).unwrap();
+    let small: Vec<&Planned> = env.plans.iter().filter(|p| p.plan.total <= 2048).collect();
+    let h = 4096;
+    let mut shown = 0;
+    'outer: for (ai, a) in small.iter().enumerate() {
+        for b in small.iter().skip(ai + 1).take(3) {
+            let (alone, _) = goldens::batch_of(&[&a.plan]).unwrap();
+            let la = e.run(&alone).unwrap();
+            let ta = a.plan.total;
+            let mut taps_a = Vec::new();
+            for l in 0..32 {
+                let attn: Vec<String> = if l % 4 == 3 { vec![format!("k{l}"), format!("q{l}"), format!("attn{l}")] } else { vec![] };
+                for n in attn.into_iter().chain([format!("mix{l}"), format!("mid{l}"), format!("mlp{l}"), format!("layer{l}")]) {
+                    taps_a.push((n.clone(), e.read_tap(&n, ta).unwrap()));
+                }
+            }
+            let (packed, first) = goldens::batch_of(&[&b.plan, &a.plan]).unwrap();
+            let lp = e.run(&packed).unwrap();
+            let q = a.plan.branches.len();
+            let same = (0..q).all(|i| la.data[i * MAX_SLOTS..(i + 1) * MAX_SLOTS]
+                == lp.data[(first[1] + i) * MAX_SLOTS..(first[1] + i + 1) * MAX_SLOTS]);
+            if same {
+                continue;
+            }
+            let off = b.plan.total;
+            let mut line = format!("{} after {} (offset {off}, T {}):", a.case.id, b.case.id, packed.num_tokens());
+            for (n, va) in &taps_a {
+                let vp = e.read_tap(n, off + ta).unwrap();
+                let h = va.len() / ta;
+                let bad: Vec<usize> = (0..ta).filter(|&r| va[r * h..(r + 1) * h] != vp[(off + r) * h..(off + r + 1) * h]).collect();
+                if !bad.is_empty() {
+                    line += &format!(" first differing tap {n}: {} of {ta} rows (first rows {:?})", bad.len(),
+                                     &bad[..bad.len().min(6)]);
+                    break;
+                }
+            }
+            println!("{line}");
+            shown += 1;
+            if shown >= 6 {
+                break 'outer;
+            }
+        }
+    }
+}
+
 /// Diagnostic (ignored): where a trimmed step first departs from the untrimmed one. Compares the trimmed path's
 /// answer-row taps (`Taps::answer_rows`) with the untrimmed last-layer taps at the answer rows, per batch.
 #[test]

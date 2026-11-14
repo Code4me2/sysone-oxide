@@ -217,7 +217,7 @@ A CUDA graph replays fixed kernel launches with fixed pointers and grid sizes, s
 size. The engine therefore plans for a few capacities:
 
 - `graph::Bucket { tokens, answers, segments }`. `BucketPlan::with_answer_density` derives
-  `answers = min(ceil(T / tokens_per_answer), max_answers)` rounded up to even (`EngineOptions::tokens_per_answer`,
+  `answers = min(ceil(T / tokens_per_answer), max_answers)` (`EngineOptions::tokens_per_answer`,
   default 8; L1, [L1.md](L1.md)) and `segments = min(T, max_segments) + 1` for each token size T (the `+1` is the
   padding segment). The answer-row values (the readout, and the trimmed last layer) are sized by `answers`; a batch
   denser in answers than its bucket allows runs in the next larger bucket. `tokens_per_answer = 1` gives Phase 2a's

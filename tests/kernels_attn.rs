@@ -639,6 +639,61 @@ fn qk_norm_rope_k_ignores_q_and_gathered_rows_match_bits() {
               bit-identical to the same rows of the full call (tolerance: exact)", rows.len());
 }
 
+/// L1 (batch invariance): a token's q and k from `qk_norm_rope` do not depend on where the token sits in the
+/// packed stream (rows shifted by 1..3 positions, i.e. other tile-block neighbours).
+#[test]
+fn qk_norm_rope_rows_do_not_depend_on_their_position() {
+    let stream = setup();
+    let mut rng = Rng(0x0bad_cafe_dead_beef);
+    let t = 4096usize;
+    let pos: Vec<i32> = (0..t).map(|i| (i % 3000) as i32).collect();
+    let mut qg = Vec::with_capacity(t * HQ * 2 * D);
+    for r in 0..t {
+        qg.extend(rng.bf16s(HQ * 2 * D, [0.05, 1.0, 30.0, 4.0, 0.3][r % 5]));
+    }
+    let kv = rng.bf16s(t * 2 * HK * D, 2.0);
+    let qw = rng.bf16s(D, 0.5);
+    let kw = rng.bf16s(D, 0.5);
+    let inv = attn::rope_inv_freq();
+    let (qw_d, kw_d, inv_d) = (upload(qw, &[D], &stream), upload(kw, &[D], &stream), upload(inv.to_vec(), &[32], &stream));
+    let run = |qg: &[bf16], kv: &[bf16], pos: &[i32]| {
+        let n = pos.len();
+        let qg_d = upload(qg.to_vec(), &[n, HQ, 2 * D], &stream);
+        let kv_d = upload(kv.to_vec(), &[n, 2 * HK, D], &stream);
+        let pos_d = upload(pos.to_vec(), &[n], &stream);
+        let mut q = api::zeros::<bf16>(&[n, HQ, D]).sync_on(&stream).unwrap();
+        let mut k = api::zeros::<bf16>(&[n, HK, D]).sync_on(&stream).unwrap();
+        attn::qk_norm_rope(&mut q, &mut k, &qg_d, &kv_d, &pos_d, &qw_d, &kw_d, &inv_d, RMS_EPS)
+            .unwrap()
+            .sync_on(&stream)
+            .unwrap();
+        (q.to_host_vec().sync_on(&stream).unwrap(), k.to_host_vec().sync_on(&stream).unwrap())
+    };
+    let (q0, k0) = run(&qg, &kv, &pos);
+    let mut bad = 0usize;
+    for shift in 1..=3usize {
+        // `shift` extra rows in front (copies of the last rows), then the same rows; total kept even.
+        let pre = shift;
+        // Pad at the end so the row count stays a multiple of the tile block's rows.
+        let post = (t + pre).next_multiple_of(attn::ROPE_TOKENS) - (t + pre);
+        let mut qg_s = qg[(t - pre) * HQ * 2 * D..].to_vec();
+        qg_s.extend_from_slice(&qg);
+        qg_s.extend_from_slice(&qg[..post * HQ * 2 * D]);
+        let mut kv_s = kv[(t - pre) * 2 * HK * D..].to_vec();
+        kv_s.extend_from_slice(&kv);
+        kv_s.extend_from_slice(&kv[..post * 2 * HK * D]);
+        let mut pos_s = pos[t - pre..].to_vec();
+        pos_s.extend_from_slice(&pos);
+        pos_s.extend_from_slice(&pos[..post]);
+        let (q1, k1) = run(&qg_s, &kv_s, &pos_s);
+        let rows_q = (0..t).filter(|&r| q0[r * HQ * D..(r + 1) * HQ * D] != q1[(r + pre) * HQ * D..(r + pre + 1) * HQ * D]).count();
+        let rows_k = (0..t).filter(|&r| k0[r * HK * D..(r + 1) * HK * D] != k1[(r + pre) * HK * D..(r + pre + 1) * HK * D]).count();
+        println!("qk_norm_rope shifted by {pre} rows: {rows_q}/{t} q rows and {rows_k}/{t} k rows differ (tolerance: exact)");
+        bad += rows_q + rows_k;
+    }
+    assert_eq!(bad, 0, "qk_norm_rope rows depend on their position in the stream");
+}
+
 /// `seg_attn` with [`AttnPlan::answers`] over gathered q / gate rows (keys and values of every token) gives, bit
 /// for bit, the answer rows of the full `seg_attn`; padding items (q_len 0) write nothing.
 #[test]

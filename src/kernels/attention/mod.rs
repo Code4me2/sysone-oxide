@@ -64,8 +64,11 @@ pub fn positions(segments: &[Segment]) -> Vec<i32> {
     pos
 }
 
-/// Tokens per tile block in [`qk_norm_rope`].
-pub const ROPE_TOKENS: usize = 2;
+/// Tokens per tile block in [`qk_norm_rope`]. One (L1): with two tokens per block, a token's q norm rounded
+/// differently on ~0.05% of rows depending on whether it was the first or the second row of its block, i.e. on the
+/// parity of its position in the packed stream, so a request packed after an odd-length one was not bit-identical
+/// to it alone (tests/kernels_attn.rs `qk_norm_rope_rows_do_not_depend_on_their_position`).
+pub const ROPE_TOKENS: usize = 1;
 /// Worker warps per tile block in [`qk_norm_rope`].
 pub const ROPE_WARPS: i32 = 8;
 
