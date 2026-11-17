@@ -211,7 +211,7 @@ impl MetaUploader {
             u32::MAX
         };
         // Answer row i is the last token of the i-th suffix segment (DecisionBatch::validate).
-        let ans_pos = batch.segments.iter().filter(|s| !s.is_prefix()).map(|s| s.pos0 + s.len - 1);
+        let ans_pos = answer_positions(batch);
         for (r, ((&row, &slots), pos)) in batch.answer_rows.iter().zip(&batch.answer_slots).zip(ans_pos).enumerate() {
             put_u32(6, r, row);
             put_u32(7, r, slots as u32);
@@ -281,6 +281,10 @@ impl MetaUploader {
     }
 }
 
+fn answer_positions(batch: &DecisionBatch) -> impl Iterator<Item = u32> + '_ {
+    batch.segments.iter().filter(|s| !s.is_prefix()).map(|s| s.pos0 + s.len - 1)
+}
+
 fn write_segment(put: &mut impl FnMut(usize, usize, u32), si: usize, seg: &Segment) {
     put(4, si * 4, seg.start);
     put(4, si * 4 + 1, seg.len);
@@ -291,6 +295,16 @@ fn write_segment(put: &mut impl FnMut(usize, usize, u32), si: usize, seg: &Segme
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trimmed_positions_follow_logical_answer_order_not_packed_offsets() {
+        let mut b = DecisionBatch::default();
+        b.push_request(&[1; 5], &[(&[2; 3], 2), (&[3; 2], 2)]).unwrap();
+        b.push_request(&[4; 2], &[(&[5; 4], 2)]).unwrap();
+        b.validate().unwrap();
+        assert_eq!(b.answer_rows, [7, 9, 15]);
+        assert_eq!(answer_positions(&b).collect::<Vec<_>>(), [7, 6, 5]);
+    }
 
     #[test]
     fn layout_is_aligned_and_disjoint() {

@@ -207,8 +207,8 @@ fn step_graph_eager_and_captured_buckets() {
     up_meta.upload(slot, &stream).unwrap();
     {
         let ex = Executor {
-            graph: &g, plan: bg.pool(b0).unwrap(), arena: &bg.arena, weights: &store, kernels: &NoKernels,
-            blas: &blas, meta: &up_meta.dev, cfg: None, profiler: None,
+            graph: &g, plan: bg.pool(b0).unwrap(), shape: b0.shape(), arena: &bg.arena, weights: &store,
+            kernels: &NoKernels, blas: &blas, meta: &up_meta.dev, cfg: None, profiler: None,
         };
         ex.run_eager(&stream).unwrap();
         check_embed(&ex, &eager_batch);
@@ -216,11 +216,40 @@ fn step_graph_eager_and_captured_buckets() {
         compare("eager", &eager_batch, &x2h, &yh);
     }
 
+    // Exact logical rows over the 256-token capacity plan: long-short-long must neither read nor preserve an
+    // inactive suffix, and repeating the identical long shape must be bit-identical. GEMM requests report actual
+    // T, while every value remains bounded by its capacity root span.
+    let long = batch(&mut rng, 120, &[7, 9]);
+    let short = batch(&mut rng, 17, &[2]);
+    let capacity = plan.largest();
+    let mut first_long = None;
+    for (i, bt) in [&long, &short, &long].into_iter().enumerate() {
+        let shape = sysone::engine::graph::StepShape {
+            tokens: bt.num_tokens(), answers: bt.num_branches(), segments: bt.segments.len(),
+        };
+        let slot = up_meta.pack(bt, shape.tokens).unwrap();
+        up_meta.upload(slot, &stream).unwrap();
+        let ex = Executor {
+            graph: &g, plan: bg.pool(capacity).unwrap(), shape, arena: &bg.arena, weights: &store,
+            kernels: &NoKernels, blas: &blas, meta: &up_meta.dev, cfg: None, profiler: None,
+        };
+        ex.run_eager(&stream).unwrap();
+        assert!(ex.gemm_requests().iter().all(|r| r.rows == bt.num_tokens()));
+        check_embed(&ex, bt);
+        let (x2h, yh) = read(&ex, bt.num_tokens());
+        compare(&format!("exact sequence {i}"), bt, &x2h, &yh);
+        if i == 0 {
+            first_long = Some((x2h, yh));
+        } else if i == 2 {
+            assert_eq!(first_long.as_ref().unwrap(), &(x2h, yh), "long-short-long exact repeat changed");
+        }
+    }
+
     for b in plan.buckets.clone() {
         let graph = {
             let ex = Executor {
-                graph: &g, plan: bg.pool(b).unwrap(), arena: &bg.arena, weights: &store, kernels: &NoKernels,
-                blas: &blas, meta: &up_meta.dev, cfg: None, profiler: None,
+                graph: &g, plan: bg.pool(b).unwrap(), shape: b.shape(), arena: &bg.arena, weights: &store,
+                kernels: &NoKernels, blas: &blas, meta: &up_meta.dev, cfg: None, profiler: None,
             };
             ex.run_eager(&stream).unwrap(); // warm-up outside capture
             ex.capture(&stream).unwrap()
@@ -238,8 +267,8 @@ fn step_graph_eager_and_captured_buckets() {
         bg.launch(b, &stream).unwrap();
         stream.synchronize().unwrap();
         let ex = Executor {
-            graph: &g, plan: bg.pool(b).unwrap(), arena: &bg.arena, weights: &store, kernels: &NoKernels,
-            blas: &blas, meta: &up_meta.dev, cfg: None, profiler: None,
+            graph: &g, plan: bg.pool(b).unwrap(), shape: b.shape(), arena: &bg.arena, weights: &store,
+            kernels: &NoKernels, blas: &blas, meta: &up_meta.dev, cfg: None, profiler: None,
         };
         check_embed(&ex, bt);
         let (x2h, yh) = read(&ex, bt.num_tokens());

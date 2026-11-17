@@ -137,6 +137,13 @@ fn dptr<T>(t: &DevTensor) -> DevicePointer<T> {
     unsafe { DevicePointer::from_cu_deviceptr(t.ptr()) }
 }
 
+/// Active answer work is a prefix of the fixed-capacity table; bucket mode passes the full capacity.
+fn answer_work_items(rows: usize, logical_answers: usize, capacity_items: usize) -> Result<usize> {
+    ensure!(rows == logical_answers && rows <= capacity_items,
+            "seg_attn_answers: {rows} query rows for {logical_answers} logical / {capacity_items} capacity answer items");
+    Ok(rows)
+}
+
 impl TileKernels {
     /// Kernels for an engine whose largest bucket has `max_tokens` tokens and whose batches hold at most
     /// `max_prefixes` prefix segments (GDN state slots: 2 MiB each), running the delta rule on `gdn_backend`.
@@ -205,11 +212,18 @@ impl TileKernels {
     /// runs, when the batch has more prefixes than the GDN scratch has state slots: a replayed scan would
     /// otherwise write past the state buffer (`GdnPlan::update` does not check the scratch).
     pub fn update(&mut self, b: Bucket, batch: &DecisionBatch, stream: &Arc<Stream>) -> Result<()> {
+        self.update_for_tokens(b, batch, b.tokens, stream)
+    }
+
+    /// Rewrite fixed-capacity tables with the requested logical token rows (exact eager).
+    pub fn update_for_tokens(&mut self, b: Bucket, batch: &DecisionBatch, logical_tokens: usize, stream: &Arc<Stream>) -> Result<()> {
         let slots = self.scratch.slots;
         let st = self.buckets.get_mut(&b).with_context(|| format!("bucket {b:?} not prepared"))?;
+        ensure!(batch.num_tokens() <= logical_tokens && logical_tokens <= b.tokens,
+                "batch/logical/capacity tokens are {}/{logical_tokens}/{}", batch.num_tokens(), b.tokens);
         let prefixes = batch.segments.iter().filter(|s| s.is_prefix()).count();
         ensure!(prefixes <= slots, "batch has {prefixes} prefixes; the GDN scratch holds {slots} prefix states");
-        st.gdn.update(&batch.segments, stream)?;
+        st.gdn.update_for_tokens(&batch.segments, logical_tokens, stream)?;
         ensure!(st.gdn.num_prefixes <= slots, "GDN plan has {} prefixes for {slots} state slots", st.gdn.num_prefixes);
         let mut plan = AttnPlan::new(&batch.segments, self.attn_tiles.bm);
         ensure!(plan.num_items() <= st.attn_items, "{} attention items over the bucket's {}", plan.num_items(),
@@ -514,7 +528,7 @@ impl Kernels for TileKernels {
                         qg: &DevTensor, out: &DevTensor) -> Result<()> {
         let st = self.bucket(cx.bucket)?;
         let (a, t) = (q.rows(), k.rows());
-        ensure!(a == st.ans_items, "seg_attn_answers: {a} query rows for {} answer items", st.ans_items);
+        let num_items = answer_work_items(a, cx.shape.answers, st.ans_items)?;
         for (name, x, rows, cols) in [("q", q, a, 4096), ("k", k, t, 1024), ("kv", kv, t, 2048), ("qg", qg, a, 8192),
                                       ("out", out, a, 4096)] {
             ensure!(x.dtype == GraphDType::BF16 && x.is_contiguous() && x.rows() == rows && x.cols() == cols,
@@ -527,7 +541,8 @@ impl Kernels for TileKernels {
             kv: dptr(kv),
             qg: dptr(qg),
             work: dptr(&st.ans_work),
-            num_items: st.ans_items,
+            // Real items are a prefix of the capacity-padded work list; never launch inactive Q rows.
+            num_items,
         };
         unsafe { attn::seg_attn(args, self.attn_tiles).execute(cx.exec) }.map(|_| ()).map_err(launch_err("seg_attn"))
     }
@@ -558,6 +573,20 @@ impl Kernels for TileKernels {
             let (src, idx, mut o) = (src.tile::<bf16>()?, idx.tile::<u32>()?, out.tile::<bf16>()?);
             pointwise::gather_rows(&mut o, &src, &idx)?.execute(cx.exec).map(|_| ()).map_err(launch_err("gather_rows"))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trimmed_answer_work_uses_logical_q_or_full_bucket_q() {
+        for q in [1, 2, 4, 8, 16, 32] {
+            assert_eq!(answer_work_items(q, q, 32).unwrap(), q);
+        }
+        assert!(answer_work_items(33, 33, 32).is_err());
+        assert!(answer_work_items(32, 16, 32).is_err());
     }
 }
 

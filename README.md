@@ -140,6 +140,7 @@ See [docs/ARCHITECTURE.md §6](docs/ARCHITECTURE.md#6-correctness-and-testing) f
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How the code works: request lifecycle, packed tree, buckets and graphs, module map, GPU op table, tests, glossary |
 | [docs/DESIGN.md](docs/DESIGN.md) | Why: model facts, reference semantics, execution model, correctness strategy, phases |
 | [docs/PLATFORM.md](docs/PLATFORM.md) | GB10 vs discrete x86 GPUs, prerequisites |
+| [docs/x86/EXACT_EAGER.md](docs/x86/EXACT_EAGER.md) | Opt-in exact eager execution, bounded warmup, scoped observations and limitations |
 | [docs/x86/AGENT.md](docs/x86/AGENT.md), [docs/x86/TASKS.md](docs/x86/TASKS.md) | The x86 host (2x RTX PRO 6000 + RTX 5090, sm_120): operating manual for the agent there (setup, GPU discipline, data hygiene, GitHub protocol) and its task list |
 | [docs/PHASE0.md](docs/PHASE0.md), [docs/PHASE1.md](docs/PHASE1.md), [docs/PHASE2A.md](docs/PHASE2A.md) | Phase reports and measurements |
 | [docs/G1.md](docs/G1.md) | The GDN delta rule in cuda-oxide: results, design, accuracy, the SIMT kernel build and artifact policy |

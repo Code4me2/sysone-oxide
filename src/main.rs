@@ -21,7 +21,7 @@ use std::time::Duration;
 use sysone::api::server::{self, AppState, ServerInfo, ServerOptions};
 use sysone::contract::{DecisionBatch, DecisionEngine, MassReadout, MockEngine, SlotLogits};
 use sysone::engine::config::{ModelConfig, WeightFormat};
-use sysone::engine::gpu::{EngineOptions, GpuEngine, parse_gdn_backend};
+use sysone::engine::gpu::{EngineOptions, ExecutionMode, GpuEngine, parse_gdn_backend};
 use sysone::frontend::{Frontend, Limits};
 use sysone::sched::{EngineFactory, SchedConfig};
 
@@ -64,9 +64,17 @@ struct Args {
     /// --token-budget, since a request is never split across steps (default: the larger of the two).
     #[arg(long)]
     max_step_tokens: Option<usize>,
-    /// GPU engines: run every step eagerly instead of replaying a CUDA graph per T bucket.
+    /// GPU engines: run every step eagerly at the selected bucket's padded T/Q instead of replaying a CUDA graph.
     #[arg(long)]
     no_cuda_graphs: bool,
+    /// bf16/Tile only: run dense operations at the batch's exact logical token and answer rows, backed by the
+    /// selected capacity bucket. Explicit opt-in; never captures or replays CUDA graphs.
+    #[arg(long = "exact-token-eager")]
+    exact_token_eager: bool,
+    /// Fixed bounded specialization warmup before readiness (51 calls, 90s between-call wall bound).
+    /// Requires --exact-token-eager and explicit --gdn-backend tile; opt-in, never changes request math.
+    #[arg(long, requires = "exact_token_eager")]
+    bounded_exact_warmup: bool,
     /// GPU engines: most requests (prefix segments) in one step; each needs 2 MiB of GDN state per step.
     #[arg(long, default_value_t = 256)]
     max_prefixes: usize,
@@ -175,6 +183,21 @@ impl DecisionEngine for SimulatedEngine {
     }
 }
 
+fn validate_execution_args(args: &Args) -> Result<()> {
+    ensure!(!args.bounded_exact_warmup || args.exact_token_eager,
+            "--bounded-exact-warmup requires --exact-token-eager");
+    ensure!(!args.exact_token_eager || args.engine == EngineKind::Bf16,
+            "--exact-token-eager requires --engine bf16");
+    ensure!(!(args.exact_token_eager && args.no_cuda_graphs),
+            "--exact-token-eager is already eager; do not combine it with --no-cuda-graphs");
+    ensure!(!args.exact_token_eager || args.gdn_backend == "tile",
+            "--exact-token-eager requires the explicit Tile backend: --gdn-backend tile");
+    if args.bounded_exact_warmup {
+        ensure!(args.max_prefixes >= 1, "--bounded-exact-warmup requires at least one prefix state");
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     // `sysone bulk ...`: the bulk tagging path (docs/BULK.md); everything else is the server.
     let argv: Vec<String> = std::env::args().collect();
@@ -183,6 +206,7 @@ fn main() -> Result<()> {
         std::process::exit(code);
     }
     let args = Args::parse();
+    validate_execution_args(&args)?;
     let cfg = ModelConfig::load(&args.model)?;
     let profile = cfg.profile()?;
     let limits = Limits {
@@ -228,8 +252,10 @@ fn main() -> Result<()> {
             let weights = Some(if args.engine == EngineKind::Nvfp4 { WeightFormat::Nvfp4 } else { WeightFormat::Bf16 });
             let opts = EngineOptions {
                 buckets: EngineOptions::buckets_up_to(max_step),
-                cuda_graphs: !args.no_cuda_graphs,
+                cuda_graphs: !args.no_cuda_graphs && !args.exact_token_eager,
+                execution_mode: if args.exact_token_eager { ExecutionMode::ExactEager } else { ExecutionMode::Bucketed },
                 max_prefixes: args.max_prefixes,
+                bounded_exact_warmup: args.bounded_exact_warmup,
                 gdn_backend: parse_gdn_backend(&args.gdn_backend)?,
                 weights,
                 nvfp4_fused: !args.nvfp4_unfused,
@@ -240,6 +266,7 @@ fn main() -> Result<()> {
                 nvfp4_residual: !args.nvfp4_separate_residual,
                 ..Default::default()
             };
+            opts.validate_bounded_exact_warmup()?;
             let (model, slot_ids) = (args.model.clone(), frontend.slot_ids.clone());
             Box::new(move || {
                 let e = GpuEngine::load(&model, &slot_ids, opts)?;
@@ -302,4 +329,39 @@ fn main() -> Result<()> {
         server::serve(listener, state, shutdown).await?;
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn parse(extra: &[&str]) -> Result<Args> {
+        let mut argv = vec!["sysone", "--model", "nonexistent-model"];
+        argv.extend_from_slice(extra);
+        Ok(Args::try_parse_from(argv)?)
+    }
+    #[test]
+    fn bounded_cli_rejects_before_model_or_cuda() {
+        assert!(parse(&["--bounded-exact-warmup"]).is_err());
+        for flags in [
+            vec!["--bounded-exact-warmup", "--exact-token-eager"],
+            vec!["--bounded-exact-warmup", "--exact-token-eager", "--engine", "bf16"],
+            vec!["--bounded-exact-warmup", "--exact-token-eager", "--engine", "bf16", "--gdn-backend", "simt"],
+            vec!["--exact-token-eager", "--engine", "nvfp4", "--gdn-backend", "tile"],
+            vec!["--bounded-exact-warmup", "--exact-token-eager", "--engine", "bf16", "--gdn-backend", "tile", "--no-cuda-graphs"],
+            vec!["--bounded-exact-warmup", "--exact-token-eager", "--engine", "bf16", "--gdn-backend", "tile", "--max-prefixes", "0"],
+        ] { assert!(validate_execution_args(&parse(&flags).unwrap()).is_err()); }
+    }
+    #[test]
+    fn bounded_cli_accepts_explicit_tile_and_preserves_unflagged_defaults() {
+        let a = parse(&[]).unwrap(); validate_execution_args(&a).unwrap();
+        assert!(!a.bounded_exact_warmup && !a.exact_token_eager && !a.no_cuda_graphs);
+        let a = parse(&["--engine", "nvfp4", "--no-cuda-graphs", "--gemm", "heuristic",
+            "--no-trim-last-layer", "--nvfp4-unfused", "--nvfp4-separate-silu",
+            "--fp4-gemm", "cutile", "--nvfp4-separate-residual"]).unwrap();
+        validate_execution_args(&a).unwrap();
+        assert!(a.no_cuda_graphs && a.no_trim_last_layer && a.nvfp4_unfused);
+        assert_eq!(a.gemm, "heuristic");
+        let a = parse(&["--bounded-exact-warmup", "--exact-token-eager", "--engine", "bf16", "--gdn-backend", "tile"]).unwrap();
+        validate_execution_args(&a).unwrap();
+    }
 }

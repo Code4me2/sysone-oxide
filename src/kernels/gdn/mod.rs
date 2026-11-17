@@ -39,6 +39,7 @@ pub mod tile;
 use crate::contract::Segment;
 use anyhow::{Result, bail, ensure};
 use cutile::cuda_core::Stream;
+use cuda_core::PinnedHostBuffer;
 use cutile::half::bf16;
 use cutile::prelude::*;
 use cuda_async::device_buffer::DevicePointer;
@@ -171,8 +172,10 @@ fn check_tensor<T: DType>(what: &str, t: &Tensor<T>, shape: &[usize]) -> Result<
 
 /// Device-side segment metadata for the GDN kernels of one batch.
 pub struct GdnPlan {
-    /// Rows the per-token kernels process (`gdn_prep`, `gated_rmsnorm`): the batch's tokens, or its T bucket.
+    /// Logical rows the per-token kernels process (`gdn_prep`, `gated_rmsnorm`).
     pub tokens: usize,
+    /// Fixed allocation/table capacity selected by the engine bucket.
+    pub token_capacity: usize,
     pub max_chunks: usize,
     pub max_segs: usize,
     /// Prefix-state scratch slots the plan needs (= number of prefix segments).
@@ -183,6 +186,9 @@ pub struct GdnPlan {
     /// heads), written by [`tree_conv1d_silu_inv`] and read by [`gdn_chunk_scan_conv`]. Per-batch data, kept in
     /// the plan so that [`GdnScratch`] keeps its fields.
     qk_inv: Tensor<f32>,
+    /// Fixed-capacity pinned table staging; updates never allocate a device buffer for an arbitrary logical T.
+    chunks_host: PinnedHostBuffer<i32>,
+    segs_host: PinnedHostBuffer<i32>,
 }
 
 /// Host-side tables of a [`GdnPlan`] (see `tile.rs` for the layouts).
@@ -259,11 +265,49 @@ impl GdnPlan {
         stream: &Arc<Stream>,
     ) -> Result<Self> {
         ensure!(tokens > 0 && tokens * VALUE_DIM <= i32::MAX as usize, "tokens {tokens} out of range");
+        ensure!(max_chunks > 0 && max_segs > 0, "GDN capacities must be nonzero");
         let t = GdnTables::build(segments, tokens, max_chunks, max_segs)?;
-        let chunks = api::copy_host_vec_to_device(&Arc::new(t.chunks)).sync_on(stream)?;
-        let segs = api::copy_host_vec_to_device(&Arc::new(t.segs)).sync_on(stream)?;
+        let chunks = api::zeros::<i32>(&[max_chunks * 4]).sync_on(stream)?;
+        let segs = api::zeros::<i32>(&[max_segs * 4]).sync_on(stream)?;
         let qk_inv = api::zeros::<f32>(&[tokens, 2 * NUM_K_HEADS]).sync_on(stream)?;
-        Ok(Self { tokens, max_chunks, max_segs, num_prefixes: t.num_prefixes, chunks, segs, qk_inv })
+        let chunks_host = PinnedHostBuffer::zeroed(stream.context(), max_chunks * 4)?;
+        let segs_host = PinnedHostBuffer::zeroed(stream.context(), max_segs * 4)?;
+        let mut plan = Self {
+            tokens,
+            token_capacity: tokens,
+            max_chunks,
+            max_segs,
+            num_prefixes: t.num_prefixes,
+            chunks,
+            segs,
+            qk_inv,
+            chunks_host,
+            segs_host,
+        };
+        plan.upload_tables(&t, stream)?;
+        Ok(plan)
+    }
+
+    fn upload_tables(&mut self, tables: &GdnTables, stream: &Arc<Stream>) -> Result<()> {
+        self.chunks_host.as_mut_slice().copy_from_slice(&tables.chunks);
+        self.segs_host.as_mut_slice().copy_from_slice(&tables.segs);
+        stream.context().bind_to_thread()?;
+        unsafe {
+            cuda_core::memory::memcpy_htod_async(
+                self.chunks.device_pointer().cu_deviceptr(),
+                self.chunks_host.as_ptr(),
+                self.chunks_host.as_slice().len() * size_of::<i32>(),
+                stream.cu_stream(),
+            )?;
+            cuda_core::memory::memcpy_htod_async(
+                self.segs.device_pointer().cu_deviceptr(),
+                self.segs_host.as_ptr(),
+                self.segs_host.as_slice().len() * size_of::<i32>(),
+                stream.cu_stream(),
+            )?;
+        }
+        stream.synchronize()?;
+        Ok(())
     }
 
     /// Rewrite the tables in place for another batch with the same capacities (for graph replay).
@@ -273,12 +317,19 @@ impl GdnPlan {
     /// plan can hold). If a replay still sees more prefixes than slots, the SIMT path writes NaN over the affected
     /// segments' output (it never leaves stale output); the cuTile scan does not detect it.
     pub fn update(&mut self, segments: &[Segment], stream: &Arc<Stream>) -> Result<()> {
-        let t = GdnTables::build(segments, self.tokens, self.max_chunks, self.max_segs)?;
-        let chunks = api::copy_host_vec_to_device(&Arc::new(t.chunks)).sync_on(stream)?;
-        let segs = api::copy_host_vec_to_device(&Arc::new(t.segs)).sync_on(stream)?;
-        api::memcpy(&mut self.chunks, &chunks).sync_on(stream)?;
-        api::memcpy(&mut self.segs, &segs).sync_on(stream)?;
-        self.num_prefixes = t.num_prefixes;
+        self.update_for_tokens(segments, self.token_capacity, stream)
+    }
+
+    /// Rewrite tables while changing the logical token rows, keeping capacities and device addresses fixed.
+    /// Prep and gated-normalization launch grids depend on logical T. Changing T here does not update launch
+    /// arguments in an already captured graph; exact eager execution launches with the current logical T.
+    pub fn update_for_tokens(&mut self, segments: &[Segment], tokens: usize, stream: &Arc<Stream>) -> Result<()> {
+        ensure!(tokens > 0 && tokens <= self.token_capacity,
+                "logical GDN tokens {tokens} over capacity {}", self.token_capacity);
+        let tables = GdnTables::build(segments, tokens, self.max_chunks, self.max_segs)?;
+        self.upload_tables(&tables, stream)?;
+        self.tokens = tokens;
+        self.num_prefixes = tables.num_prefixes;
         Ok(())
     }
 }
@@ -395,7 +446,7 @@ impl GdnScratch {
     /// Scratch for every batch `plan` can describe (graph replay): one state slot per segment the plan can hold,
     /// since `GdnPlan::update` may raise the prefix count up to that.
     pub fn for_plan(backend: GdnBackend, plan: &GdnPlan, stream: &Arc<Stream>) -> Result<Self> {
-        Self::for_backend(backend, plan.tokens, plan.max_segs, stream)
+        Self::for_backend(backend, plan.token_capacity, plan.max_segs, stream)
     }
 
     pub fn conv_view(&self) -> Result<DView<bf16>> {
@@ -1044,6 +1095,7 @@ mod tests {
         assert_eq!(seg(4), [204, 1, 1, 1]);
         assert_eq!(seg(5), [0, 0, -1, 0]);
         assert!(GdnTables::build(&b.segments, b.num_tokens(), 7, 6).is_err());
+        assert!(GdnTables::build(&b.segments, b.num_tokens() - 1, 8, 6).is_err());
         assert!(GdnTables::num_chunks(&b.segments) <= GdnTables::chunk_capacity(b.num_tokens(), b.segments.len()));
     }
 }

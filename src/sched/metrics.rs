@@ -364,6 +364,7 @@ mod tests {
         m.record_decided(Duration::from_millis(10), 3);
         m.record_decided(Duration::from_millis(30), 1);
         m.record_batch(1000, 2, 4, Duration::from_millis(7));
+        m.set_engine_info(vec![("engine", "bf16".into()), ("execution_mode", "exact_eager".into())]);
         let mut t = m.render(5, 64, 16384);
         render_front(&mut t, &Front { cpu_queue_depth: 3, skipped: 2, ..Default::default() });
         assert!(t.contains("sysone_overload_total{reason=\"cpu_queue\"} 1\n"));
@@ -378,6 +379,7 @@ mod tests {
         assert!(t.contains("sysone_batch_tokens_bucket{le=\"512\"} 0\n"));
         assert!(t.contains("sysone_request_latency_seconds{quantile=\"0.5\"} 0.01\n"));
         assert!(t.contains("sysone_request_latency_seconds{quantile=\"0.99\"} 0.03\n"));
+        assert!(t.contains("sysone_engine_info{engine=\"bf16\",execution_mode=\"exact_eager\"} 1\n"));
         assert!(m.decisions_per_second() > 0.0);
         // Every non-comment line is `name[{labels}] value`.
         for line in t.lines().filter(|l| !l.starts_with('#')) {
