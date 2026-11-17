@@ -5,8 +5,8 @@
 //! 1. pick the smallest bucket that fits the batch's tokens, answers and segments;
 //! 2. pack the batch metadata into a pinned host slot and upload it; rewrite the kernels' segment tables and
 //!    attention work list for the bucket ([`TileKernels::update`]);
-//! 3. replay the bucket's CUDA graph, or run the forward eagerly (first use of a bucket, or graphs disabled);
-//!    after the first eager run of a bucket its graph is captured, so later steps replay it;
+//! 3. in legacy mode, replay the bucket's CUDA graph or run bucket-sized eager work; in exact eager mode, run
+//!    actual logical T/Q rows over the bucket's capacity-backed arena and never capture/replay;
 //! 4. copy the `[Q, n_slots]` f32 slot logits into a persistent, pre-touched pinned host buffer (PLATFORM P3)
 //!    and return them.
 //!
@@ -19,17 +19,36 @@ use crate::engine::config::ModelConfig;
 use crate::engine::forward::{self, Forward, Taps};
 use crate::engine::gemm::Blas;
 use crate::engine::graph::tensor::GraphDType;
-use crate::engine::graph::{Bucket, BucketGraphs, BucketPlan, Executor, Profiler, ValueId};
+use crate::engine::graph::{Bucket, BucketGraphs, BucketPlan, Executor, GemmRequest, Profiler, StepShape, ValueId};
 use crate::engine::kernels::TileKernels;
 use crate::engine::loader::{Checkpoint, StreamOptions};
 use crate::engine::meta::{MetaShape, MetaUploader};
 use crate::engine::weights::{LoadOptions, LoadReport, ModelWeights, debug_permutation};
+use crate::engine::warmup::{self, WarmupReport};
 use crate::kernels::gdn::GdnBackend;
 use anyhow::{Context as _, Result, bail, ensure};
 use cuda_core::{Context, PinnedHostBuffer, Stream};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
+
+/// Dense row execution policy. The default preserves the existing bucket-sized graph/eager behavior.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ExecutionMode {
+    #[default]
+    Bucketed,
+    ExactEager,
+}
+
+impl ExecutionMode {
+    pub fn name(self, cuda_graphs: bool) -> &'static str {
+        match (self, cuda_graphs) {
+            (Self::Bucketed, true) => "bucket_graph",
+            (Self::Bucketed, false) => "bucket_eager",
+            (Self::ExactEager, _) => "exact_eager",
+        }
+    }
+}
 
 /// Engine sizing and behaviour.
 #[derive(Clone, Debug)]
@@ -42,10 +61,14 @@ pub struct EngineOptions {
     pub max_segments: usize,
     /// Most prefix segments (requests) one step holds: GDN state slots, 2 MiB each.
     pub max_prefixes: usize,
-    /// Capture a CUDA graph per bucket and replay it (else every step runs eagerly).
+    /// Capture a CUDA graph per bucket and replay it (else every step runs eagerly). Exact eager requires false.
     pub cuda_graphs: bool,
+    /// Bucket-sized legacy execution or exact logical token/answer rows backed by a capacity bucket.
+    pub execution_mode: ExecutionMode,
     /// Run one small batch at load so kernel JIT happens before the first request.
     pub warmup: bool,
+    /// Opt-in fixed 51-call exact/explicit-Tile specialization warmup; requires warmup and no graphs.
+    pub bounded_exact_warmup: bool,
     /// Debug taps (per-layer hidden states).
     pub taps: Taps,
     /// Debug (numerics diagnostics only): run the model in a hidden basis permuted with this seed
@@ -85,7 +108,9 @@ impl Default for EngineOptions {
             max_segments: 2048,
             max_prefixes: 256,
             cuda_graphs: true,
+            execution_mode: ExecutionMode::Bucketed,
             warmup: true,
+            bounded_exact_warmup: false,
             taps: Taps::default(),
             debug_permute_hidden: None,
             gdn_backend: None,
@@ -94,6 +119,51 @@ impl Default for EngineOptions {
 }
 
 impl EngineOptions {
+    /// Validate known execution choices on CPU; an automatic backend is checked after arch resolution.
+    fn validate_execution(&self, backend: Option<GdnBackend>) -> Result<()> {
+        if self.execution_mode == ExecutionMode::ExactEager {
+            ensure!(!self.cuda_graphs, "exact eager mode must not enable CUDA graphs");
+            if let Some(backend) = backend {
+                ensure!(backend == GdnBackend::Tile, "exact eager mode supports only the Tile GDN backend");
+            }
+        }
+        Ok(())
+    }
+
+    fn resolve_gdn_backend(&self, major: i32, minor: i32) -> Result<(GdnBackend, &'static str)> {
+        let (backend, why) = match self.gdn_backend {
+            Some(b) => (b, "requested"),
+            None => (GdnBackend::default_for_arch(major, minor), "default for this architecture"),
+        };
+        self.validate_execution(Some(backend))?;
+        Ok((backend, why))
+    }
+
+    /// CPU-only validation of the opt-in contract, before any CUDA context or model allocation.
+    /// Legacy configurations retain their existing validation path when the flag is absent.
+    pub fn validate_bounded_exact_warmup(&self) -> Result<()> {
+        if !self.bounded_exact_warmup { return Ok(()); }
+        ensure!(self.warmup, "bounded exact warmup requires warmup=true");
+        ensure!(self.execution_mode == ExecutionMode::ExactEager, "bounded exact warmup requires exact eager execution");
+        ensure!(!self.cuda_graphs, "bounded exact warmup must not enable CUDA graphs");
+        ensure!(self.gdn_backend == Some(GdnBackend::Tile), "bounded exact warmup requires explicit Tile GDN backend");
+        ensure!(self.debug_permute_hidden.is_none() && self.taps.layers.is_empty() && !self.taps.norm
+            && !self.taps.sublayers, "bounded exact warmup does not support debug permutations/taps");
+        ensure!(self.max_prefixes >= 1 && self.max_answers >= 16 && self.max_segments >= 17,
+            "bounded exact warmup requires capacity Q16/S17/P1; coverage must not shrink");
+        let plan = BucketPlan::new(&self.buckets, self.max_answers, self.max_segments)?;
+        for layout in warmup::plan() {
+            ensure!(plan.pick(layout.tokens, layout.answers, layout.segments).is_some(),
+                "bounded exact warmup capacity cannot fit {} T{} Q{} S{} P1 (including padding)",
+                layout.phase, layout.tokens, layout.answers, layout.segments);
+        }
+        Ok(())
+    }
+
+    pub fn warmup_policy(&self) -> &'static str {
+        if self.bounded_exact_warmup { warmup::POLICY } else if self.warmup { "standard" } else { "disabled" }
+    }
+
     /// Buckets up to the smallest power of two ≥ `max_tokens` (at least 256), doubling from 256.
     pub fn buckets_up_to(max_tokens: usize) -> Vec<usize> {
         let mut b = vec![256usize];
@@ -107,8 +177,20 @@ impl EngineOptions {
 /// What the last step did (tests, metrics).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct StepInfo {
+    /// Selected allocation/table capacity T/Q/S.
     pub bucket_tokens: usize,
-    /// Graph replay (else eager).
+    pub bucket_answers: usize,
+    pub bucket_segments: usize,
+    /// Actual batch dimensions of the last sub-step (debug/readback bounds).
+    pub logical_tokens: usize,
+    pub logical_answers: usize,
+    pub logical_segments: usize,
+    /// Dense rows requested from kernels/GEMMs. Legacy mode uses capacity rows; exact mode equals logical rows.
+    pub execution_tokens: usize,
+    pub execution_answers: usize,
+    pub execution_segments: usize,
+    pub execution_mode: ExecutionMode,
+    /// Graph replay (else eager). Always false in exact eager mode.
     pub replayed: bool,
     /// Steps the batch was split into.
     pub steps: usize,
@@ -133,6 +215,7 @@ pub struct GpuEngine {
     hidden_perm: Option<Vec<usize>>,
     /// Device architecture (`sm_121`).
     pub arch: String,
+    warmup_report: Option<WarmupReport>,
 }
 
 // SAFETY: every member is either plain data or a device/pinned allocation owned by this engine; the scheduler
@@ -144,11 +227,22 @@ impl GpuEngine {
     /// token ids from the frontend (the readout rows).
     pub fn load(model_dir: &Path, slot_ids: &[u32], opts: EngineOptions) -> Result<Self> {
         let t0 = Instant::now();
+        opts.validate_bounded_exact_warmup()?;
+        opts.validate_execution(opts.gdn_backend)?;
         let cfg = ModelConfig::load(model_dir)?;
+        if opts.bounded_exact_warmup {
+            ensure!(cfg.text_config.vocab_size >= 1100 && slot_ids.len() >= 2,
+                "bounded exact warmup requires vocabulary IDs1000..1099 and at least two readout slots");
+        }
         forward::check_dims(&cfg)?;
         ensure!(!slot_ids.is_empty() && slot_ids.len() <= MAX_SLOTS, "{} slot ids", slot_ids.len());
         ensure!(!opts.buckets.is_empty(), "no buckets");
         let ctx = Context::new(0)?;
+        let (major, minor) = ctx.compute_capability()?;
+        let arch = format!("sm_{major}{minor}");
+        let (gdn_backend, why) = opts.resolve_gdn_backend(major, minor)?;
+        eprintln!("sysone engine: GDN backend {} ({why}) on {arch}; execution mode {}", gdn_backend.name(),
+                  opts.execution_mode.name(opts.cuda_graphs));
         let stream = ctx.new_stream()?;
         let ckpt = Checkpoint::open(model_dir)?;
         let lopts = LoadOptions { slot_token_ids: Some(slot_ids.to_vec()), full_lm_head: false, stream: StreamOptions::default() };
@@ -161,13 +255,6 @@ impl GpuEngine {
         let plan = BucketPlan::new(&opts.buckets, opts.max_answers, opts.max_segments)?;
         let largest = plan.largest();
         let graphs = BucketGraphs::new(&fwd.graph, plan, &stream)?;
-        let (major, minor) = ctx.compute_capability()?;
-        let arch = format!("sm_{major}{minor}");
-        let (gdn_backend, why) = match opts.gdn_backend {
-            Some(b) => (b, "requested"),
-            None => (GdnBackend::default_for_arch(major, minor), "default for this architecture"),
-        };
-        eprintln!("sysone engine: GDN backend {} ({why}) on {arch}", gdn_backend.name());
         let kernels = TileKernels::new(&stream, cfg.text_config.rms_norm_eps as f32, largest.tokens, opts.max_prefixes,
                                        gdn_backend)
             .with_context(|| format!("GDN backend {} on {arch}", gdn_backend.name()))?;
@@ -195,6 +282,7 @@ impl GpuEngine {
             last: StepInfo::default(),
             hidden_perm,
             arch,
+            warmup_report: None,
         };
         eprintln!(
             "sysone engine: loaded {:.1} GiB of weights in {:.1} s; arena {:.2} GiB (largest bucket {} tokens), GDN scratch \
@@ -206,7 +294,21 @@ impl GpuEngine {
             e.kernels.scratch_bytes() as f64 / (1u64 << 30) as f64,
             e.opts.max_prefixes
         );
-        if e.opts.warmup {
+        if e.opts.bounded_exact_warmup {
+            let t = Instant::now();
+            let mut report = WarmupReport::default();
+            let result = warmup::execute(&mut report, |batch| {
+                e.run(batch)?;
+                ensure!(!e.last.replayed && e.last.steps == 1, "warmup must be one uncaptured exact step");
+                Ok(())
+            }, cutile::tile_kernel::jit_compile_count, || t.elapsed());
+            report.startup_ms = t0.elapsed().as_secs_f64() * 1000.;
+            eprintln!("SYSONE_WARMUP_REPORT {}", serde_json::to_string(&report)?);
+            result?;
+            eprintln!("SYSONE_WARMUP_READY {}", serde_json::json!({"policy":warmup::POLICY,
+                "calls":report.calls.len(),"jit_at_ready":report.jit_after,"startup_ms":report.startup_ms}));
+            e.warmup_report = Some(report);
+        } else if e.opts.warmup {
             let t = Instant::now();
             let mut b = DecisionBatch::default();
             let ids: Vec<u32> = (0..100).map(|i| 1000 + i).collect();
@@ -215,6 +317,14 @@ impl GpuEngine {
             eprintln!("sysone engine: warm-up step (kernel JIT) {:.1} s", t.elapsed().as_secs_f64());
         }
         Ok(e)
+    }
+
+    /// Bounded startup report, completed before load returns. None preserves the unflagged legacy path.
+    pub fn warmup_report(&self) -> Option<&WarmupReport> { self.warmup_report.as_ref() }
+
+    /// Captured allocation buckets (diagnostic proof; exact warmup must always report zero).
+    pub fn captured_bucket_count(&self) -> usize {
+        self.graphs.plan.buckets.iter().filter(|&&b| self.graphs.is_captured(b)).count()
     }
 
     /// The GDN delta-rule backend this engine runs.
@@ -248,10 +358,22 @@ impl GpuEngine {
         (s + pad <= b.segments).then_some(b)
     }
 
-    fn executor<'a>(&'a self, b: Bucket, profiler: Option<&'a Profiler>) -> Result<Executor<'a>> {
+    fn execution_shape(&self, batch: &DecisionBatch, b: Bucket) -> StepShape {
+        match self.opts.execution_mode {
+            ExecutionMode::Bucketed => b.shape(),
+            ExecutionMode::ExactEager => StepShape {
+                tokens: batch.num_tokens(),
+                answers: batch.num_branches(),
+                segments: batch.segments.len(),
+            },
+        }
+    }
+
+    fn executor<'a>(&'a self, b: Bucket, shape: StepShape, profiler: Option<&'a Profiler>) -> Result<Executor<'a>> {
         Ok(Executor {
             graph: &self.fwd.graph,
             plan: self.graphs.pool(b)?,
+            shape,
             arena: &self.graphs.arena,
             weights: &self.weights,
             kernels: &self.kernels,
@@ -262,39 +384,57 @@ impl GpuEngine {
         })
     }
 
-    /// Upload `batch` for bucket `b`: metadata and the kernels' tables.
-    fn stage(&mut self, batch: &DecisionBatch, b: Bucket) -> Result<()> {
+    /// Upload `batch` for capacity bucket `b`: metadata and fixed-capacity kernel tables. In exact mode the
+    /// metadata header and GDN logical row count use the batch's actual T; legacy mode retains bucket padding.
+    fn stage(&mut self, batch: &DecisionBatch, b: Bucket, shape: StepShape) -> Result<()> {
         self.ctx.bind_to_thread()?;
+        ensure!(shape.fits(b), "logical shape {shape:?} exceeds capacity {b:?}");
         self.kernels.prepare(b, &self.stream)?;
-        let slot = self.meta.pack(batch, b.tokens)?;
+        let slot = self.meta.pack(batch, shape.tokens)?;
         self.meta.upload(slot, &self.stream)?;
-        self.kernels.update(b, batch, &self.stream)
+        self.kernels.update(b, batch, shape.tokens, &self.stream)
     }
 
     /// One step in bucket `b` (it must fit). `eager` forces an eager run even when a graph exists.
     pub fn step(&mut self, batch: &DecisionBatch, b: Bucket, eager: bool) -> Result<SlotLogits> {
         let q = batch.num_branches();
         ensure!(q <= b.answers, "{q} answers over the bucket's {}", b.answers);
-        self.stage(batch, b)?;
-        let replay = self.opts.cuda_graphs && !eager && self.graphs.is_captured(b);
+        let shape = self.execution_shape(batch, b);
+        self.stage(batch, b, shape)?;
+        let graphs_enabled = self.opts.execution_mode == ExecutionMode::Bucketed && self.opts.cuda_graphs;
+        let replay = graphs_enabled && !eager && self.graphs.is_captured(b);
         if replay {
             self.graphs.launch(b, &self.stream)?;
         } else {
-            self.executor(b, None)?.run_eager(&self.stream)?;
-            if self.opts.cuda_graphs && !self.graphs.is_captured(b) {
-                let g = self.executor(b, None)?.capture(&self.stream).with_context(|| format!("capturing bucket {b:?}"))?;
+            self.executor(b, shape, None)?.run_eager(&self.stream)?;
+            if graphs_enabled && !self.graphs.is_captured(b) {
+                let g = self.executor(b, shape, None)?.capture(&self.stream)
+                    .with_context(|| format!("capturing bucket {b:?}"))?;
                 self.graphs.insert(b, g)?;
             }
         }
-        let logits = self.read_logits(b, q)?;
-        self.last = StepInfo { bucket_tokens: b.tokens, replayed: replay, steps: 1 };
+        let logits = self.read_logits(b, shape, q)?;
+        self.last = StepInfo {
+            bucket_tokens: b.tokens,
+            bucket_answers: b.answers,
+            bucket_segments: b.segments,
+            logical_tokens: batch.num_tokens(),
+            logical_answers: batch.num_branches(),
+            logical_segments: batch.segments.len(),
+            execution_tokens: shape.tokens,
+            execution_answers: shape.answers,
+            execution_segments: shape.segments,
+            execution_mode: self.opts.execution_mode,
+            replayed: replay,
+            steps: 1,
+        };
         Ok(logits)
     }
 
     /// Copy the first `q` logit rows into the pinned buffer and widen them to `MAX_SLOTS` columns.
-    fn read_logits(&mut self, b: Bucket, q: usize) -> Result<SlotLogits> {
+    fn read_logits(&mut self, b: Bucket, shape: StepShape, q: usize) -> Result<SlotLogits> {
         let n = self.fwd.n_slots;
-        let src = self.executor(b, None)?.value(self.fwd.logits)?;
+        let src = self.executor(b, shape, None)?.value(self.fwd.logits)?;
         let bytes = q * n * 4;
         if bytes > 0 {
             unsafe {
@@ -315,7 +455,32 @@ impl GpuEngine {
     pub fn read_value(&self, v: ValueId, rows: usize) -> Result<Vec<u8>> {
         let b = self.graphs.plan.buckets.iter().copied().find(|b| b.tokens == self.last.bucket_tokens)
             .context("no step has run")?;
-        self.executor(b, None)?.value(v)?.rows_view(0, rows)?.to_host_bytes(&self.stream)
+        let logical = StepShape {
+            tokens: self.last.logical_tokens,
+            answers: self.last.logical_answers,
+            segments: self.last.logical_segments,
+        };
+        let execution = StepShape {
+            tokens: self.last.execution_tokens,
+            answers: self.last.execution_answers,
+            segments: self.last.execution_segments,
+        };
+        let logical_rows = self.fwd.graph.spec(v).concrete(&logical).first().copied().unwrap_or(1);
+        ensure!(rows <= logical_rows, "read of {rows} rows from value {} exceeds last step's logical bound {logical_rows}", v.0);
+        self.executor(b, execution, None)?.value(v)?.rows_view(0, rows)?.to_host_bytes(&self.stream)
+    }
+
+    /// Requested GEMM row dimensions of the last sub-step. This is the host launch shape trace, not measured
+    /// hardware FLOPs.
+    pub fn last_gemm_requests(&self) -> Result<Vec<GemmRequest>> {
+        let b = self.graphs.plan.buckets.iter().copied().find(|b| b.tokens == self.last.bucket_tokens)
+            .context("no step has run")?;
+        let execution = StepShape {
+            tokens: self.last.execution_tokens,
+            answers: self.last.execution_answers,
+            segments: self.last.execution_segments,
+        };
+        Ok(self.executor(b, execution, None)?.gemm_requests())
     }
 
     /// A tap of the last step as f32, `[rows, hidden]`.
@@ -339,9 +504,10 @@ impl GpuEngine {
     /// Run `batch` eagerly in bucket `b` with a CUDA-event mark per op; returns `(label, ms, launches)` per op
     /// class and the forward's total ms.
     pub fn profile(&mut self, batch: &DecisionBatch, b: Bucket) -> Result<(Vec<(String, f64, usize)>, f64)> {
-        self.stage(batch, b)?;
+        let shape = self.execution_shape(batch, b);
+        self.stage(batch, b, shape)?;
         let prof = Profiler::new(&self.ctx);
-        self.executor(b, Some(&prof))?.run_eager(&self.stream)?;
+        self.executor(b, shape, Some(&prof))?.run_eager(&self.stream)?;
         self.stream.synchronize()?;
         prof.summary()
     }
@@ -407,7 +573,19 @@ impl DecisionEngine for GpuEngine {
     }
 
     fn info(&self) -> Vec<(&'static str, String)> {
-        vec![("engine", "bf16".into()), ("gdn_backend", self.gdn_backend().name().into()), ("arch", self.arch.clone())]
+        let graph_policy = match (self.opts.execution_mode, self.opts.cuda_graphs) {
+            (ExecutionMode::ExactEager, _) => "never",
+            (ExecutionMode::Bucketed, true) => "enabled",
+            (ExecutionMode::Bucketed, false) => "disabled",
+        };
+        vec![
+            ("engine", "bf16".into()),
+            ("execution_mode", self.opts.execution_mode.name(self.opts.cuda_graphs).into()),
+            ("cuda_graphs", graph_policy.into()),
+            ("warmup_policy", self.opts.warmup_policy().into()),
+            ("gdn_backend", self.gdn_backend().name().into()),
+            ("arch", self.arch.clone()),
+        ]
     }
 
     fn run(&mut self, batch: &DecisionBatch) -> Result<SlotLogits> {
@@ -446,6 +624,103 @@ mod tests {
         assert_eq!(parse_gdn_backend("tile").unwrap(), Some(GdnBackend::Tile));
         assert_eq!(parse_gdn_backend("simt").unwrap(), Some(GdnBackend::Simt));
         assert!(parse_gdn_backend("SIMT").is_err());
+        assert_eq!(ExecutionMode::Bucketed.name(true), "bucket_graph");
+        assert_eq!(ExecutionMode::Bucketed.name(false), "bucket_eager");
+        assert_eq!(ExecutionMode::ExactEager.name(true), "exact_eager");
+    }
+
+    #[test]
+    fn exact_invalid_options_fail_before_even_opening_model_or_cuda() {
+        for backend in [None, Some(GdnBackend::Tile), Some(GdnBackend::Simt)] {
+            let opts = EngineOptions { execution_mode: ExecutionMode::ExactEager, cuda_graphs: true,
+                gdn_backend: backend, ..Default::default() };
+            let err = GpuEngine::load(Path::new("nonexistent-model"), &[1, 2], opts).err().unwrap();
+            assert_eq!(err.to_string(), "exact eager mode must not enable CUDA graphs");
+        }
+        let opts = EngineOptions { execution_mode: ExecutionMode::ExactEager, cuda_graphs: false,
+            gdn_backend: Some(GdnBackend::Simt), ..Default::default() };
+        let err = GpuEngine::load(Path::new("nonexistent-model"), &[1, 2], opts).err().unwrap();
+        assert_eq!(err.to_string(), "exact eager mode supports only the Tile GDN backend");
+    }
+
+    #[test]
+    fn exact_auto_backend_is_checked_after_arch_resolution() {
+        let mut opts = EngineOptions { execution_mode: ExecutionMode::ExactEager, cuda_graphs: false,
+            ..Default::default() };
+        opts.validate_bounded_exact_warmup().unwrap();
+        opts.validate_execution(opts.gdn_backend).unwrap();
+        assert_eq!(opts.resolve_gdn_backend(12, 0).unwrap(), (GdnBackend::Tile, "default for this architecture"));
+        assert_eq!(opts.resolve_gdn_backend(12, 1).unwrap_err().to_string(),
+            "exact eager mode supports only the Tile GDN backend");
+        opts.gdn_backend = Some(GdnBackend::Tile);
+        assert_eq!(opts.resolve_gdn_backend(12, 1).unwrap(), (GdnBackend::Tile, "requested"));
+        opts.bounded_exact_warmup = true;
+        opts.gdn_backend = None;
+        assert_eq!(opts.validate_bounded_exact_warmup().unwrap_err().to_string(),
+            "bounded exact warmup requires explicit Tile GDN backend");
+    }
+
+    #[test]
+    fn legacy_engine_defaults_remain_unchanged() {
+        let opts = EngineOptions::default();
+        assert_eq!(opts.buckets, vec![256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536]);
+        assert_eq!((opts.max_answers, opts.max_segments, opts.max_prefixes), (2048, 2048, 256));
+        assert_eq!(opts.execution_mode, ExecutionMode::Bucketed);
+        assert!(opts.cuda_graphs && opts.warmup && !opts.bounded_exact_warmup);
+        assert_eq!(opts.gdn_backend, None);
+        assert!(opts.debug_permute_hidden.is_none() && opts.taps.layers.is_empty()
+            && !opts.taps.norm && !opts.taps.sublayers);
+        assert_eq!(opts.warmup_policy(), "standard");
+        opts.validate_bounded_exact_warmup().unwrap();
+        opts.validate_execution(opts.gdn_backend).unwrap();
+        assert_eq!(opts.resolve_gdn_backend(12, 0).unwrap().0, GdnBackend::Tile);
+        assert_eq!(opts.resolve_gdn_backend(12, 1).unwrap().0, GdnBackend::Simt);
+        for backend in GdnBackend::ALL {
+            let explicit = EngineOptions { gdn_backend: Some(backend), ..opts.clone() };
+            explicit.validate_execution(explicit.gdn_backend).unwrap();
+            assert_eq!(explicit.resolve_gdn_backend(12, 0).unwrap(), (backend, "requested"));
+        }
+    }
+
+    fn bounded_options() -> EngineOptions {
+        EngineOptions { bounded_exact_warmup: true, execution_mode: ExecutionMode::ExactEager,
+            cuda_graphs: false, gdn_backend: Some(GdnBackend::Tile), ..Default::default() }
+    }
+
+    #[test]
+    fn bounded_configuration_is_opt_in_and_rejects_contradictions() {
+        assert!(!EngineOptions::default().bounded_exact_warmup);
+        assert_eq!(EngineOptions::default().warmup_policy(), "standard");
+        bounded_options().validate_bounded_exact_warmup().unwrap();
+        let mut bad = Vec::new();
+        let mut o = bounded_options(); o.warmup = false; bad.push(o);
+        let mut o = bounded_options(); o.cuda_graphs = true; bad.push(o);
+        let mut o = bounded_options(); o.execution_mode = ExecutionMode::Bucketed; bad.push(o);
+        let mut o = bounded_options(); o.gdn_backend = None; bad.push(o);
+        let mut o = bounded_options(); o.gdn_backend = Some(GdnBackend::Simt); bad.push(o);
+        let mut o = bounded_options(); o.taps.norm = true; bad.push(o);
+        let mut o = bounded_options(); o.debug_permute_hidden = Some(1); bad.push(o);
+        for o in bad { assert!(o.validate_bounded_exact_warmup().is_err(), "{o:?}"); }
+    }
+
+    #[test]
+    fn bounded_capacity_must_cover_standard_and_full_lattice_not_shrink() {
+        let mut good = bounded_options();
+        good.buckets = vec![100]; good.max_answers = 16; good.max_segments = 17; good.max_prefixes = 1;
+        good.validate_bounded_exact_warmup().unwrap();
+        for dim in 0..4 {
+            let mut bad = good.clone();
+            match dim { 0 => bad.buckets = vec![80], 1 => bad.max_answers = 15,
+                2 => bad.max_segments = 16, _ => bad.max_prefixes = 0 }
+            assert!(bad.validate_bounded_exact_warmup().is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn bounded_invalid_options_fail_before_even_opening_model_or_cuda() {
+        let mut o = bounded_options(); o.warmup = false;
+        let err = GpuEngine::load(Path::new("nonexistent-model"), &[1,2], o).err().unwrap();
+        assert!(err.to_string().contains("requires warmup=true"));
     }
 
     #[test]

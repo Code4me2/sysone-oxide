@@ -25,4 +25,5 @@ pub mod loader;
 pub mod meta;
 pub mod platform;
 pub mod weights;
+pub mod warmup;
 pub mod cpu_ref;

@@ -128,12 +128,14 @@ impl TileKernels {
     /// previous step must have completed (the work list's pinned staging is reused). Fails, before anything
     /// runs, when the batch has more prefixes than the GDN scratch has state slots: a replayed scan would
     /// otherwise write past the state buffer (`GdnPlan::update` does not check the scratch).
-    pub fn update(&mut self, b: Bucket, batch: &DecisionBatch, stream: &Arc<Stream>) -> Result<()> {
+    pub fn update(&mut self, b: Bucket, batch: &DecisionBatch, logical_tokens: usize, stream: &Arc<Stream>) -> Result<()> {
         let slots = self.scratch.slots;
         let st = self.buckets.get_mut(&b).with_context(|| format!("bucket {b:?} not prepared"))?;
+        ensure!(batch.num_tokens() <= logical_tokens && logical_tokens <= b.tokens,
+                "batch/logical/capacity tokens are {}/{logical_tokens}/{}", batch.num_tokens(), b.tokens);
         let prefixes = batch.segments.iter().filter(|s| s.is_prefix()).count();
         ensure!(prefixes <= slots, "batch has {prefixes} prefixes; the GDN scratch holds {slots} prefix states");
-        st.gdn.update(&batch.segments, stream)?;
+        st.gdn.update_for_tokens(&batch.segments, logical_tokens, stream)?;
         ensure!(st.gdn.num_prefixes <= slots, "GDN plan has {} prefixes for {slots} state slots", st.gdn.num_prefixes);
         let mut plan = AttnPlan::new(&batch.segments, self.attn_tiles.bm);
         ensure!(plan.num_items() <= st.attn_items, "{} attention items over the bucket's {}", plan.num_items(),

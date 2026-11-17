@@ -36,15 +36,15 @@ use tensor::{DevBuf, DevTensor, GraphDType};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Dim {
     Fixed(usize),
-    /// Packed tokens of the bucket (including padding).
+    /// Packed token rows (capacity while planning, requested rows while executing).
     Tokens,
-    /// Answer rows of the bucket.
+    /// Answer rows (capacity while planning, requested rows while executing).
     Answers,
-    /// Segment slots of the bucket (including the padding segment).
+    /// Segment slots (currently capacity metadata; available for symbolic graph values).
     Segments,
 }
 
-/// The capacities one captured graph is planned for.
+/// The capacities one captured graph or eager arena plan is allocated for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Bucket {
     pub tokens: usize,
@@ -53,6 +53,21 @@ pub struct Bucket {
 }
 
 impl Bucket {
+    pub fn shape(self) -> StepShape {
+        StepShape { tokens: self.tokens, answers: self.answers, segments: self.segments }
+    }
+}
+
+/// Logical dimensions requested by one execution. They may be smaller than the selected [`Bucket`], while all
+/// storage offsets and allocation spans remain those of the capacity plan.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct StepShape {
+    pub tokens: usize,
+    pub answers: usize,
+    pub segments: usize,
+}
+
+impl StepShape {
     pub fn dim(&self, d: Dim) -> usize {
         match d {
             Dim::Fixed(n) => n,
@@ -60,6 +75,10 @@ impl Bucket {
             Dim::Answers => self.answers,
             Dim::Segments => self.segments,
         }
+    }
+
+    pub fn fits(self, capacity: Bucket) -> bool {
+        self.tokens <= capacity.tokens && self.answers <= capacity.answers && self.segments <= capacity.segments
     }
 }
 
@@ -111,12 +130,12 @@ impl TensorSpec {
         Self { dtype, shape }
     }
 
-    pub fn concrete(&self, b: &Bucket) -> Vec<usize> {
-        self.shape.iter().map(|d| b.dim(*d)).collect()
+    pub fn concrete(&self, shape: &StepShape) -> Vec<usize> {
+        self.shape.iter().map(|d| shape.dim(*d)).collect()
     }
 
-    pub fn bytes(&self, b: &Bucket) -> usize {
-        self.concrete(b).iter().product::<usize>() * self.dtype.size_in_bytes()
+    pub fn bytes(&self, shape: &StepShape) -> usize {
+        self.concrete(shape).iter().product::<usize>() * self.dtype.size_in_bytes()
     }
 }
 
@@ -409,8 +428,12 @@ pub struct PoolPlan {
     pub bucket: Bucket,
     /// Byte offset of each value's storage in the arena.
     pub offsets: Vec<usize>,
+    /// Storage root of each value (views and in-place residual outputs alias another value's root).
+    pub roots: Vec<usize>,
+    /// Capacity allocation span of each value's storage root, including arena alignment.
+    pub storage_bytes: Vec<usize>,
     pub arena_bytes: usize,
-    /// Sum of all value sizes (what allocating every value separately would cost).
+    /// Sum of all root allocation sizes (what allocating every produced value separately would cost).
     pub naive_bytes: usize,
 }
 
@@ -448,8 +471,8 @@ impl StepGraph {
                 ensure!(!defined[out.0], "op {i}: view target {} already defined", out.0);
                 let (a, b) = (self.spec(*input), self.spec(*out));
                 ensure!(a.dtype == b.dtype, "op {i}: view changes dtype");
-                let big = Bucket { tokens: 1 << 16, answers: 1 << 12, segments: 1 << 10 };
-                let small = Bucket { tokens: 3, answers: 2, segments: 5 };
+                let big = StepShape { tokens: 1 << 16, answers: 1 << 12, segments: 1 << 10 };
+                let small = StepShape { tokens: 3, answers: 2, segments: 5 };
                 ensure!(a.bytes(&big) == b.bytes(&big) && a.bytes(&small) == b.bytes(&small),
                         "op {i}: view {:?} -> {:?} changes size", a.shape, b.shape);
                 defined[out.0] = true;
@@ -508,7 +531,8 @@ impl StepGraph {
         for o in &self.outputs {
             last_use[root[o.0]] = Some(end);
         }
-        let size = |v: usize| self.specs[v].bytes(&bucket).div_ceil(ARENA_ALIGN) * ARENA_ALIGN;
+        let capacity = bucket.shape();
+        let size = |v: usize| self.specs[v].bytes(&capacity).div_ceil(ARENA_ALIGN) * ARENA_ALIGN;
         let mut offsets = vec![usize::MAX; n];
         let mut free: Vec<(usize, usize)> = Vec::new(); // (offset, len), sorted by offset
         let mut top = 0usize;
@@ -558,7 +582,36 @@ impl StepGraph {
             }
         }
         let offsets = (0..n).map(|v| offsets[root[v]]).collect::<Vec<_>>();
-        Ok(PoolPlan { bucket, offsets, arena_bytes: top, naive_bytes: naive })
+        let storage_bytes = (0..n).map(|v| size(root[v]).max(ARENA_ALIGN)).collect::<Vec<_>>();
+        let plan = PoolPlan { bucket, offsets, roots: root, storage_bytes, arena_bytes: top, naive_bytes: naive };
+        plan.validate_shape(self, capacity)?;
+        Ok(plan)
+    }
+}
+
+impl PoolPlan {
+    /// Validate a logical execution shape against this capacity plan, including every value/root allocation span
+    /// and alias. This prevents a smaller logical view from being accepted merely because it remains inside the
+    /// arena while spilling into another live value's capacity allocation.
+    pub fn validate_shape(&self, graph: &StepGraph, shape: StepShape) -> Result<()> {
+        ensure!(shape.fits(self.bucket), "logical shape {shape:?} exceeds capacity {:?}", self.bucket);
+        let n = graph.specs.len();
+        ensure!(self.offsets.len() == n && self.roots.len() == n && self.storage_bytes.len() == n,
+                "pool plan has inconsistent value tables");
+        let capacity = self.bucket.shape();
+        for v in 0..n {
+            let r = self.roots[v];
+            ensure!(r < n && self.roots[r] == r, "value {v} has invalid storage root {r}");
+            ensure!(self.offsets[v] == self.offsets[r] && self.storage_bytes[v] == self.storage_bytes[r],
+                    "value {v} does not preserve root {r}'s offset/span");
+            ensure!(graph.specs[v].bytes(&capacity) <= self.storage_bytes[v],
+                    "value {v}'s capacity view exceeds its {}-byte storage span", self.storage_bytes[v]);
+            ensure!(graph.specs[v].bytes(&shape) <= self.storage_bytes[v],
+                    "value {v}'s logical view exceeds its {}-byte storage span", self.storage_bytes[v]);
+            ensure!(self.offsets[v] + self.storage_bytes[v] <= self.arena_bytes,
+                    "value {v}'s root storage exceeds the {}-byte arena", self.arena_bytes);
+        }
+        Ok(())
     }
 }
 
@@ -624,7 +677,10 @@ pub struct Launch<'a> {
     /// The cuda-async execution context to launch on (`unsafe { op.execute(cx.exec) }` for cuTile ops).
     pub exec: &'a ExecutionContext,
     pub stream: &'a Arc<Stream>,
+    /// Selected allocation/table capacity class.
     pub bucket: Bucket,
+    /// Logical dimensions launched by dense operations in this step.
+    pub shape: StepShape,
     /// Batch metadata (segments, positions, answer rows) for kernels that are segment-aware.
     pub meta: &'a DeviceMeta,
     pub cfg: Option<&'a ModelConfig>,
@@ -729,10 +785,21 @@ impl Kernels for NoKernels {}
 /// Embedding gather block (elements per CTA along hidden); grout's tuned value.
 pub const EMBED_BLOCK: usize = 1024;
 
+/// One requested GEMM row dimension in graph order (a host-side trace, not a hardware FLOP estimate).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GemmRequest {
+    pub op_index: usize,
+    pub label: String,
+    pub rows: usize,
+    pub row_kind: &'static str,
+}
+
 /// Runs a [`StepGraph`] over a planned arena.
 pub struct Executor<'a> {
     pub graph: &'a StepGraph,
     pub plan: &'a PoolPlan,
+    /// Logical dimensions for this execution; storage remains `plan.bucket`-sized.
+    pub shape: StepShape,
     /// The arena (at least `plan.arena_bytes`).
     pub arena: &'a Arc<DevBuf>,
     pub weights: &'a dyn WeightStore,
@@ -745,12 +812,35 @@ pub struct Executor<'a> {
 }
 
 impl<'a> Executor<'a> {
-    /// The arena view of value `v` for this bucket.
+    /// The logical arena view of value `v`, bounded by its capacity-planned root span.
     pub fn value(&self, v: ValueId) -> Result<DevTensor> {
         let spec = self.graph.spec(v);
         let off = self.plan.offsets[v.0];
         ensure!(off != usize::MAX, "value {} has no storage", v.0);
-        DevTensor::new(self.arena.clone(), off, spec.dtype, spec.concrete(&self.plan.bucket))
+        let shape = spec.concrete(&self.shape);
+        let bytes = shape.iter().product::<usize>() * spec.dtype.size_in_bytes();
+        ensure!(bytes <= self.plan.storage_bytes[v.0], "value {} logical view is {bytes} bytes over its {}-byte root span",
+                v.0, self.plan.storage_bytes[v.0]);
+        DevTensor::new(self.arena.clone(), off, spec.dtype, shape)
+    }
+
+    /// Requested row dimensions of every GEMM in graph order for this logical execution.
+    pub fn gemm_requests(&self) -> Vec<GemmRequest> {
+        self.graph.ops.iter().enumerate().filter_map(|(op_index, op)| {
+            let out = match op {
+                GraphOp::Gemm { out, .. } | GraphOp::GemmNvfp4 { out, .. } => *out,
+                _ => return None,
+            };
+            let spec = self.graph.spec(out);
+            let rows = spec.concrete(&self.shape).first().copied().unwrap_or(1);
+            let row_kind = match spec.shape.first() {
+                Some(Dim::Tokens) => "tokens",
+                Some(Dim::Answers) => "answers",
+                Some(Dim::Segments) => "segments",
+                _ => "fixed",
+            };
+            Some(GemmRequest { op_index, label: op.profile_label(), rows, row_kind })
+        }).collect()
     }
 
     fn resolve(&self, r: TensorRef) -> Result<DevTensor> {
@@ -764,10 +854,12 @@ impl<'a> Executor<'a> {
     pub fn run(&self, exec: &ExecutionContext) -> Result<()> {
         ensure!(self.arena.bytes() >= self.plan.arena_bytes, "arena of {} bytes for a {}-byte plan", self.arena.bytes(),
                 self.plan.arena_bytes);
+        self.plan.validate_shape(self.graph, self.shape)?;
         let cx = Launch {
             exec,
             stream: exec.get_cuda_stream(),
             bucket: self.plan.bucket,
+            shape: self.shape,
             meta: self.meta,
             cfg: self.cfg,
             weights: self.weights,
@@ -1008,7 +1100,7 @@ mod tests {
         assert_eq!(p.offsets[2], p.offsets[0]);
         assert!(p.arena_bytes < p.naive_bytes, "{} vs {}", p.arena_bytes, p.naive_bytes);
         // Live ranges never overlap in memory: check every pair of values live at the same op.
-        let sz = |v: usize| g.specs[v].bytes(&b);
+        let sz = |v: usize| g.specs[v].bytes(&b.shape());
         for (i, op) in g.ops.iter().enumerate() {
             let live: Vec<usize> = op.inputs().into_iter().chain(op.outputs()).map(|v| v.0).collect();
             for &a in &live {
@@ -1047,7 +1139,28 @@ mod tests {
         g.outputs.push(c);
         let p = g.plan(Bucket { tokens: 10, answers: 1, segments: 2 }).unwrap();
         assert_eq!(p.offsets[a.0], p.offsets[b.0]);
+        assert_eq!(p.roots[a.0], p.roots[b.0]);
+        assert_eq!(p.storage_bytes[a.0], p.storage_bytes[b.0]);
         assert_ne!(p.offsets[c.0], p.offsets[a.0]);
+        p.validate_shape(&g, StepShape { tokens: 3, answers: 1, segments: 1 }).unwrap();
+        assert!(p.validate_shape(&g, StepShape { tokens: 11, answers: 1, segments: 1 }).is_err());
+    }
+
+    #[test]
+    fn logical_shapes_keep_capacity_spans_and_gemm_rows() {
+        let g = chain();
+        let p = g.plan(Bucket { tokens: 256, answers: 64, segments: 65 }).unwrap();
+        let exact = StepShape { tokens: 129, answers: 7, segments: 9 };
+        p.validate_shape(&g, exact).unwrap();
+        for v in 0..g.specs.len() {
+            assert!(g.specs[v].bytes(&exact) <= p.storage_bytes[v]);
+            assert!(p.offsets[v] + p.storage_bytes[v] <= p.arena_bytes);
+        }
+        let rows: Vec<usize> = g.ops.iter().filter_map(|op| match op {
+            GraphOp::Gemm { out, .. } => Some(g.spec(*out).concrete(&exact)[0]),
+            _ => None,
+        }).collect();
+        assert_eq!(rows, [129, 129, 129]);
     }
 
     #[test]
