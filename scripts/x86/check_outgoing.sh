@@ -205,10 +205,26 @@ done <<< "$paths"
 
 # Every blob the push would upload (objects of mb..HEAD not reachable from mb), plus staged blobs: size and binary.
 check_blob() {   # check_blob OBJECT SIZE PATH
-    [ "$2" -le "$MAX_BYTES" ] || report "$3: file over 1 MB ($2 bytes) in the branch history"
-    if [ "$2" -gt 0 ] && ! git cat-file blob "$1" | head -c 8000 | grep -qI .; then
-        report "$3: binary file (results must be small text/JSON)"
+    [ "$2" -le "$MAX_BYTES" ] || { report "$3: file over 1 MB ($2 bytes) in the branch history"; return; }
+    local blob_file status nul_prefix
+    if ! blob_file=$(mktemp); then
+        report "$3: could not create temporary blob file"
+        return
     fi
+    # Materialize the bounded blob: head/grep in a pipe can SIGPIPE git under pipefail, even for valid text.
+    if ! git cat-file blob "$1" > "$blob_file"; then
+        report "$3: could not read blob"
+    else
+        grep -I . "$blob_file" >/dev/null
+        status=$?
+        if [ "$status" -gt 1 ]; then
+            report "$3: could not inspect blob"
+        # grep can match an early line before a later NUL. Check every bounded byte, not just the first 8 KiB.
+        elif { [ "$2" -gt 0 ] && [ "$status" -ne 0 ]; } || IFS= read -r -d '' nul_prefix < "$blob_file"; then
+            report "$3: binary file (results must be small text/JSON)"
+        fi
+    fi
+    rm -f -- "$blob_file" || report "$3: could not remove temporary blob file"
 }
 while read -r obj type size path; do
     [ "$type" = blob ] && check_blob "$obj" "$size" "$path"

@@ -110,6 +110,61 @@ expect pass "versions and floats are not IPs or serials"
 new_repo; add benchmarks/results/x86/c/ok.txt 'Co-Authored-By: Claude <noreply@anthropic.com>, 123+x@users.noreply.github.com'
 expect pass "noreply e-mails allowed"
 
+# Exactly 1 MiB, well above both the old 8 KiB sample and typical pipe capacity.
+# Two-byte glyphs exercise ASCII and valid UTF-8 with identical byte counts.
+large_text() {
+    awk -v glyph="$2" -v lines="${3:-8192}" 'BEGIN {
+        line = ""; for (j = 0; j < 63; j++) line = line glyph
+        for (i = 0; i < lines; i++) print line "a"
+    }' > "$1"
+}
+for glyph in aa "$(printf '\303\251')"; do
+    new_repo
+    large_text benchmarks/results/x86/text.txt "$glyph"
+    g add -A
+    expect pass "staged 1 MiB text ($glyph)"
+    g commit -qm text
+    expect pass "committed 1 MiB text ($glyph)"
+done
+
+new_repo; : > benchmarks/results/x86/empty.txt; g add -A
+expect pass "staged empty blob"
+g commit -qm empty
+expect pass "committed empty blob"
+
+new_repo; printf '\0plain text\n' > benchmarks/results/x86/nul.dat; g add -A
+reason='binary file'; expect fail "staged NUL binary"
+g commit -qm binary
+reason='binary file'; expect fail "committed NUL binary"
+
+# Earlier matching lines must not hide a NUL beyond both 8 KiB and grep's input buffer.
+new_repo; large_text benchmarks/results/x86/late.dat aa 2048
+printf '\0tail\n' >> benchmarks/results/x86/late.dat; g add -A
+reason='binary file'; expect fail "staged late NUL binary"
+g commit -qm binary
+reason='binary file'; expect fail "committed late NUL binary"
+g rm -q benchmarks/results/x86/late.dat; g commit -qm remove
+reason='binary file'; expect fail "late NUL binary added, then deleted"
+
+new_repo; large_text benchmarks/results/x86/oversize.txt aa
+printf 'a' >> benchmarks/results/x86/oversize.txt; g add -A
+reason='over 1 MB'; expect fail "staged text one byte over 1 MiB"
+g commit -qm oversize
+reason='over 1 MB'; expect fail "committed text one byte over 1 MiB"
+
+# Inject only a blob-content read failure; metadata and all other git operations still work.
+new_repo; printf 'text\n' > benchmarks/results/x86/read.txt; g add -A
+# Exported shell functions are inherited by the checker, confined to this throw-away test process.
+git() {
+    if [ "${1:-}" = cat-file ] && [ "${2:-}" = blob ]; then return 1; fi
+    command git "$@"
+}
+export -f git
+reason='could not read blob'; expect fail "staged blob read failure fails closed"
+g commit -qm text
+reason='could not read blob'; expect fail "committed blob read failure fails closed"
+unset -f git
+
 new_repo; head -c 2000 /dev/urandom > benchmarks/results/x86/blob.dat; g add -A; g commit -qm blob
 expect fail "binary file"
 new_repo; mkdir -p benchmarks/results/x86; yes 'a line of text' | head -c 1100000 > benchmarks/results/x86/big.txt; g add -A; g commit -qm big
