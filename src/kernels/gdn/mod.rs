@@ -56,9 +56,10 @@
 
 pub mod simt;
 pub mod tile;
+mod upload;
 
 use crate::contract::Segment;
-use anyhow::{Result, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use cutile::cuda_core::Stream;
 use cuda_core::PinnedHostBuffer;
 use cutile::half::bf16;
@@ -66,6 +67,7 @@ use cutile::prelude::*;
 use cuda_async::device_buffer::DevicePointer;
 use cutile::tile_kernel::CompileOptions;
 use tile::gdn_tile;
+use upload::UploadState;
 
 /// Chunk length of the chunked delta rule (`torch_chunk_gated_delta_rule`'s default, used by the reference).
 pub const CHUNK: usize = 64;
@@ -216,8 +218,19 @@ pub struct GdnPlan {
     /// the plan so that [`GdnScratch`] keeps its fields.
     qk_inv: Tensor<f32>,
     /// Fixed-capacity pinned table staging; updates never allocate a device buffer for an arbitrary logical T.
-    chunks_host: PinnedHostBuffer<i32>,
-    segs_host: PinnedHostBuffer<i32>,
+    chunks_host: Arc<PinnedHostBuffer<i32>>,
+    segs_host: Arc<PinnedHostBuffer<i32>>,
+    upload_state: UploadState<UploadLease>,
+}
+
+/// Actual transfer owners, retained until positive completion (including constructor error/unwind).
+/// Tensor aliases retain the same allocation; they are only lifetime guards, never separate kernel inputs.
+struct UploadLease {
+    chunks: Arc<Tensor<i32>>,
+    segs: Arc<Tensor<i32>>,
+    chunks_host: Arc<PinnedHostBuffer<i32>>,
+    segs_host: Arc<PinnedHostBuffer<i32>>,
+    stream: Arc<Stream>, // Stream owns its context as well.
 }
 
 /// Host-side tables of a [`GdnPlan`] (see `tile.rs` for the layouts).
@@ -301,8 +314,8 @@ impl GdnPlan {
         let chunks = api::zeros::<i32>(&[max_chunks * 4]).sync_on(stream)?;
         let segs = api::zeros::<i32>(&[max_segs * 4]).sync_on(stream)?;
         let qk_inv = api::zeros::<f32>(&[tokens, 2 * NUM_K_HEADS]).sync_on(stream)?;
-        let chunks_host = PinnedHostBuffer::zeroed(stream.context(), max_chunks * 4)?;
-        let segs_host = PinnedHostBuffer::zeroed(stream.context(), max_segs * 4)?;
+        let chunks_host = Arc::new(PinnedHostBuffer::zeroed(stream.context(), max_chunks * 4)?);
+        let segs_host = Arc::new(PinnedHostBuffer::zeroed(stream.context(), max_segs * 4)?);
         let mut plan = Self {
             tokens,
             token_capacity: tokens,
@@ -314,43 +327,60 @@ impl GdnPlan {
             qk_inv,
             chunks_host,
             segs_host,
+            upload_state: UploadState::default(),
         };
         plan.upload_tables(&t, stream)?;
         Ok(plan)
     }
 
-    // Reuses owned pinned sources and waits for both copies on success. Requires the original table capacities,
-    // the allocation's context, and no unordered table users or earlier pending uploads of these host buffers.
-    // An error is not rollback or proof of completion: a copy may already be queued when `?` returns.
+    // Same pinned addresses/capacities, chunks then segs then one sync on success. Readiness and
+    // unique host ownership gate ALL staging writes. Submission errors drain but always poison the plan;
+    // failed completion/unwind retains both sources, both destinations and stream/context via the lease.
     fn upload_tables(&mut self, tables: &GdnTables, stream: &Arc<Stream>) -> Result<()> {
-        self.chunks_host.as_mut_slice().copy_from_slice(&tables.chunks);
-        self.segs_host.as_mut_slice().copy_from_slice(&tables.segs);
-        stream.context().bind_to_thread()?;
-        // SAFETY requirements: destinations have the matching table byte capacities in this stream's context;
-        // pinned sources remain alive and unchanged until transfer completion. Binding makes the stream's
-        // context current, but does not check allocation identity. The synchronization below covers success,
-        // not early copy errors; callers must not infer that an Err permits immediate reuse/drop.
-        unsafe {
-            cuda_core::memory::memcpy_htod_async(
-                self.chunks.device_pointer().cu_deviceptr(),
-                self.chunks_host.as_ptr(),
-                self.chunks_host.as_slice().len() * size_of::<i32>(),
-                stream.cu_stream(),
-            )?;
-            cuda_core::memory::memcpy_htod_async(
-                self.segs.device_pointer().cu_deviceptr(),
-                self.segs_host.as_ptr(),
-                self.segs_host.as_slice().len() * size_of::<i32>(),
-                stream.cu_stream(),
-            )?;
-        }
-        stream.synchronize()?;
-        Ok(())
+        self.upload_state.upload(
+            || {
+                stream.context().bind_to_thread()?;
+                let chunks_host = Arc::get_mut(&mut self.chunks_host)
+                    .context("GDN chunks staging is still leased")?;
+                let segs_host = Arc::get_mut(&mut self.segs_host)
+                    .context("GDN segs staging is still leased")?;
+                chunks_host.as_mut_slice().copy_from_slice(&tables.chunks);
+                segs_host.as_mut_slice().copy_from_slice(&tables.segs);
+                // SAFETY: pinned cuda-rust's into_shared_alias clones StorageHandle (the actual
+                // allocation), not data/lazy math. These private aliases only retain ownership;
+                // they never introduce a second kernel access. Existing table-user ordering applies.
+                let (chunks, segs) = unsafe {
+                    (self.chunks.into_shared_alias(), self.segs.into_shared_alias())
+                };
+                Ok(UploadLease { chunks, segs, chunks_host: self.chunks_host.clone(),
+                    segs_host: self.segs_host.clone(), stream: stream.clone() })
+            },
+            // SAFETY requirements: original destination capacities and allocation context must match.
+            // The armed lease enforces source/destination lifetime and no staging mutation through
+            // positive completion, or quarantines all owners if completion cannot be proved.
+            |lease| unsafe {
+                cuda_core::memory::memcpy_htod_async(
+                    lease.chunks.device_pointer().cu_deviceptr(),
+                    lease.chunks_host.as_ptr(),
+                    lease.chunks_host.as_slice().len() * size_of::<i32>(),
+                    lease.stream.cu_stream(),
+                ).context("GDN chunks table upload")
+            },
+            |lease| unsafe {
+                cuda_core::memory::memcpy_htod_async(
+                    lease.segs.device_pointer().cu_deviceptr(),
+                    lease.segs_host.as_ptr(),
+                    lease.segs_host.as_slice().len() * size_of::<i32>(),
+                    lease.stream.cu_stream(),
+                ).context("GDN segs table upload")
+            },
+            |lease| lease.stream.synchronize().context("GDN table upload completion"),
+        )
     }
 
     /// Rewrite the tables in place for another batch with the same capacities (for graph replay).
     /// Use the allocation's context, preserve public capacity fields, and order prior table users before this
-    /// update (same stream or explicit completion/dependencies). No outstanding-operation tracking is performed.
+    /// update (same stream or explicit completion/dependencies). Prior kernel/graph users are not tracked.
     ///
     /// The launchers check `num_prefixes <= scratch.slots` when they build their operations, which a replayed graph
     /// does not repeat: size the scratch of a captured mixer with [`GdnScratch::for_plan`] (one slot per segment the
@@ -365,9 +395,12 @@ impl GdnPlan {
     /// arguments in an already captured graph; exact eager execution launches with the current logical T.
     /// Checks `0 < tokens <= token_capacity` and table-builder constraints, not scratch/replay capacities or
     /// unchanged allocation metadata. The context/ordering requirements of [`Self::update`] still apply.
-    /// On success uploads are complete before counts change; on error tables may be partly updated and transfers
-    /// may remain in flight. Establish completion before retrying, dropping the plan or using its staging again.
+    /// On success uploads complete before counts change. A submission/completion error poisons further updates
+    /// (tables may be hybrid); replace the plan. Drop is safe for this upload even if completion is uncertain:
+    /// it conservatively quarantines one lease retaining both host buffers, table tensors and stream/context.
+    /// This exceptional retention also covers unwind; normal completed uploads release all lease owners.
     pub fn update_for_tokens(&mut self, segments: &[Segment], tokens: usize, stream: &Arc<Stream>) -> Result<()> {
+        self.upload_state.ensure_ready()?;
         ensure!(tokens > 0 && tokens <= self.token_capacity,
                 "logical GDN tokens {tokens} over capacity {}", self.token_capacity);
         let tables = GdnTables::build(segments, tokens, self.max_chunks, self.max_segs)?;

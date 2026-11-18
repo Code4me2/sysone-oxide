@@ -49,6 +49,11 @@ Cases cover T63/64/65/255/256/257/16384, Q1/2/16/64, interleaved restoration and
 requests. Observed logit/probability max and p99 differences and confident-choice flips were all zero;
 restorations were bit-identical. This is not a universal cross-mode bit-identity guarantee.
 
+That GPU run preceded the subsequent upload-error ownership fix. The fix passed an all-target build and
+28 focused CPU tests, including 10 fault-injection cases; no CUDA/model test was rerun afterward. Failed uploads
+poison the plan; if completion is uncertain, one lease retains its transfer resources for process lifetime rather
+than freeing or reusing them. Successful uploads release that lease after synchronization.
+
 Exact startup completed 1+25+25 calls with zero validation or checked post-ready installations and no captures.
 The unchanged gates are logit max/p99 0.2842/0.1201, probability max/p99 0.04241/0.01846, confident-choice margin
 0.02. This is synthetic correctness/state-isolation/JIT coverage, not throughput, HTTP capacity, held-out human
