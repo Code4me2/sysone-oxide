@@ -3,7 +3,7 @@
 This is a scoped BF16/Tile implementation, not a new default or deployment recommendation.
 See [architecture](../ARCHITECTURE.md) and [design](../DESIGN.md) for the unchanged request semantics.
 
-## Rebase provenance (not GPU requalification)
+## Rebase provenance
 
 The observations below are historical, from the pre-rebase heuristic-GEMM, untrimmed baseline. They are **not
 measurements or numerical requalification of this rebased tree**. The rebase inherits upstream L1/N1/C1/S2:
@@ -16,9 +16,40 @@ Capacity planning uses the same answer-density options as the engine. Thus T257/
 and the fixed warmup lattice needs at least T128/Q16 with default density (T100 has only Q13). Coverage itself
 is unchanged: 51 calls, no adaptive shrinking. Benchmark metadata records the inherited choices; profile GEMM
 rows come from current graph specs, not a historical assumption that only the readout uses Q. CPU checks cannot
-qualify these GPU interactions. A standalone production full-model boundary/isolation numerical regression suite
-remains a gap; fresh GPU fidelity, graph/default-path and startup qualification are required before promotion.
-No new performance claim is made here.
+qualify these GPU interactions. The targeted full-model check below now covers them on one card; historical
+throughput remains historical. No new performance claim or default promotion is made here.
+
+## Rebased targeted GPU correctness check
+
+The production implementation at `2597d9b` passed the ignored full-public-model test in
+`tests/engine_exact_gpu.rs` on one RTX PRO 6000 Blackwell Max-Q (compute capability 12.0). The test uses explicit
+BF16/Tile with upstream pinned GEMMs and last-layer trimming. Its CPU planning test runs without a model or GPU;
+the full-model test requires an explicitly supplied public model directory and a real held GPU lock.
+
+- Three sequential engines: exact eager first in a fresh process, bucket eager, then bucket graph.
+- Eighteen cases per mode: T63/64/65/255/256/257/16384, Q1/2/16/64, long/short and many/few interleaving,
+  packed AB/BA request reordering and restoration. Per-request active readout widths range from two to eight.
+- Seventy-two run records include graph capture and its second execution. Each mode covers 182 answer rows
+  and 833 active logits. All 60 comparisons pass: 54 per-case mode pairs, three aggregate pairs and three
+  independently remapped AB/BA comparisons. Observed logit and probability max/p99 differences were zero,
+  with zero confident-choice flips. This observation is not a blanket cross-mode bit-identity guarantee.
+- All 18 interleaved within-mode restorations are bit-identical. Graph replay is demonstrated for three
+  captured buckets; exact and bucket eager never replay. Graph-derived requested GEMM rows match logical versus
+  capacity dimensions, including trimmed answer rows; these are not hardware FLOP measurements.
+- Exact startup completes the fixed 51 calls (1 standard, 25 coverage, 25 validation), with zero validation
+  or post-ready installations and zero captures. The installation counter remains 76 over the checked cases.
+  Observed bounded warmup is 33.275 seconds; engine load through readiness is 35.300 seconds, excluding outer
+  orchestration. These timings do not establish throughput or universal startup performance.
+
+The unchanged gates are logit max/p99 0.2842/0.1201, probability max/p99 0.04241/0.01846 and confident-choice
+margin 0.02. Full active logit bits, independently reconstructed softmax bits, shapes, row traces and comparisons
+were reconciled from raw output and independently reviewed. The test process reports one passed, zero failed.
+
+This is a targeted synthetic correctness/state-isolation/JIT check, not a new throughput suite, HTTP capacity
+qualification, another-device result, held-out human-quality certification or a globally green Rust suite.
+An earlier launch was blocked before model execution by occupied-device safety checks; CPU preparation failures
+and timeouts were retained. The known scheduler failure below was not rerun. Private operational/raw artifacts
+are not included in this source PR.
 
 ## Configuration and API
 
@@ -94,9 +125,10 @@ The known scheduler test `sched::pool::tests::new_work_is_bounded_and_finishing_
 
 The GPU observations above refer to the qualified candidate before packaging hardening: diagnostic-only
 privacy edits, earlier option/backend rejection, create-only benchmark outputs, and fail-closed nonfinite-logit
-bit diagnostics. The packaged source was
-rebuilt and CPU-tested against the pinned dependency, without another GPU run. The committed toy-graph and
-ignored startup tests are not a self-contained full-model exact-versus-legacy numerical regression suite;
-production boundary/isolation comparisons came from the separate qualification harness.
+bit diagnostics. That packaged source was
+rebuilt and CPU-tested against the pinned dependency. Its original toy-graph and ignored startup tests alone
+were not a self-contained full-model differential suite; historical production comparisons came from a separate
+harness. The subsequently rebased implementation now has the standalone targeted check described above,
+without rerunning or reattributing the historical throughput program.
 
 No default promotion, persistent deployment, publication, or additional GPU work is implied.
