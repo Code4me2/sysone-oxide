@@ -5,7 +5,7 @@
 //! 1. pick the smallest bucket that fits the batch's tokens, answers and segments;
 //! 2. pack the batch metadata into a pinned host slot and upload it; rewrite the kernels' segment tables and
 //!    attention work list for the bucket ([`TileKernels::update`]);
-//! 3. in legacy mode, replay the bucket's CUDA graph or run bucket-sized eager work; in exact eager mode, run
+//! 3. in bucketed mode, replay the bucket's CUDA graph or run bucket-sized eager work; in exact eager mode, run
 //!    actual logical T/Q rows over the bucket's capacity-backed arena and never capture/replay;
 //! 4. copy the `[Q, n_slots]` f32 slot logits into a persistent, pre-touched pinned host buffer (PLATFORM P3)
 //!    and return them.
@@ -32,7 +32,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
-/// Dense row execution policy. The default preserves the existing bucket-sized graph/eager behavior.
+/// Dense row execution policy: bucket-sized graph/eager work by default, or opt-in exact eager rows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ExecutionMode {
     #[default]
@@ -63,7 +63,7 @@ pub struct EngineOptions {
     pub max_prefixes: usize,
     /// Capture a CUDA graph per bucket and replay it (else every step runs eagerly). Exact eager requires false.
     pub cuda_graphs: bool,
-    /// Bucket-sized legacy execution or exact logical token/answer rows backed by a capacity bucket.
+    /// Bucket-sized execution or exact logical token/answer rows backed by a capacity bucket.
     pub execution_mode: ExecutionMode,
     /// Run one small batch at load so kernel JIT happens before the first request.
     pub warmup: bool,
@@ -221,8 +221,8 @@ impl EngineOptions {
         Ok((backend, why))
     }
 
-    /// CPU-only validation of the opt-in contract, before any CUDA context or model allocation.
-    /// Legacy configurations retain their existing validation path when the flag is absent.
+    /// CPU-only validation of the opt-in warmup contract, before any CUDA context or model allocation.
+    /// Does nothing when bounded exact warmup is disabled; execution choices are validated separately.
     pub fn validate_bounded_exact_warmup(&self) -> Result<()> {
         if !self.bounded_exact_warmup { return Ok(()); }
         ensure!(self.warmup, "bounded exact warmup requires warmup=true");
@@ -268,7 +268,7 @@ pub struct StepInfo {
     pub logical_tokens: usize,
     pub logical_answers: usize,
     pub logical_segments: usize,
-    /// Dense rows requested from kernels/GEMMs. Legacy mode uses capacity rows; exact mode equals logical rows.
+    /// Dense rows requested from kernels/GEMMs. Bucketed mode uses capacity rows; exact eager uses logical rows.
     pub execution_tokens: usize,
     pub execution_answers: usize,
     pub execution_segments: usize,
@@ -495,7 +495,7 @@ impl GpuEngine {
         device_memory()
     }
 
-    /// Bounded startup report, completed before load returns. None preserves the unflagged legacy path.
+    /// Bounded startup report, completed before load returns; None for standard or disabled warmup.
     pub fn warmup_report(&self) -> Option<&WarmupReport> { self.warmup_report.as_ref() }
 
     /// Captured allocation buckets (diagnostic proof; exact warmup must always report zero).
@@ -570,7 +570,7 @@ impl GpuEngine {
     }
 
     /// Upload `batch` for capacity bucket `b`: metadata and fixed-capacity kernel tables. In exact mode the
-    /// metadata header and GDN logical row count use the batch's actual T; legacy mode retains bucket padding.
+    /// metadata header and GDN logical row count use the batch's actual T; bucketed mode pads to capacity.
     fn stage(&mut self, batch: &DecisionBatch, b: Bucket, shape: StepShape) -> Result<()> {
         self.ctx.bind_to_thread()?;
         ensure!(shape.fits(b), "logical shape {shape:?} exceeds capacity {b:?}");
@@ -942,7 +942,7 @@ mod tests {
         opts.weights = Some(WeightFormat::Nvfp4);
         let err = GpuEngine::load(Path::new("nonexistent-model"), &[1, 2], opts).err().unwrap();
         assert_eq!(err.to_string(), "exact eager mode supports only bf16 weights");
-        // Unflagged NVFP4 still follows the upstream path.
+        // Bucketed execution also accepts NVFP4 weights.
         EngineOptions::default().validate_weight_format(WeightFormat::Nvfp4).unwrap();
     }
 

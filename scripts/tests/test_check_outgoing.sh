@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# Tests of scripts/x86/check_outgoing.sh on throw-away git repositories (no GPU, no network).
+# CPU-only checker tests in throw-away git repos; needs bash/git/standard Unix tools, no GPU/network.
+# Coverage: allow-lists/privacy patterns; regular-file scanning (SIGPIPE/late NUL/size/empty);
+# injected blob-read errors; staged/history/identity/textconv controls; --files and quarantine.
+# Each group supplies clean/leaking fixtures and checks exit status, plus diagnostic reasons where set.
 #   scripts/tests/test_check_outgoing.sh
 set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -42,6 +45,7 @@ expect() {
     else echo "FAIL  $what (want $want, exit $rc):"; printf '%s\n' "$out" | sed 's/^/        /'; fails=1; fi
 }
 
+# Path policy and basic clean-result controls.
 ok_json='{"gpu_name": "NVIDIA RTX PRO 6000 Blackwell", "compute_capability": "12.0", "memory_total_mib": 97887, "driver": "580.95.05", "tok_s": 12345.678, "mem_bytes": 102641958912}'
 
 new_repo; add benchmarks/results/x86/rtx-pro-6000/2026-11-14/gpu0-single/metadata.json "$ok_json"
@@ -65,6 +69,7 @@ expect fail "model file extension"
 new_repo; git checkout -q main; add benchmarks/results/x86/a.txt 'x'
 expect fail "on main"
 
+# Privacy detectors and permitted lookalikes use literal fixtures, not real sensitive inputs.
 bad() {   # bad "description" content [reason regex]
     new_repo; add "benchmarks/results/x86/c/d/out.txt" "$2"
     reason="${3:-}"; expect fail "$1"
@@ -110,6 +115,7 @@ expect pass "versions and floats are not IPs or serials"
 new_repo; add benchmarks/results/x86/c/ok.txt 'Co-Authored-By: Claude <noreply@anthropic.com>, 123+x@users.noreply.github.com'
 expect pass "noreply e-mails allowed"
 
+# Regular-file/SIGPIPE regression: accept complete text without pipe short-read misclassification.
 # Exactly 1 MiB, well above both the old 8 KiB sample and typical pipe capacity.
 # Two-byte glyphs exercise ASCII and valid UTF-8 with identical byte counts.
 large_text() {
@@ -127,6 +133,7 @@ for glyph in aa "$(printf '\303\251')"; do
     expect pass "committed 1 MiB text ($glyph)"
 done
 
+# Empty files are valid; NUL anywhere is binary, including after the 8 KiB sampling boundary.
 new_repo; : > benchmarks/results/x86/empty.txt; g add -A
 expect pass "staged empty blob"
 g commit -qm empty
@@ -152,6 +159,7 @@ reason='over 1 MB'; expect fail "staged text one byte over 1 MiB"
 g commit -qm oversize
 reason='over 1 MB'; expect fail "committed text one byte over 1 MiB"
 
+# Error injection must fail closed for staged and committed content.
 # Inject only a blob-content read failure; metadata and all other git operations still work.
 new_repo; printf 'text\n' > benchmarks/results/x86/read.txt; g add -A
 # Exported shell functions are inherited by the checker, confined to this throw-away test process.
@@ -165,6 +173,7 @@ g commit -qm text
 reason='could not read blob'; expect fail "committed blob read failure fails closed"
 unset -f git
 
+# Preexisting binary/size, staging and identity controls complement the boundary cases above.
 new_repo; head -c 2000 /dev/urandom > benchmarks/results/x86/blob.dat; g add -A; g commit -qm blob
 expect fail "binary file"
 new_repo; mkdir -p benchmarks/results/x86; yes 'a line of text' | head -c 1100000 > benchmarks/results/x86/big.txt; g add -A; g commit -qm big

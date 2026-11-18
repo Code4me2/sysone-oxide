@@ -1,6 +1,7 @@
-//! StepGraph execution: embedding (cutile-kernels) + chained bf16 GEMMs (cuBLAS) over a planned arena,
-//! eager and as T-bucket CUDA graphs replayed with fresh batch metadata, against a CPU f64 reference.
-//! Also checks the double-buffered metadata upload byte for byte.
+//! GPU integration with synthetic weights/batches; no model or private reference data. All tests are
+//! non-ignored and require a CUDA device/toolchain and the GPU lock, including the metadata tests.
+//! Index: toy embedding/GEMM IR vs CPU f64 (bucket eager, exact long-short-long, capture/replay);
+//! independent byte-for-byte metadata rebuild/slot alternation; 16k pack+enqueue timing observation.
 
 use cuda_core::Context;
 use std::collections::HashMap;
@@ -85,6 +86,8 @@ fn batch(rng: &mut Rng, prefix: usize, suffixes: &[usize]) -> DecisionBatch {
     b
 }
 
+// Seeded BF16 weights and a strided GEMM input exercise arena planning; fresh metadata drives each replay.
+// The CPU oracle rounds intermediates to BF16 and accounts for FP32-vs-f64 accumulation differences.
 #[test]
 fn step_graph_eager_and_captured_buckets() {
     let ctx = Context::new(0).unwrap();
@@ -358,6 +361,7 @@ fn meta_upload_matches_batch() {
 }
 
 /// Host cost of packing + enqueueing a large batch (16k tokens, 64 requests × 4 questions).
+/// Uses a real device uploader; reports timings without a performance gate.
 #[test]
 fn meta_pack_cost_16k() {
     let ctx = Context::new(0).unwrap();

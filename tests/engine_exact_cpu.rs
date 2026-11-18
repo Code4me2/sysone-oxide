@@ -1,5 +1,6 @@
-//! CPU-only integration: metadata-format rejection and capacity-backed trimmed IR layouts.
-//! No CUDA, checkpoint weights or numerical qualification. The IR fixture models the upstream trim operators.
+//! CPU-only integration; no GPU, checkpoint weights or ignored tests.
+//! Index: metadata-only NVFP4 rejection before CUDA; synthetic trimmed IR spans/aliases and T/Q GEMM rows.
+//! Direct config and IR fixtures test validation/planning, not full-model numerics.
 use std::{fs, path::PathBuf};
 use sysone::engine::{gpu::{EngineOptions, ExecutionMode, GpuEngine},
     graph::{Bucket, Dim, GraphOp, LayerWeight, StepGraph, StepShape, WeightRef},
@@ -9,6 +10,7 @@ use sysone::kernels::gdn::GdnBackend;
 struct Fixture(PathBuf);
 impl Drop for Fixture { fn drop(&mut self) { fs::remove_dir_all(&self.0).unwrap(); } }
 
+// A config-only directory proves format rejection happens before opening missing weights or CUDA.
 #[test]
 fn autoloaded_nvfp4_is_refused_before_cuda_or_checkpoint_open() {
     let dir = std::env::temp_dir().join(format!("exact-format-{}", std::process::id()));
@@ -36,6 +38,7 @@ fn autoloaded_nvfp4_is_refused_before_cuda_or_checkpoint_open() {
     assert_eq!(err.to_string(), "exact eager mode supports only bf16 weights");
 }
 
+// Minimal trim-operator chain: all-token KV, answer-only queries/attention/MLP/readout.
 fn trimmed_ir(nvfp4: bool) -> StepGraph {
     use Dim::{Answers as A, Tokens as T};
     let mut g = StepGraph::new();
@@ -86,6 +89,7 @@ fn trimmed_ir(nvfp4: bool) -> StepGraph {
     g
 }
 
+// Walk each op's live values to check capacity-root separation, in-place aliases and logical row traces.
 #[test]
 fn trimmed_ops_keep_t_q_views_aliases_and_strides_inside_capacity() {
     for nvfp4 in [false,true] {

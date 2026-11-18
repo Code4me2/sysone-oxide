@@ -1,5 +1,8 @@
-//! Portable, synthetic public-model correctness check. CPU planning is the default; the full-model
-//! test is ignored and must run alone in a fresh process under a real GPU lock. No private goldens.
+//! Synthetic public-model differential check; no private goldens or reference harness.
+//! Index: `case_plan_cpu_validation` checks tables/packing without a GPU or model;
+//! ignored `full_public_model_exact_state_warmup` checks three modes, restoration, AB/BA remapping,
+//! logical/capacity traces and JIT readiness. It needs public weights/tokenizer via SYSONE_MODEL_DIR,
+//! a fresh process and a real held GPU lock (SYSONE_EXACT_GPU_LOCK); output is optional create-only JSONL.
 use std::{collections::BTreeMap, fs::{File, OpenOptions}, io::Write, path::PathBuf, time::Instant};
 use cutile::tile_kernel::jit_compile_count;
 use serde::Serialize;
@@ -16,6 +19,7 @@ struct Case { id: &'static str, requests: Vec<Request>, repeat: Option<usize> }
 fn request(id: &'static str, prefix: usize, suffixes: Vec<usize>, seed: u64) -> Request {
     Request { id, prefix, suffixes, seed }
 }
+// Fixed boundary/interleaving table; repeated cases detect stale state, AB/BA checks request isolation.
 fn cases() -> Vec<Case> {
     let one = |id, t, q, seed| Case { id, requests: vec![request(id,t-2*q,vec![2;q],seed)], repeat:None };
     let mut c = vec![one("t63",63,1,63),one("t64",64,1,64),one("t65",65,1,65),
@@ -61,6 +65,7 @@ fn frozen_limits() -> [f64;5] {
     let v=["dlogit_max","dlogit_p99","dp_max","dp_p99","top1_margin"].map(|k|t.f64(&format!("e2e.bf16.{k}")).unwrap());
     assert_eq!(v,[0.2842,0.1201,0.04241,0.01846,0.02]); v
 }
+// Rebuild batches from the table and independently check dimensions, restoration and semantic row mapping.
 #[test]
 fn case_plan_cpu_validation() {
     let c=cases(); assert_eq!(c.len(),18); let pool:Vec<_>=(0..257).collect();
@@ -181,6 +186,8 @@ fn compare(label:&str,a:&Rows,b:&Rows, lim:[f64;5],out:&mut Records) {
         "dp":{"max":p.max,"p99":p.p99,"p50":p.p50},"confident_flips":flips,"limits":lim,"ok":ok}));
     assert!(ok,"numerical gate failed: {label}");
 }
+// Load engines sequentially, exact first: compare active logits/softmax under frozen gates, while
+// requiring bit-identical within-mode restoration and no exact-mode post-ready installations.
 #[test]
 #[ignore = "full public model + real GPU lock; independent review and main readiness required"]
 fn full_public_model_exact_state_warmup() {

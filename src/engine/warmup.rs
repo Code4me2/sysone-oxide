@@ -1,4 +1,6 @@
-//! Fixed specialization-coverage warmup. No workload-dependent/adaptive shapes or request fallback.
+//! Fixed specialization-coverage warmup: legal batches, a 1+25+25 plan, and a fail-closed startup report.
+//! No workload-dependent/adaptive shapes or request fallback. CPU tests inject step/JIT/clock behavior;
+//! actual device coverage is established separately, not by the state-machine tests.
 use crate::contract::DecisionBatch;
 use anyhow::{Context, Result, ensure};
 use serde::Serialize;
@@ -22,6 +24,8 @@ pub struct WarmupLayout {
 }
 
 impl WarmupLayout {
+    /// Materialize a planned prefix/suffix split with deterministic IDs, then validate tree and counts.
+    /// Expects a plan-produced layout (positive suffix width and an in-range prefix split).
     pub fn batch(&self) -> Result<DecisionBatch> {
         let ids: Vec<u32> = (0..self.tokens).map(|i| 1000 + i as u32).collect();
         let suffixes: Vec<(&[u32], u16)> = ids[self.prefix_tokens..].chunks_exact(self.suffix_tokens)
@@ -35,7 +39,8 @@ impl WarmupLayout {
     }
 }
 
-/// Unchanged standard batch, then T-major coverage, then the identical lattice for validation.
+/// Fixed 51-call policy: standard batch, T-major coverage lattice, then identical validation batches.
+/// The repeat pass detects new installations; it does not expand coverage or adapt to a workload.
 pub fn plan() -> Vec<WarmupLayout> {
     let mut out = vec![WarmupLayout { phase: "standard", tokens: 100, answers: 1, segments: 2,
         prefixes: 1, prefix_tokens: 60, suffix_tokens: 40, readout_slots: 2 }];
@@ -50,6 +55,7 @@ pub fn plan() -> Vec<WarmupLayout> {
     out
 }
 
+/// One attempted call's phase, elapsed bounds and installation counters, including a failed step.
 #[derive(Clone, Debug, Serialize)]
 pub struct WarmupCall {
     pub sequence: usize,
@@ -58,9 +64,12 @@ pub struct WarmupCall {
     pub end_ms: f64,
     pub jit_before: u64,
     pub jit_after: u64,
+    /// Step result only; a later counter or deadline check can still fail the warmup.
     pub ok: bool,
 }
 
+/// Startup evidence: attempted calls/counters and timing, not request throughput or universal JIT coverage.
+/// `complete` is set only after all calls pass; errors leave the partial record for diagnosis.
 #[derive(Clone, Debug, Serialize)]
 pub struct WarmupReport {
     pub policy: &'static str,
@@ -88,8 +97,11 @@ impl Default for WarmupReport {
     }
 }
 
-/// Between-call deadline only: the owned outer startup deadline is responsible for a hung CUDA call.
-/// Injecting the synchronized step/counter/monotonic clock also permits real CPU state-machine tests.
+/// Drive the fixed startup state machine using an injected synchronized step, installation counter and
+/// monotonic elapsed clock. Step errors, counter regression, validation installs or deadline violations
+/// return without completion/readiness or retries. The caller must not mark a failed load ready.
+/// Deadline checks bracket calls; they cannot interrupt a hung CUDA call (an outer deadline must do that).
+/// Requires a fresh report: existing call records, phase totals and completion state are not cleared.
 pub(crate) fn execute(report: &mut WarmupReport,
     mut step: impl FnMut(&DecisionBatch) -> Result<()>,
     mut count: impl FnMut() -> u64,
@@ -131,6 +143,8 @@ pub(crate) fn execute(report: &mut WarmupReport,
     Ok(())
 }
 
+// CPU-only index: direct plan/batch legality; fake JIT counter/clock for exact call count,
+// validation miss, before/after deadline and execution-error paths. No CUDA/model prerequisites.
 #[cfg(test)]
 mod tests {
     use super::*;

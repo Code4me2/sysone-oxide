@@ -1,10 +1,15 @@
-//! Explicitly ignored GPU prerequisite. Never part of CPU execution. Run once in its own fresh process
-//! only after independent review + main, under the owned GPU2 lock/container/startup deadline.
+//! Historical ignored startup test, not the current full-model qualification or a fresh smoke result.
+//! Index: first-process 51-call report, no captures, then repeated plan calls with a fixed 137-GEMM assumption.
+//! Needs public model/tokenizer via SYSONE_MODEL_DIR and a fresh GPU process. Its existing GPU2-only
+//! annotation/review restriction is retained; the 137 count predates current trimmed graph-derived traces.
+//! Use an authorized held GPU lock and outer startup deadline; this file has no CPU test.
 use cutile::tile_kernel::jit_compile_count;
 use std::path::PathBuf;
 use sysone::{contract::DecisionEngine, engine::{gpu::{EngineOptions, ExecutionMode, GpuEngine}, warmup},
     frontend::{Frontend, Limits}, kernels::gdn::GdnBackend};
 
+// Replays the warmup layouts through the engine and observes JIT counts, rather than injecting a fake clock.
+// The historical device restriction and fixed GEMM-count assertion are unchanged, not requalified here.
 #[test]
 #[ignore = "GPU2 only; independent review and main readiness approval required"]
 fn bounded_first_startup_51_calls_no_capture_validation_and_repeat_misses() {
