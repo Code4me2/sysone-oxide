@@ -26,24 +26,48 @@
 //! these stay inside the error envelope of transformers' own f32 implementation (tests/kernels_gdn.rs).
 //! [`GdnPrecision`] selects faster, less precise products (DESIGN §1 "Precision knobs").
 //!
-//! Segment structure comes from a [`GdnPlan`] (device tables built from the batch's [`Segment`]s). Grids depend
-//! only on the plan's capacities, so a launch sequence can be captured once per T bucket and replayed after
-//! [`GdnPlan::update`].
+//! Segment structure comes from a [`GdnPlan`] (device tables built from the batch's [`Segment`]s). Table-driven
+//! grids use plan capacities; prep/norm grids use logical T. A bucket's fixed-T launch sequence can be captured
+//! and replayed after [`GdnPlan::update`], subject to the contract below.
 //!
-//! Every launcher here is `unsafe`: it hands raw device addresses to the kernel, so the caller must keep every
-//! buffer alive, and not written by anyone else, until the returned operation has completed on its stream.
+//! # Shared launcher safety contract
+//!
+//! Launchers are `unsafe` because they build deferred operations from raw device addresses, without retaining
+//! their allocation owners or Rust borrows. Returning an operation is not GPU completion. Callers must:
+//! - provide aligned, live device storage in the execution stream's CUDA context for every accessed element,
+//!   initialized before reads; a view needs `(rows - 1) * row_stride + cols` elements for nonzero rows, and scratch/weights need the
+//!   documented contiguous layouts for the selected kernel (one-row placeholders are only valid when unused);
+//! - preserve plan/scratch allocation capacities and field consistency, with disjoint segment token ranges,
+//!   valid earlier-prefix parents, and sizes/offsets representable in host arithmetic and kernel i32 indexing;
+//! - keep all owners alive from operation construction through completion, including work submitted before an
+//!   error; shared `&Tensor`/`&GdnPlan`/`&GdnScratch` arguments do not enforce this deferred lifetime;
+//! - prevent overlapping accesses when either writes (except the kernel's own recurrent-state updates), and
+//!   order uploads and producers before consumers on one stream or with explicit cross-stream dependencies.
+//!   Scan operations must retain their inverse, prefix, suffix order; do not concurrently reuse plan scratch.
+//!
+//! For graph capture, retain the same allocations/addresses for every possible replay and through its completion.
+//! Order table updates after prior users and before replay; updated tables must fit the captured T and buffer
+//! extents, and every replay's prefix count must fit the captured scratch slots. Changing logical T does not
+//! change captured scalar/grid arguments. Construction-time checks are not rerun.
+//!
+//! Checks below cover declared view dimensions/strides, selected tensor sizes and some plan/scratch counts, not
+//! pointer ownership, context identity, aliasing, every scratch field, segment disjointness or replay validity.
+//! Public fields and safe view/update helpers do not enforce the full contract.
 
 pub mod simt;
 pub mod tile;
+mod upload;
 
 use crate::contract::Segment;
-use anyhow::{Result, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use cutile::cuda_core::Stream;
+use cuda_core::PinnedHostBuffer;
 use cutile::half::bf16;
 use cutile::prelude::*;
 use cuda_async::device_buffer::DevicePointer;
 use cutile::tile_kernel::CompileOptions;
 use tile::gdn_tile;
+use upload::UploadState;
 
 /// Chunk length of the chunked delta rule (`torch_chunk_gated_delta_rule`'s default, used by the reference).
 pub const CHUNK: usize = 64;
@@ -121,7 +145,9 @@ const TINV_WARPS: i32 = 4;
 const STATE_WARPS: i32 = 4;
 
 /// A row-major 2-D device view: `rows × cols` elements, row `r` starting `r * row_stride` elements after `ptr`.
-/// Used for the strided column slices of the fused projection output.
+/// Used for the strided column slices of the fused projection output. This copyable address descriptor has no
+/// owner, lifetime or context tracking; its public fields need not describe a valid allocation. Launch callers
+/// must establish the shared module contract, including accessible extent and non-overflowing offset arithmetic.
 #[derive(Debug)]
 pub struct DView<T> {
     pub ptr: DevicePointer<T>,
@@ -138,22 +164,25 @@ impl<T> Clone for DView<T> {
 impl<T> Copy for DView<T> {}
 
 impl<T: DType> DView<T> {
-    /// The whole of a contiguous 2-D tensor.
+    /// The whole of a contiguous 2-D tensor. Checks rank/contiguity, but does not retain `t` or its storage.
     pub fn of(t: &Tensor<T>) -> Result<Self> {
         ensure!(t.shape().len() == 2 && t.is_contiguous(), "expected a contiguous 2-D tensor, got shape {:?}", t.shape());
         let (rows, cols) = (t.shape()[0] as usize, t.shape()[1] as usize);
         Ok(Self { ptr: t.device_pointer(), rows, cols, row_stride: cols })
     }
 
-    /// Columns `c0 .. c0 + n` of this view.
+    /// Columns `c0 .. c0 + n` of this view. Only checks declared columns, not allocation extent or arithmetic
+    /// overflow; a valid source view and representable element/byte/address offsets are caller requirements.
     pub fn columns(self, c0: usize, n: usize) -> Result<Self> {
         ensure!(c0 + n <= self.cols, "columns {c0}..{} out of {}", c0 + n, self.cols);
         let dptr = self.ptr.cu_deviceptr() + (c0 * size_of::<T>()) as u64;
-        // SAFETY: the address stays inside the same allocation (checked against cols above).
+        // SAFETY requirement: a valid source view and non-overflowing offsets keep this typed address in the
+        // source allocation (or at its end for an empty slice). The public descriptor is not validated here.
         let ptr = unsafe { DevicePointer::from_cu_deviceptr(dptr) };
         Ok(Self { ptr, cols: n, ..self })
     }
 
+    // Metadata checks only; these do not prove accessible storage, context identity or absence of aliasing.
     fn check(&self, what: &str, rows: usize, cols: usize) -> Result<()> {
         ensure!(self.rows >= rows && self.cols == cols, "{what}: view is {}x{}, need {rows}x{cols}", self.rows, self.cols);
         ensure!(self.row_stride >= self.cols, "{what}: row stride {} < {} columns", self.row_stride, self.cols);
@@ -162,6 +191,7 @@ impl<T: DType> DView<T> {
     }
 }
 
+// Checks contiguity and minimum element count, not exact shape, stream context or deferred ownership.
 fn check_tensor<T: DType>(what: &str, t: &Tensor<T>, shape: &[usize]) -> Result<DevicePointer<T>> {
     let have: Vec<usize> = t.shape().iter().map(|&d| d as usize).collect();
     ensure!(t.is_contiguous(), "{what}: not contiguous");
@@ -170,9 +200,13 @@ fn check_tensor<T: DType>(what: &str, t: &Tensor<T>, shape: &[usize]) -> Result<
 }
 
 /// Device-side segment metadata for the GDN kernels of one batch.
+/// Public counts/capacities must remain consistent with the original allocations; assigning larger values does
+/// not resize tables or inverse norms. Updates do not track outstanding raw-pointer operations or graphs.
 pub struct GdnPlan {
-    /// Rows the per-token kernels process (`gdn_prep`, `gated_rmsnorm`): the batch's tokens, or its T bucket.
+    /// Logical rows the per-token kernels process (`gdn_prep`, `gated_rmsnorm`).
     pub tokens: usize,
+    /// Fixed allocation/table capacity selected by the engine bucket.
+    pub token_capacity: usize,
     pub max_chunks: usize,
     pub max_segs: usize,
     /// Prefix-state scratch slots the plan needs (= number of prefix segments).
@@ -183,6 +217,20 @@ pub struct GdnPlan {
     /// heads), written by [`tree_conv1d_silu_inv`] and read by [`gdn_chunk_scan_conv`]. Per-batch data, kept in
     /// the plan so that [`GdnScratch`] keeps its fields.
     qk_inv: Tensor<f32>,
+    /// Fixed-capacity pinned table staging; updates never allocate a device buffer for an arbitrary logical T.
+    chunks_host: Arc<PinnedHostBuffer<i32>>,
+    segs_host: Arc<PinnedHostBuffer<i32>>,
+    upload_state: UploadState<UploadLease>,
+}
+
+/// Actual transfer owners, retained until positive completion (including constructor error/unwind).
+/// Tensor aliases retain the same allocation; they are only lifetime guards, never separate kernel inputs.
+struct UploadLease {
+    chunks: Arc<Tensor<i32>>,
+    segs: Arc<Tensor<i32>>,
+    chunks_host: Arc<PinnedHostBuffer<i32>>,
+    segs_host: Arc<PinnedHostBuffer<i32>>,
+    stream: Arc<Stream>, // Stream owns its context as well.
 }
 
 /// Host-side tables of a [`GdnPlan`] (see `tile.rs` for the layouts).
@@ -205,6 +253,8 @@ impl GdnTables {
         tokens.div_ceil(CHUNK) + segments
     }
 
+    /// Build padded tables, checking nonempty in-range segments, earlier-prefix parents and table capacity.
+    /// Does not check disjoint segment ranges or all arithmetic/i32 conversions; launch callers must do so.
     pub fn build(segments: &[Segment], tokens: usize, max_chunks: usize, max_segs: usize) -> Result<Self> {
         ensure!(segments.len() <= max_segs, "{} segments over the plan's {max_segs}", segments.len());
         let mut chunks = vec![0i32; max_chunks * 4];
@@ -259,31 +309,111 @@ impl GdnPlan {
         stream: &Arc<Stream>,
     ) -> Result<Self> {
         ensure!(tokens > 0 && tokens * VALUE_DIM <= i32::MAX as usize, "tokens {tokens} out of range");
+        ensure!(max_chunks > 0 && max_segs > 0, "GDN capacities must be nonzero");
         let t = GdnTables::build(segments, tokens, max_chunks, max_segs)?;
-        let chunks = api::copy_host_vec_to_device(&Arc::new(t.chunks)).sync_on(stream)?;
-        let segs = api::copy_host_vec_to_device(&Arc::new(t.segs)).sync_on(stream)?;
+        let chunks = api::zeros::<i32>(&[max_chunks * 4]).sync_on(stream)?;
+        let segs = api::zeros::<i32>(&[max_segs * 4]).sync_on(stream)?;
         let qk_inv = api::zeros::<f32>(&[tokens, 2 * NUM_K_HEADS]).sync_on(stream)?;
-        Ok(Self { tokens, max_chunks, max_segs, num_prefixes: t.num_prefixes, chunks, segs, qk_inv })
+        let chunks_host = Arc::new(PinnedHostBuffer::zeroed(stream.context(), max_chunks * 4)?);
+        let segs_host = Arc::new(PinnedHostBuffer::zeroed(stream.context(), max_segs * 4)?);
+        let mut plan = Self {
+            tokens,
+            token_capacity: tokens,
+            max_chunks,
+            max_segs,
+            num_prefixes: t.num_prefixes,
+            chunks,
+            segs,
+            qk_inv,
+            chunks_host,
+            segs_host,
+            upload_state: UploadState::default(),
+        };
+        plan.upload_tables(&t, stream)?;
+        Ok(plan)
+    }
+
+    // Same pinned addresses/capacities, chunks then segs then one sync on success. Readiness and
+    // unique host ownership gate ALL staging writes. Submission errors drain but always poison the plan;
+    // failed completion/unwind retains both sources, both destinations and stream/context via the lease.
+    fn upload_tables(&mut self, tables: &GdnTables, stream: &Arc<Stream>) -> Result<()> {
+        self.upload_state.upload(
+            || {
+                stream.context().bind_to_thread()?;
+                let chunks_host = Arc::get_mut(&mut self.chunks_host)
+                    .context("GDN chunks staging is still leased")?;
+                let segs_host = Arc::get_mut(&mut self.segs_host)
+                    .context("GDN segs staging is still leased")?;
+                chunks_host.as_mut_slice().copy_from_slice(&tables.chunks);
+                segs_host.as_mut_slice().copy_from_slice(&tables.segs);
+                // SAFETY: pinned cuda-rust's into_shared_alias clones StorageHandle (the actual
+                // allocation), not data/lazy math. These private aliases only retain ownership;
+                // they never introduce a second kernel access. Existing table-user ordering applies.
+                let (chunks, segs) = unsafe {
+                    (self.chunks.into_shared_alias(), self.segs.into_shared_alias())
+                };
+                Ok(UploadLease { chunks, segs, chunks_host: self.chunks_host.clone(),
+                    segs_host: self.segs_host.clone(), stream: stream.clone() })
+            },
+            // SAFETY requirements: original destination capacities and allocation context must match.
+            // The armed lease enforces source/destination lifetime and no staging mutation through
+            // positive completion, or quarantines all owners if completion cannot be proved.
+            |lease| unsafe {
+                cuda_core::memory::memcpy_htod_async(
+                    lease.chunks.device_pointer().cu_deviceptr(),
+                    lease.chunks_host.as_ptr(),
+                    lease.chunks_host.as_slice().len() * size_of::<i32>(),
+                    lease.stream.cu_stream(),
+                ).context("GDN chunks table upload")
+            },
+            |lease| unsafe {
+                cuda_core::memory::memcpy_htod_async(
+                    lease.segs.device_pointer().cu_deviceptr(),
+                    lease.segs_host.as_ptr(),
+                    lease.segs_host.as_slice().len() * size_of::<i32>(),
+                    lease.stream.cu_stream(),
+                ).context("GDN segs table upload")
+            },
+            |lease| lease.stream.synchronize().context("GDN table upload completion"),
+        )
     }
 
     /// Rewrite the tables in place for another batch with the same capacities (for graph replay).
+    /// Use the allocation's context, preserve public capacity fields, and order prior table users before this
+    /// update (same stream or explicit completion/dependencies). Prior kernel/graph users are not tracked.
     ///
     /// The launchers check `num_prefixes <= scratch.slots` when they build their operations, which a replayed graph
     /// does not repeat: size the scratch of a captured mixer with [`GdnScratch::for_plan`] (one slot per segment the
     /// plan can hold). If a replay still sees more prefixes than slots, the SIMT path writes NaN over the affected
     /// segments' output (it never leaves stale output); the cuTile scan does not detect it.
     pub fn update(&mut self, segments: &[Segment], stream: &Arc<Stream>) -> Result<()> {
-        let t = GdnTables::build(segments, self.tokens, self.max_chunks, self.max_segs)?;
-        let chunks = api::copy_host_vec_to_device(&Arc::new(t.chunks)).sync_on(stream)?;
-        let segs = api::copy_host_vec_to_device(&Arc::new(t.segs)).sync_on(stream)?;
-        api::memcpy(&mut self.chunks, &chunks).sync_on(stream)?;
-        api::memcpy(&mut self.segs, &segs).sync_on(stream)?;
-        self.num_prefixes = t.num_prefixes;
+        self.update_for_tokens(segments, self.token_capacity, stream)
+    }
+
+    /// Rewrite tables while changing the logical token rows, keeping capacities and device addresses fixed.
+    /// Prep and gated-normalization launch grids depend on logical T. Changing T here does not update launch
+    /// arguments in an already captured graph; exact eager execution launches with the current logical T.
+    /// Checks `0 < tokens <= token_capacity` and table-builder constraints, not scratch/replay capacities or
+    /// unchanged allocation metadata. The context/ordering requirements of [`Self::update`] still apply.
+    /// On success uploads complete before counts change. A submission/completion error poisons further updates
+    /// (tables may be hybrid); replace the plan. Drop is safe for this upload even if completion is uncertain:
+    /// it conservatively quarantines one lease retaining both host buffers, table tensors and stream/context.
+    /// This exceptional retention also covers unwind; normal completed uploads release all lease owners.
+    pub fn update_for_tokens(&mut self, segments: &[Segment], tokens: usize, stream: &Arc<Stream>) -> Result<()> {
+        self.upload_state.ensure_ready()?;
+        ensure!(tokens > 0 && tokens <= self.token_capacity,
+                "logical GDN tokens {tokens} over capacity {}", self.token_capacity);
+        let tables = GdnTables::build(segments, tokens, self.max_chunks, self.max_segs)?;
+        self.upload_tables(&tables, stream)?;
+        self.tokens = tokens;
+        self.num_prefixes = tables.num_prefixes;
         Ok(())
     }
 }
 
 /// Per-batch intermediates of the GDN mixer, sized for `tokens` rows and `slots` prefix states.
+/// Public tensors/counts must keep the selected launcher's layouts and actual capacities consistent; count
+/// checks alone do not validate replaced tensors. Shared references do not authorize concurrent scratch use.
 pub struct GdnScratch {
     pub tokens: usize,
     pub slots: usize,
@@ -395,7 +525,7 @@ impl GdnScratch {
     /// Scratch for every batch `plan` can describe (graph replay): one state slot per segment the plan can hold,
     /// since `GdnPlan::update` may raise the prefix count up to that.
     pub fn for_plan(backend: GdnBackend, plan: &GdnPlan, stream: &Arc<Stream>) -> Result<Self> {
-        Self::for_backend(backend, plan.tokens, plan.max_segs, stream)
+        Self::for_backend(backend, plan.token_capacity, plan.max_segs, stream)
     }
 
     pub fn conv_view(&self) -> Result<DView<bf16>> {
@@ -422,7 +552,9 @@ fn grid(x: usize, y: usize, z: usize) -> (u32, u32, u32) {
 /// `out = silu(causal_conv1d(x, conv_w))` over the plan's segment tree. x, out: `[T, 8192]` bf16 views.
 ///
 /// # Safety
-/// Every buffer must stay alive and unaliased by other writers until the returned operation completes.
+/// Follow the module's shared launcher contract. `x`, `out` and `conv_w` must have the stated extents in the
+/// execution context, with output disjoint from inputs and valid plan tables for nonoverlapping segments.
+/// Keep their owners and the plan alive through execution/completion, or for all replays if captured.
 pub unsafe fn tree_conv1d_silu(
     plan: &GdnPlan,
     x: DView<bf16>,
@@ -437,7 +569,8 @@ pub unsafe fn tree_conv1d_silu(
 /// q and k columns back.
 ///
 /// # Safety
-/// As for [`tree_conv1d_silu`].
+/// As for [`tree_conv1d_silu`], also retaining full-size, disjoint contiguous `scratch.q` and `scratch.k`
+/// (`[plan.tokens, KEY_DIM]` each). Only `scratch.tokens`, not those tensor extents, is checked here.
 pub unsafe fn tree_conv1d_silu_qk(
     plan: &GdnPlan,
     x: DView<bf16>,
@@ -454,7 +587,7 @@ pub unsafe fn tree_conv1d_silu_qk(
 /// arithmetic (bit-identical to [`tree_conv1d_silu_qk`]'s) instead of reading 16 KB per token of f32 rows.
 ///
 /// # Safety
-/// As for [`tree_conv1d_silu`].
+/// As for [`tree_conv1d_silu`]; the plan's inverse-norm storage is also written and must not be concurrently used.
 pub unsafe fn tree_conv1d_silu_inv(
     plan: &GdnPlan,
     x: DView<bf16>,
@@ -473,6 +606,7 @@ enum ConvQk<'a> {
     InvNorms,
 }
 
+// SAFETY: callers supply the shared launcher contract plus storage for the selected ConvQk outputs.
 unsafe fn conv_impl(
     plan: &GdnPlan,
     x: DView<bf16>,
@@ -516,7 +650,8 @@ unsafe fn conv_impl(
 /// into `scratch`. `a`, `b`: `[T, 32]` bf16 views of the fused projection output.
 ///
 /// # Safety
-/// As for [`tree_conv1d_silu`].
+/// Follow the shared launcher contract of [`tree_conv1d_silu`], with the documented input/weight extents and
+/// full-size contiguous `scratch.{q,k,g,beta}` as disjoint outputs; the scratch token count is not an extent check.
 pub unsafe fn gdn_prep(
     plan: &GdnPlan,
     conv: DView<bf16>,
@@ -531,7 +666,7 @@ pub unsafe fn gdn_prep(
 /// The gate half of [`gdn_prep`] (g, beta only), for use after [`tree_conv1d_silu_qk`].
 ///
 /// # Safety
-/// As for [`tree_conv1d_silu`].
+/// As for [`gdn_prep`], except `scratch.{q,k}` are unused; `scratch.{g,beta}` still need full-size storage.
 pub unsafe fn gdn_gates(
     plan: &GdnPlan,
     conv: DView<bf16>,
@@ -543,6 +678,7 @@ pub unsafe fn gdn_gates(
     unsafe { prep_impl(plan, conv, a, b, w, scratch, false) }
 }
 
+// SAFETY: callers provide the shared contract and full-size gate outputs (q/k outputs only when enabled).
 unsafe fn prep_impl(
     plan: &GdnPlan,
     conv: DView<bf16>,
@@ -655,7 +791,7 @@ impl Default for GdnOptions {
 /// [`gdn_chunk_scan_with`].
 ///
 /// # Safety
-/// As for [`tree_conv1d_silu`].
+/// As for [`gdn_chunk_scan_with`].
 pub unsafe fn gdn_chunk_scan(
     plan: &GdnPlan,
     v: DView<bf16>,
@@ -672,7 +808,9 @@ pub unsafe fn gdn_chunk_scan(
 /// conv output); writes bf16 `[T, 4096]` into `out`.
 ///
 /// # Safety
-/// As for [`tree_conv1d_silu`].
+/// Follow the shared launcher contract. Provide full-size contiguous `scratch.{q,k,g,beta,tinv,p,state}`
+/// with matching counts, initialized inputs and disjoint output storage. Execute the returned operations in
+/// order; scratch slot checks at construction do not constrain a later table update/replay.
 pub unsafe fn gdn_chunk_scan_with(
     plan: &GdnPlan,
     v: DView<bf16>,
@@ -690,7 +828,8 @@ pub unsafe fn gdn_chunk_scan_with(
 /// [`tree_conv1d_silu_qk`] followed by [`gdn_chunk_scan_with`]. `scratch.{q,k}` are neither read nor written.
 ///
 /// # Safety
-/// As for [`tree_conv1d_silu`].
+/// As for [`gdn_chunk_scan_with`], but q/k scratch is unused. Conv and the plan's inverse norms must come from
+/// the same batch's completed/ordered [`tree_conv1d_silu_inv`]; retain both until scan/replays complete.
 pub unsafe fn gdn_chunk_scan_conv(
     plan: &GdnPlan,
     conv: DView<bf16>,
@@ -702,6 +841,7 @@ pub unsafe fn gdn_chunk_scan_conv(
     unsafe { scan_impl(plan, Some(conv), conv.columns(2 * KEY_DIM, VALUE_DIM)?, scratch, out, opts) }
 }
 
+// SAFETY: callers supply the shared contract, the selected q/k source and all accessed scratch extents.
 unsafe fn scan_impl(
     plan: &GdnPlan,
     conv: Option<DView<bf16>>,
@@ -789,7 +929,8 @@ unsafe fn scan_impl(
 /// comparison in `bench_gdn`.
 ///
 /// # Safety
-/// As for [`tree_conv1d_silu`].
+/// As for [`gdn_chunk_scan_with`], also requiring full-size contiguous `scratch.{w,u,qd,kd}` from
+/// [`GdnScratch::with_w3a_buffers`] (or equivalent). Only `w`'s row count is checked for these four buffers.
 pub unsafe fn gdn_chunk_scan_w3a(
     plan: &GdnPlan,
     v: DView<bf16>,
@@ -884,7 +1025,7 @@ impl GatedNormTiles {
 /// `out = gated_rmsnorm(x, z) * norm_w` per 128-wide head. x, z, out: `[T, 4096]` bf16 views.
 ///
 /// # Safety
-/// As for [`tree_conv1d_silu`].
+/// Follow the shared launcher contract, with full stated input/weight extents and output disjoint from them.
 pub unsafe fn gated_rmsnorm(
     plan: &GdnPlan,
     x: DView<bf16>,
@@ -899,7 +1040,7 @@ pub unsafe fn gated_rmsnorm(
 /// [`gated_rmsnorm`] with an explicit launch shape ([`GatedNormTiles`]).
 ///
 /// # Safety
-/// As for [`tree_conv1d_silu`].
+/// As for [`gated_rmsnorm`]; launch-shape checks do not establish pointer validity or deferred lifetimes.
 pub unsafe fn gated_rmsnorm_with(
     plan: &GdnPlan,
     x: DView<bf16>,
@@ -950,7 +1091,9 @@ pub unsafe fn gated_rmsnorm_with(
 /// [`tree_conv1d_silu_inv`], [`gdn_gates`], [`gdn_chunk_scan_conv`] and [`gated_rmsnorm`].
 ///
 /// # Safety
-/// As for [`tree_conv1d_silu`].
+/// Follow the shared launcher contract and component launchers' contracts, retaining all projection, weight,
+/// plan, scratch and output owners. Provide full conv/core and backend-appropriate scratch (not
+/// [`GdnScratch::for_engine`]'s external-I/O placeholders), and execute the returned operations in order.
 pub unsafe fn gdn_mixer(
     plan: &GdnPlan,
     proj: DView<bf16>,
@@ -965,7 +1108,7 @@ pub unsafe fn gdn_mixer(
 /// [`gdn_mixer`] with explicit [`GdnOptions`] (including the [`GdnBackend`]).
 ///
 /// # Safety
-/// As for [`tree_conv1d_silu`].
+/// As for [`gdn_mixer`], with scratch sized for the selected backend; unused backend buffers may be placeholders.
 pub unsafe fn gdn_mixer_with(
     plan: &GdnPlan,
     proj: DView<bf16>,
@@ -1044,6 +1187,7 @@ mod tests {
         assert_eq!(seg(4), [204, 1, 1, 1]);
         assert_eq!(seg(5), [0, 0, -1, 0]);
         assert!(GdnTables::build(&b.segments, b.num_tokens(), 7, 6).is_err());
+        assert!(GdnTables::build(&b.segments, b.num_tokens() - 1, 8, 6).is_err());
         assert!(GdnTables::num_chunks(&b.segments) <= GdnTables::chunk_capacity(b.num_tokens(), b.segments.len()));
     }
 }

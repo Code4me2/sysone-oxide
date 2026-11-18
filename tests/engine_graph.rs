@@ -1,6 +1,7 @@
-//! StepGraph execution: embedding (cutile-kernels) + chained bf16 GEMMs (cuBLAS) over a planned arena,
-//! eager and as T-bucket CUDA graphs replayed with fresh batch metadata, against a CPU f64 reference.
-//! Also checks the double-buffered metadata upload byte for byte.
+//! GPU integration with synthetic weights/batches; no model or private reference data. All tests are
+//! non-ignored and require a CUDA device/toolchain and the GPU lock, including the metadata tests.
+//! Index: toy embedding/GEMM IR vs CPU f64 (bucket eager, exact long-short-long, capture/replay);
+//! independent byte-for-byte metadata rebuild/slot alternation; 16k pack+enqueue timing observation.
 
 use cuda_core::Context;
 use std::collections::HashMap;
@@ -85,6 +86,8 @@ fn batch(rng: &mut Rng, prefix: usize, suffixes: &[usize]) -> DecisionBatch {
     b
 }
 
+// Seeded BF16 weights and a strided GEMM input exercise arena planning; fresh metadata drives each replay.
+// The CPU oracle rounds intermediates to BF16 and accounts for FP32-vs-f64 accumulation differences.
 #[test]
 fn step_graph_eager_and_captured_buckets() {
     let ctx = Context::new(0).unwrap();
@@ -207,8 +210,8 @@ fn step_graph_eager_and_captured_buckets() {
     up_meta.upload(slot, &stream).unwrap();
     {
         let ex = Executor {
-            graph: &g, plan: bg.pool(b0).unwrap(), arena: &bg.arena, weights: &store, kernels: &NoKernels,
-            blas: &blas, meta: &up_meta.dev, cfg: None, profiler: None,
+            graph: &g, plan: bg.pool(b0).unwrap(), shape: b0.shape(), arena: &bg.arena, weights: &store,
+            kernels: &NoKernels, blas: &blas, meta: &up_meta.dev, cfg: None, profiler: None,
         };
         ex.run_eager(&stream).unwrap();
         check_embed(&ex, &eager_batch);
@@ -216,11 +219,40 @@ fn step_graph_eager_and_captured_buckets() {
         compare("eager", &eager_batch, &x2h, &yh);
     }
 
+    // Exact logical rows over the 256-token capacity plan: long-short-long must neither read nor preserve an
+    // inactive suffix, and repeating the identical long shape must be bit-identical. GEMM requests report actual
+    // T, while every value remains bounded by its capacity root span.
+    let long = batch(&mut rng, 120, &[7, 9]);
+    let short = batch(&mut rng, 17, &[2]);
+    let capacity = plan.largest();
+    let mut first_long = None;
+    for (i, bt) in [&long, &short, &long].into_iter().enumerate() {
+        let shape = sysone::engine::graph::StepShape {
+            tokens: bt.num_tokens(), answers: bt.num_branches(), segments: bt.segments.len(),
+        };
+        let slot = up_meta.pack(bt, shape.tokens).unwrap();
+        up_meta.upload(slot, &stream).unwrap();
+        let ex = Executor {
+            graph: &g, plan: bg.pool(capacity).unwrap(), shape, arena: &bg.arena, weights: &store,
+            kernels: &NoKernels, blas: &blas, meta: &up_meta.dev, cfg: None, profiler: None,
+        };
+        ex.run_eager(&stream).unwrap();
+        assert!(ex.gemm_requests().iter().all(|r| r.rows == bt.num_tokens()));
+        check_embed(&ex, bt);
+        let (x2h, yh) = read(&ex, bt.num_tokens());
+        compare(&format!("exact sequence {i}"), bt, &x2h, &yh);
+        if i == 0 {
+            first_long = Some((x2h, yh));
+        } else if i == 2 {
+            assert_eq!(first_long.as_ref().unwrap(), &(x2h, yh), "long-short-long exact repeat changed");
+        }
+    }
+
     for b in plan.buckets.clone() {
         let graph = {
             let ex = Executor {
-                graph: &g, plan: bg.pool(b).unwrap(), arena: &bg.arena, weights: &store, kernels: &NoKernels,
-                blas: &blas, meta: &up_meta.dev, cfg: None, profiler: None,
+                graph: &g, plan: bg.pool(b).unwrap(), shape: b.shape(), arena: &bg.arena, weights: &store,
+                kernels: &NoKernels, blas: &blas, meta: &up_meta.dev, cfg: None, profiler: None,
             };
             ex.run_eager(&stream).unwrap(); // warm-up outside capture
             ex.capture(&stream).unwrap()
@@ -238,8 +270,8 @@ fn step_graph_eager_and_captured_buckets() {
         bg.launch(b, &stream).unwrap();
         stream.synchronize().unwrap();
         let ex = Executor {
-            graph: &g, plan: bg.pool(b).unwrap(), arena: &bg.arena, weights: &store, kernels: &NoKernels,
-            blas: &blas, meta: &up_meta.dev, cfg: None, profiler: None,
+            graph: &g, plan: bg.pool(b).unwrap(), shape: b.shape(), arena: &bg.arena, weights: &store,
+            kernels: &NoKernels, blas: &blas, meta: &up_meta.dev, cfg: None, profiler: None,
         };
         check_embed(&ex, bt);
         let (x2h, yh) = read(&ex, bt.num_tokens());
@@ -329,6 +361,7 @@ fn meta_upload_matches_batch() {
 }
 
 /// Host cost of packing + enqueueing a large batch (16k tokens, 64 requests × 4 questions).
+/// Uses a real device uploader; reports timings without a performance gate.
 #[test]
 fn meta_pack_cost_16k() {
     let ctx = Context::new(0).unwrap();

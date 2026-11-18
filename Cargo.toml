@@ -100,3 +100,11 @@ path = "src/engine/cpu_ref/check_main.rs"
 [[bin]]
 name = "bench_forward"
 path = "benchmarks/s1/bench_forward.rs"
+
+[[bin]]
+name = "bench_exact"
+path = "benchmarks/s1/bench_exact.rs"
+
+[[bin]]
+name = "bench_warmup_v2"
+path = "benchmarks/s1/bench_warmup_v2.rs"
