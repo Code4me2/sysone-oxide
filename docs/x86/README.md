@@ -1,7 +1,9 @@
 # Exact eager execution and bounded warmup
 
-Opt-in BF16/Tile execution; not a new default or deployment recommendation. Request semantics remain those in
-[architecture](../ARCHITECTURE.md) and [design](../DESIGN.md).
+Opt-in BF16/Tile execution; not a new default or deployment recommendation. For a first server, use
+[Getting started](../GETTING_STARTED.md); for the completed post-fix optimized-qev serving comparison, use
+[Performance](../PERFORMANCE.md). Request semantics remain those in [architecture](../ARCHITECTURE.md) and
+[design](../DESIGN.md).
 
 ## Modes and configuration
 
@@ -49,10 +51,12 @@ Cases cover T63/64/65/255/256/257/16384, Q1/2/16/64, interleaved restoration and
 requests. Observed logit/probability max and p99 differences and confident-choice flips were all zero;
 restorations were bit-identical. This is not a universal cross-mode bit-identity guarantee.
 
-That GPU run preceded the subsequent upload-error ownership fix. The fix passed an all-target build and
-28 focused CPU tests, including 10 fault-injection cases; no CUDA/model test was rerun afterward. Failed uploads
-poison the plan; if completion is uncertain, one lease retains its transfer resources for process lifetime rather
-than freeing or reusing them. Successful uploads release that lease after synchronization.
+That targeted GPU run preceded the subsequent upload-error ownership fix. At that stage, the fix passed an
+all-target build and 28 focused CPU tests, including 10 fault-injection cases, without rerunning the targeted
+state-isolation GPU test. Later post-fix CUDA/model execution is covered by the completed HTTP serving comparison
+below; it is not a rerun of this synthetic test. Failed uploads poison the plan; if completion is uncertain, one
+lease retains its transfer resources for process lifetime rather than freeing or reusing them. Successful uploads
+release that lease after synchronization.
 
 Exact startup completed 1+25+25 calls with zero validation or checked post-ready installations and no captures.
 The unchanged gates are logit max/p99 0.2842/0.1201, probability max/p99 0.04241/0.01846, confident-choice margin
@@ -64,6 +68,20 @@ GPU work requires separate authorization.
 
 Historical pre-rebase throughput observations used heuristic GEMMs and an untrimmed baseline. Moving JIT before
 readiness improved an initial burst, not steady-state throughput; those rates do not measure this rebased tree.
-Detailed experiments/provenance remain in PR history and private evidence. No rebased throughput or globally green
-Rust suite is claimed: `sched::pool::tests::new_work_is_bounded_and_finishing_work_is_not` remains
-**FAILED / NOT RERUN**. No default promotion or additional GPU work is implied.
+Detailed experiments/provenance remain in PR history and private evidence. Those historical observations must
+not be substituted for the completed post-fix comparison below.
+
+## Completed post-fix HTTP serving comparison
+
+The later accepted comparison at **fbddc43** exercised the public BF16 model after the ownership fix on one
+NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition (sm_120), with Tile, pinned GEMMs and trimming.
+Against the fastest verified optimized qev backend in the completed tests (real FLA GDN and successful CUDA
+Triton launches), exact eager with bounded warmup delivered **12–68% higher decisions/s in 8/8 cells**.
+Bucketed graphs were mixed: **0.65–1.58× qev, four wins and four losses**. This supersedes the old statement that
+there was no rebased serving throughput, not the narrower pre-fix state-isolation test's provenance.
+
+See [Performance](../PERFORMANCE.md) and its linked curated summary for all eight rates, matched settings,
+two-start finite-burst method and tolerance agreement (not bit identity). This is not sustained capacity,
+held-out quality, full error-conformance or another-device qualification, nor a new test run for these docs.
+No globally green Rust suite is claimed: `sched::pool::tests::new_work_is_bounded_and_finishing_work_is_not`
+remains **FAILED / NOT RERUN**. No default promotion, deployment recommendation or additional GPU work is implied.
