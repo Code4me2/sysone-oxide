@@ -1,0 +1,299 @@
+{
+  "schema": "sysone.optimized-qev-serving-summary/v1",
+  "provenance": {
+    "sysone_commit": "fbddc43f3c52b6671abdbd08a099e354bbcc4753",
+    "onejev_commit": "81ce62f1597c91e46767d4d02d6ac2e18534fe94",
+    "reference_patch": "unchanged model-card serve.patch",
+    "model": "baselabs/elephant-1",
+    "model_revision": "b3f8a93462fb1051a9de031e94a7ff380e254072",
+    "published_report": "https://github.com/Code4me2/sysone-oxide/pull/10#issuecomment-6996569961",
+    "data_kind": "curated summary of completed accepted comparison; not a fresh run"
+  },
+  "hardware": {
+    "gpu": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition",
+    "architecture": "sm_120",
+    "gpu_count": 1
+  },
+  "baseline": {
+    "backend": "verified optimized FLA GDN with successful CUDA Triton launches",
+    "fork_mode": "author auto-probe selected batched forks within requests",
+    "http_cross_request_inference": "serialized by stock qev handler",
+    "scope": "fastest verified qev backend in completed comparison, not an exhaustive search of qev configurations"
+  },
+  "measurement": {
+    "fresh_process_order": [
+      "qev",
+      "bucket",
+      "exact",
+      "exact",
+      "bucket",
+      "qev"
+    ],
+    "fresh_process_observations_per_arm": 2,
+    "warmup_requests_per_cell_per_process": 2,
+    "measured_requests_per_cell_per_process": 16,
+    "aggregation": "arithmetic mean of two observations; ratios of those means",
+    "denominator": "full measured submission through final completion/drain; no retries or drops",
+    "state_length_unit": "words, not tokens",
+    "metric": "decisions per second; one decision per question, not generation tokens per second"
+  },
+  "sysone_configuration": {
+    "engine": "bf16",
+    "gdn_backend": "tile",
+    "gemm": "pinned",
+    "last_layer_trimming": true,
+    "max_branch_tokens": 16384,
+    "max_request_tokens": 16384,
+    "max_step_tokens": 16384,
+    "token_budget": 16384,
+    "max_prefixes": 32,
+    "cpu_workers": 4,
+    "max_wait_us": 2000,
+    "bucket": "default bucketed CUDA graphs",
+    "exact": "exact-token-eager with bounded-exact-warmup; no CUDA graphs",
+    "token_limits_scope": "fully rendered state plus questions/options; no truncation"
+  },
+  "request_counts": {
+    "posts": 1146,
+    "cells": 48,
+    "timed": 768,
+    "warmup": 96,
+    "correctness": 282,
+    "independent_contexts": 47
+  },
+  "agreement": {
+    "probability_difference_max": 0.027066,
+    "probability_difference_p99": 0.00944,
+    "logit_difference_max": 0.1337204,
+    "logit_difference_p99": 0.0778408,
+    "probability_gates_max_p99": [
+      0.04241,
+      0.01846
+    ],
+    "logit_gates_max_p99": [
+      0.2842,
+      0.1201
+    ],
+    "allowed_choice_changes_per_pairing": 1,
+    "changed_choice_live_reference_margin": 0.000691,
+    "maximum_allowed_choice_change_margin": 0.02,
+    "scope": "47 development contexts per pairing; tolerance agreement, not identical outputs or held-out quality certification"
+  },
+  "rows": [
+    {
+      "state_words": 1000,
+      "questions": 1,
+      "concurrency": 1,
+      "decisions_per_second": {
+        "qev": 7.670591389033956,
+        "bucket": 5.991028042192994,
+        "exact": 8.949267181549205
+      },
+      "observations_decisions_per_second": {
+        "qev": [
+          7.776207906246891,
+          7.564974871821021
+        ],
+        "bucket": [
+          5.995459165008377,
+          5.98659691937761
+        ],
+        "exact": [
+          8.975677013939984,
+          8.922857349158425
+        ]
+      },
+      "bucket_over_qev": 0.7810386107592562,
+      "exact_over_qev": 1.1666984626952326
+    },
+    {
+      "state_words": 1000,
+      "questions": 1,
+      "concurrency": 16,
+      "decisions_per_second": {
+        "qev": 7.677394018975525,
+        "bucket": 9.323508858876764,
+        "exact": 11.973784096657962
+      },
+      "observations_decisions_per_second": {
+        "qev": [
+          7.7768920604346405,
+          7.577895977516408
+        ],
+        "bucket": [
+          9.324102467363604,
+          9.322915250389922
+        ],
+        "exact": [
+          11.949325714564463,
+          11.99824247875146
+        ]
+      },
+      "bucket_over_qev": 1.2144106236872414,
+      "exact_over_qev": 1.5596156804071064
+    },
+    {
+      "state_words": 1000,
+      "questions": 8,
+      "concurrency": 1,
+      "decisions_per_second": {
+        "qev": 39.0091035154839,
+        "bucket": 45.32725398922413,
+        "exact": 51.78531905780425
+      },
+      "observations_decisions_per_second": {
+        "qev": [
+          39.34321564418071,
+          38.6749913867871
+        ],
+        "bucket": [
+          45.41476423354325,
+          45.23974374490502
+        ],
+        "exact": [
+          51.87844400395619,
+          51.69219411165231
+        ]
+      },
+      "bucket_over_qev": 1.1619660516226005,
+      "exact_over_qev": 1.327518819735221
+    },
+    {
+      "state_words": 1000,
+      "questions": 8,
+      "concurrency": 16,
+      "decisions_per_second": {
+        "qev": 39.120918673715266,
+        "bucket": 61.62177897477686,
+        "exact": 65.6069750006821
+      },
+      "observations_decisions_per_second": {
+        "qev": [
+          39.613389448900925,
+          38.628447898529615
+        ],
+        "bucket": [
+          60.08744245062484,
+          63.15611549892887
+        ],
+        "exact": [
+          65.44807672204594,
+          65.76587327931824
+        ]
+      },
+      "bucket_over_qev": 1.5751618587673804,
+      "exact_over_qev": 1.6770305305934035
+    },
+    {
+      "state_words": 4000,
+      "questions": 1,
+      "concurrency": 1,
+      "decisions_per_second": {
+        "qev": 2.6045775890065728,
+        "bucket": 1.703756823050377,
+        "exact": 2.9064894414258857
+      },
+      "observations_decisions_per_second": {
+        "qev": [
+          2.6372663615019043,
+          2.5718888165112412
+        ],
+        "bucket": [
+          1.7069837741785743,
+          1.7005298719221795
+        ],
+        "exact": [
+          2.9058310506042937,
+          2.907147832247478
+        ]
+      },
+      "bucket_over_qev": 0.6541394006619772,
+      "exact_over_qev": 1.1159158604810338
+    },
+    {
+      "state_words": 4000,
+      "questions": 1,
+      "concurrency": 16,
+      "decisions_per_second": {
+        "qev": 2.5981578572344306,
+        "bucket": 2.3213449328239384,
+        "exact": 3.065320691526732
+      },
+      "observations_decisions_per_second": {
+        "qev": [
+          2.6272640468874178,
+          2.5690516675814434
+        ],
+        "bucket": [
+          2.2453254504179143,
+          2.3973644152299625
+        ],
+        "exact": [
+          3.0659454463205607,
+          3.0646959367329036
+        ]
+      },
+      "bucket_over_qev": 0.8934580038546459,
+      "exact_over_qev": 1.1798054082786047
+    },
+    {
+      "state_words": 4000,
+      "questions": 8,
+      "concurrency": 1,
+      "decisions_per_second": {
+        "qev": 14.73410772923248,
+        "bucket": 13.190217450184566,
+        "exact": 20.332949659962544
+      },
+      "observations_decisions_per_second": {
+        "qev": [
+          14.810877056898244,
+          14.657338401566719
+        ],
+        "bucket": [
+          13.206611873941949,
+          13.173823026427183
+        ],
+        "exact": [
+          20.33152227278876,
+          20.33437704713633
+        ]
+      },
+      "bucket_over_qev": 0.8952165745344162,
+      "exact_over_qev": 1.3799919230685382
+    },
+    {
+      "state_words": 4000,
+      "questions": 8,
+      "concurrency": 16,
+      "decisions_per_second": {
+        "qev": 14.621656378704639,
+        "bucket": 18.662491913054055,
+        "exact": 21.729334100602813
+      },
+      "observations_decisions_per_second": {
+        "qev": [
+          14.841262282700264,
+          14.402050474709013
+        ],
+        "bucket": [
+          18.676791698888437,
+          18.64819212721967
+        ],
+        "exact": [
+          21.734763851303004,
+          21.72390434990262
+        ]
+      },
+      "bucket_over_qev": 1.276359629148076,
+      "exact_over_qev": 1.48610619329353
+    }
+  ],
+  "limitations": [
+    "Two short finite-burst observations per arm, not statistical significance or sustained capacity.",
+    "Opt-in exact eager wins eight of eight tested cells; default bucketed graphs win four and lose four.",
+    "Neither global qev optimality nor other-GPU, multimodal, full error-conformance or human-quality qualification.",
+    "Five historical error cases excluded; historical scheduler test failure remains FAILED / NOT RERUN.",
+    "Reference startup included backend-verification profiling and source checks; do not compare intrinsic startup from it."
+  ]
+}
